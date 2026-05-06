@@ -1,0 +1,127 @@
+"""Game state tracker — detects new hands, action changes, street progression."""
+
+import logging
+from datetime import datetime, timezone
+
+import imagehash
+import numpy as np
+from PIL import Image
+
+from events.models import Hand, Street
+from events.normalizer import EventNormalizer
+
+logger = logging.getLogger(__name__)
+
+
+class StateTracker:
+    """Tracks poker game state across capture cycles.
+
+    Detects:
+    - New hand start (hero cards change)
+    - Action occurrences (seat action text changes)
+    - Street advance (community card count changes)
+    """
+
+    def __init__(self, hash_threshold: int = 10):
+        self.current_hand: Hand | None = None
+        self.normalizer = EventNormalizer()
+        self._hash_threshold = hash_threshold
+
+        # Previous state for change detection
+        self._prev_hero_hash: str | None = None
+        self._prev_action_texts: dict[int, str] = {}
+        self._prev_community_count: int = 0
+        self._position_map: dict[int, str] = {}
+
+    @property
+    def has_active_hand(self) -> bool:
+        return self.current_hand is not None
+
+    # ── Hero card detection ───────────────────────────────
+
+    def check_hero_cards(self, hero_1: np.ndarray, hero_2: np.ndarray) -> bool:
+        """Return True if hero cards changed (new hand started)."""
+        if hero_1.size == 0 or hero_2.size == 0:
+            return False
+
+        h1 = self._hash_image(hero_1)
+        h2 = self._hash_image(hero_2)
+        combined = f"{h1}:{h2}"
+
+        if self._prev_hero_hash is None:
+            self._prev_hero_hash = combined
+            return False
+
+        # Hash change → new hand
+        if combined != self._prev_hero_hash:
+            dist1 = h1 - imagehash.hex_to_hash(self._prev_hero_hash.split(":")[0]) if h1 else 0
+            dist2 = h2 - imagehash.hex_to_hash(self._prev_hero_hash.split(":")[1]) if h2 else 0
+            if dist1 > self._hash_threshold or dist2 > self._hash_threshold:
+                self._prev_hero_hash = combined
+                return True
+
+        return False
+
+    def _hash_image(self, img: np.ndarray) -> imagehash.ImageHash | None:
+        """Compute perceptual hash of an image crop."""
+        try:
+            if img.shape[2] == 4:
+                img = img[..., :3]  # drop alpha
+            pil = Image.fromarray(img)
+            return imagehash.average_hash(pil)
+        except Exception:
+            return None
+
+    # ── Action detection ──────────────────────────────────
+
+    def check_action_change(self, seat_idx: int, action_text: str) -> bool:
+        """Return True if this seat's action text changed."""
+        prev = self._prev_action_texts.get(seat_idx, "")
+        cleaned = action_text.strip()
+        if cleaned and cleaned != prev:
+            self._prev_action_texts[seat_idx] = cleaned
+            return True
+        return False
+
+    # ── Community card detection ──────────────────────────
+
+    def check_community_change(self, card_texts: list[str]) -> bool:
+        """Return True if community cards changed (street advance)."""
+        count = len([c for c in card_texts if c])
+        if count != self._prev_community_count:
+            self._prev_community_count = count
+            self.normalizer.set_community_card_count(count)
+            return True
+        return False
+
+    # ── Hand lifecycle ────────────────────────────────────
+
+    def start_new_hand(self, table_name: str = "unknown") -> Hand:
+        """Create a new Hand object and reset tracking state."""
+        self.current_hand = Hand(
+            table_name=table_name,
+            started_at=datetime.now(timezone.utc),
+        )
+        self.normalizer.reset()
+        self._prev_action_texts.clear()
+        self._prev_community_count = 0
+        logger.info(f"New hand started: {self.current_hand.id}")
+        return self.current_hand
+
+    def finalize_hand(self) -> Hand | None:
+        """Mark the current hand as ended and return it."""
+        if self.current_hand is None:
+            return None
+        self.current_hand.ended_at = datetime.now(timezone.utc)
+        hand = self.current_hand
+        self.current_hand = None
+        logger.info(f"Hand ended: {hand.id}")
+        return hand
+
+    # ── Position mapping ──────────────────────────────────
+
+    def set_position_map(self, mapping: dict[int, str]):
+        self._position_map = mapping
+
+    def get_position(self, seat_idx: int) -> str:
+        return self._position_map.get(seat_idx, f"S{seat_idx}")

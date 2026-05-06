@@ -1,0 +1,31 @@
+{
+  "name": "party_poker",
+  "window_title": "Poker Master",
+  "resolution": [
+    1454,
+    848
+  ],
+  "hero_card_1": [
+    674,
+    601,
+    53,
+    98
+  ],
+  "hero_card_2": [
+    732,
+    615,
+    47,
+    68
+  ],
+  "community_cards": [
+    [
+      470,
+      392,
+      544,
+      136
+    ]
+  ],
+  "pot_size": null,
+  "button_roi": null,
+  "seats": []
+}

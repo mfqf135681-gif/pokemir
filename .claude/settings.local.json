@@ -1,0 +1,71 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p d:/project/pokemir/.agents-full)",
+      "Bash(cp d:/project/pokemir/AGENTS.md d:/project/pokemir/.agents-full/AGENTS.md)",
+      "Bash(cp -r d:/project/pokemir/.agents/* d:/project/pokemir/.agents-full/)",
+      "WebFetch(domain:chat.deepseek.com)"
+    ]
+  },
+  "mcpServers": {
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "env": {
+        "NPM_CONFIG_CACHE": "D:\\mcp-cache\\npm"
+      }
+    },
+    "screenshot": {
+      "command": "npx",
+      "args": ["-y", "universal-screenshot-mcp"],
+      "env": {
+        "NPM_CONFIG_CACHE": "D:\\mcp-cache\\npm"
+      }
+    },
+    "fast-paddleocr": {
+      "command": "uvx",
+      "args": ["--python", "3.13", "fast-paddleocr-mcp"],
+      "env": {
+        "UV_CACHE_DIR": "D:\\mcp-cache\\uv",
+        "UV_PYTHON_INSTALL_DIR": "D:\\mcp-cache\\uv\\python",
+        "UV_TOOL_DIR": "D:\\mcp-cache\\uv\\tools",
+        "MODELSCOPE_CACHE": "D:\\mcp-cache\\modelscope",
+        "HF_HOME": "D:\\mcp-cache\\huggingface"
+      }
+    },
+    "moondream": {
+      "command": "npx",
+      "args": ["-y", "@iflow-mcp/nighttrek-moondream-mcp"],
+      "env": {
+        "NPM_CONFIG_CACHE": "D:\\mcp-cache\\npm",
+        "HF_HOME": "D:\\mcp-cache\\huggingface"
+      }
+    },
+    "opencv": {
+      "command": "uvx",
+      "args": ["opencv-mcp-server"],
+      "env": {
+        "UV_CACHE_DIR": "D:\\mcp-cache\\uv",
+        "UV_PYTHON_INSTALL_DIR": "D:\\mcp-cache\\uv\\python",
+        "UV_TOOL_DIR": "D:\\mcp-cache\\uv\\tools"
+      }
+    },
+    "pgsql": {
+      "command": "npx",
+      "args": ["-y", "@tejasanik/postgres-mcp-server"],
+      "env": {
+        "NPM_CONFIG_CACHE": "D:\\mcp-cache\\npm",
+        "PG_NAME_1": "default",
+        "PG_HOST_1": "localhost",
+        "PG_PORT_1": "5432",
+        "PG_USERNAME_1": "poker_user",
+        "PG_PASSWORD_1": "Lc@135681",
+        "PG_DATABASE_1": "poker_assistant",
+        "PG_SCHEMA_1": "public",
+        "PG_SSL_1": "false",
+        "PG_DEFAULT_1": "true",
+        "PG_ACCESS_MODE_1": "readonly"
+      }
+    }
+  }
+}

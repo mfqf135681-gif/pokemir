@@ -1,0 +1,26 @@
+# Poker Learning Assistant — dependencies
+# Install: uv pip install -r requirements.txt
+
+# API
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=13.0
+
+# Database
+sqlalchemy>=2.0
+asyncpg>=0.30.0
+alembic>=1.14.0
+
+# Capture & Image Processing
+mss>=9.0.0
+Pillow>=11.0.0
+opencv-python>=4.10.0
+numpy>=2.0.0
+imagehash>=4.3.0
+
+# Recognition
+easyocr>=1.7.0
+
+# Utilities
+pydantic>=2.0.0
+python-dotenv>=1.0.0
