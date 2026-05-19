@@ -108,6 +108,7 @@ class StateTracker:
         self.normalizer.reset()
         self._prev_action_texts.clear()
         self._prev_community_count = 0
+        self.latest_pot_bb = None
         logger.info(f"New hand started: {self.current_hand.id}")
         return self.current_hand
 
