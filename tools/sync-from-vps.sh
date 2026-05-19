@@ -48,6 +48,8 @@ rsync -avz --delete \
     --exclude 'models/' \
     --exclude '.venv/' \
     --exclude '.pytest_cache/' \
+    --exclude '.docker-data/' \
+    --exclude '.cache/' \
     "${VPS_USER}@${VPS_HOST}:${VPS_PATH}" \
     "${LOCAL_PATH}"
 
