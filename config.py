@@ -3,20 +3,26 @@
 import os
 import logging
 
+from dotenv import load_dotenv
+
+load_dotenv()   # auto-load project-root .env so os.getenv() picks up user-set values
+                # (.env is gitignored; .env.example is the template)
+
 # ── Database ──────────────────────────────────────────────
 DB_DSN = os.getenv(
     "POKEMIR_DB_DSN",
-    "postgresql+asyncpg://poker_user:Lc%40135681@localhost:5432/poker_assistant",
+    "postgresql+asyncpg://poker_user:poker_pass@localhost:5432/poker_assistant",
 )
 DB_DSN_SYNC = os.getenv(
     "POKEMIR_DB_DSN_SYNC",
-    "postgresql://poker_user:Lc%40135681@localhost:5432/poker_assistant",
+    "postgresql://poker_user:poker_pass@localhost:5432/poker_assistant",
 )
 
 # ── Recognition ───────────────────────────────────────────
 MODEL_DIR = os.getenv("POKEMIR_MODEL_DIR", "./models")
 ONNX_DEVICE = os.getenv("POKEMIR_ONNX_DEVICE", "DirectML")
 OCR_ENGINE = os.getenv("POKEMIR_OCR_ENGINE", "easyocr")
+EASYOCR_MODEL_DIR = os.getenv("POKEMIR_EASYOCR_DIR", os.path.join(MODEL_DIR, "easyocr"))
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 

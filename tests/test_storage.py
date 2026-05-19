@@ -1,31 +1,37 @@
-"""Test database storage layer — CRUD for Hand and ActionEvent."""
+"""Storage layer integration tests — requires a reachable PostgreSQL instance.
+
+Skipped automatically when the database cannot be connected to.
+"""
 
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from events.models import ActionEvent, ActionType, Hand, Position, Street
-from storage.database import SessionLocal, init_db
-from storage.repository import ActionEventRepository, HandRepository
 
 
-def main():
-    print("=" * 50)
-    print("Storage Layer Tests")
-    print("=" * 50 + "\n")
+@pytest.fixture(scope="module")
+def db_session():
+    """Yield a DB session; skip the whole module if PostgreSQL is unreachable."""
+    try:
+        from storage.database import SessionLocal, init_db
+        init_db()
+        session = SessionLocal()
+    except Exception as exc:
+        pytest.skip(f"PostgreSQL not reachable: {exc}")
+    try:
+        yield session
+    finally:
+        session.close()
 
-    # Ensure tables exist
-    print("Initializing database...")
-    init_db()
-    print("Tables ready.\n")
 
-    db = SessionLocal()
+def test_hand_create_and_read(db_session):
+    from storage.repository import HandRepository
 
-    hand_repo = HandRepository()
-    event_repo = ActionEventRepository()
-
-    # ── Create a hand ────────────────────────────────────
+    repo = HandRepository()
     hand = Hand(
         table_name="test_table",
         game_type="NLH",
@@ -34,16 +40,26 @@ def main():
         hero_position=Position.CO,
         hero_cards=["Ah", "Kd"],
     )
-    model = hand_repo.create(db, hand)
-    print(f"Created hand: {model.id}")
+    model = repo.create(db_session, hand)
+    try:
+        retrieved = repo.get(db_session, hand.id)
+        assert retrieved is not None
+        assert retrieved.table_name == "test_table"
+        assert retrieved.hero_cards == ["Ah", "Kd"]
+    finally:
+        db_session.delete(model)
+        db_session.commit()
 
-    # Read it back
-    retrieved = hand_repo.get(db, hand.id)
-    assert retrieved is not None, "Hand not found!"
-    assert retrieved.table_name == "test_table"
-    print(f"Read hand back: {retrieved.table_name} — hero: {retrieved.hero_cards}")
 
-    # ── Create action events ─────────────────────────────
+def test_action_events_roundtrip(db_session):
+    from storage.repository import ActionEventRepository, HandRepository
+
+    hand_repo = HandRepository()
+    event_repo = ActionEventRepository()
+
+    hand = Hand(table_name="test_table", hero_position=Position.CO)
+    model = hand_repo.create(db_session, hand)
+
     events = [
         ActionEvent(
             hand_id=hand.id,
@@ -74,41 +90,34 @@ def main():
             facing_action="BB 0.10",
         ),
     ]
-    for e in events:
-        event_repo.create(db, e)
-    print(f"Created {len(events)} action events")
+    try:
+        for e in events:
+            event_repo.create(db_session, e)
 
-    # Read events back
-    db.expire_all()  # force re-read
-    saved = event_repo.get_for_hand(db, hand.id)
-    print(f"Read {len(saved)} events back:")
-    for s in saved:
-        print(f"  #{s.sequence_number}: {s.player_name}({s.position}) "
-              f"{s.action_type} {s.amount or ''}")
-
-    assert len(saved) == 3, f"Expected 3 events, got {len(saved)}"
-    assert saved[0].action_type == "post_sb"
-    assert saved[1].action_type == "post_bb"
-    assert saved[2].action_type == "raise"
-
-    # ── Update hand ──────────────────────────────────────
-    hand.community_cards = {Street.FLOP: ["Ah", "Kh", "Qh"]}
-    hand_repo.update(db, hand)
-    db.expire_all()
-    updated = hand_repo.get(db, hand.id)
-    assert updated.community_cards == {"flop": ["Ah", "Kh", "Qh"]}
-    print(f"\nUpdated community cards: {updated.community_cards}")
-
-    # ── Cleanup ──────────────────────────────────────────
-    db.delete(model)  # cascade deletes action_events
-    db.commit()
-    db.close()
-
-    print("\n" + "=" * 50)
-    print("Storage tests: ALL PASSED")
-    print("=" * 50)
-    return 0
+        db_session.expire_all()
+        saved = event_repo.get_for_hand(db_session, hand.id)
+        assert len(saved) == 3
+        assert saved[0].action_type == "post_sb"
+        assert saved[1].action_type == "post_bb"
+        assert saved[2].action_type == "raise"
+    finally:
+        db_session.delete(model)
+        db_session.commit()
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_hand_update_community_cards(db_session):
+    from storage.repository import HandRepository
+
+    repo = HandRepository()
+    hand = Hand(table_name="test_table", hero_position=Position.CO)
+    model = repo.create(db_session, hand)
+
+    try:
+        hand.community_cards = {Street.FLOP: ["Ah", "Kh", "Qh"]}
+        repo.update(db_session, hand)
+        db_session.expire_all()
+        updated = repo.get(db_session, hand.id)
+        assert updated.community_cards == {"flop": ["Ah", "Kh", "Qh"]}
+    finally:
+        db_session.delete(model)
+        db_session.commit()

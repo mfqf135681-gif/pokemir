@@ -1,6 +1,13 @@
 -- ============================================================
--- Poker Assistant — initial schema (Phase 1)
+-- Poker Assistant — Data Model Contract
 -- Target: PostgreSQL 15+
+--
+-- AUTHORITATIVE: This file is the single source of truth for the
+-- data model. Any storage code (storage/models.py, repositories,
+-- migrations) MUST conform to the table/column definitions here.
+--
+-- Modifications to this file require a confirmed entry in
+-- requirement-discussions/ — see .agents/rules-dev.md §6.
 -- ============================================================
 
 -- ── Hands ─────────────────────────────────────────────────

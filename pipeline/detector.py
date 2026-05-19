@@ -33,6 +33,9 @@ class StateTracker:
         self._prev_community_count: int = 0
         self._position_map: dict[int, str] = {}
 
+        # Latest pot size (from _process_pot), attached to subsequent action events
+        self.latest_pot_bb: float | None = None
+
     @property
     def has_active_hand(self) -> bool:
         return self.current_hand is not None

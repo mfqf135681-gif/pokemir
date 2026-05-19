@@ -210,6 +210,8 @@ class PipelineOrchestrator:
                     stack_img = self.capturer.capture_roi(seat_roi.stack_area)
                     stack_text = self.ocr.read_text(stack_img)
                     event.effective_stack_bb = ActionRecognizer._extract_amount(stack_text)
+                if self.tracker.latest_pot_bb is not None:
+                    event.pot_size_bb = self.tracker.latest_pot_bb
 
                 self.event_repo.create(db, event)
                 logger.info(
@@ -218,10 +220,12 @@ class PipelineOrchestrator:
                 )
 
     def _process_pot(self, db, rois):
+        """Read pot size from ROI and stash on tracker; next action event will pick it up."""
         pot_img = self.capturer.capture_roi(rois.pot_size)
         pot_text = self.ocr.read_text(pot_img)
         amount = ActionRecognizer._extract_amount(pot_text)
-        # Pot is attached to the latest event context when next action occurs
+        if amount is not None:
+            self.tracker.latest_pot_bb = amount
 
     # ── Helpers ───────────────────────────────────────────
 

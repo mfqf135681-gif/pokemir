@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Generic cache (R-10 env-var redirected: HF_HOME, PIP_CACHE_DIR, NPM_CONFIG_CACHE, PYTHONPYCACHEPREFIX)
+.cache/
+
+# Docker Compose data volumes (R-10: project-local, never commit DB data)
+.docker-data/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local secrets / config
+.env
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Project-specific
+models/                  # HuggingFace / ONNX model cache (machine-specific)
+tests/output/            # screenshots saved by test_capture
+tests/fixtures/_pending/ # un-vetted fixture captures (Win side)
+*.log

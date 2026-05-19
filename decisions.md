@@ -6,3 +6,4 @@
 2026-05-02 | Phase 2: State tracking | imagehash.average_hash for hero card change detection; string equality for action text diffs; community card count for street progression
 2026-05-03 | Python downgrade 3.14→3.13.13 | 3.14 too new (Pillow build fails, moondream incompatible); 3.13 is fully stable with all wheels
 2026-05-03 | Vision model: moondream→SmolVLM-256M | moondream 1.2 requires API key even for local inference; SmolVLM-256M is Apache 2.0, 256M params, <1GB VRAM, free; HF mirror (hf-mirror.com) for China network access
+2026-05-17 | 治理体系升级 | 激活 .agents-full 完整版（REQ/DEV/TEST 三模式）；建立 contracts/、docs/、requirement-discussions/、change-logs/、test-reports/；schema.sql → contracts/models.sql（升格为契约）；新建 contracts/api.yaml（最小 /health）；tests/ 改造为 pytest，TEST_CMD=`pytest tests/ -v`；精简版归档至 .agents-archived/

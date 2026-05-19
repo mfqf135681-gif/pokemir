@@ -1,0 +1,35 @@
+# docker-compose.yml — Local PostgreSQL for pokemir Linux dev environment.
+#
+# Authorization: requirement-discussions/2026-05-18_03-00-00_Linux dev装postgres与MCP必要性.md (confirmed, Q1=D)
+# Change-log:    change-logs/2026-05-18_03-30-00_Linux dev装postgres docker compose基建.md
+#
+# Usage:
+#   1. Set POKEMIR_DB_PASSWORD in .env (chmod 600 .env afterwards)
+#   2. docker compose up -d
+#   3. Verify: docker compose ps   (postgres should show 'healthy' within ~15s)
+#   4. Stop:   docker compose stop  (keeps data; faster restart)
+#   5. Down:   docker compose down  (removes container; keeps volume)
+#   6. Wipe:   docker compose down -v  OR  rm -rf .docker-data/postgres/
+#
+# R-10 compliance: data volume is .docker-data/postgres/ (project-local, gitignored)
+# R-2  compliance: password is referenced from env var, NEVER hardcoded here
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: pokemir-pg
+    environment:
+      POSTGRES_USER: ${POKEMIR_DB_USER:-poker_user}
+      POSTGRES_PASSWORD: ${POKEMIR_DB_PASSWORD:?ERROR set POKEMIR_DB_PASSWORD in .env first}
+      POSTGRES_DB: ${POKEMIR_DB_NAME:-poker_assistant}
+    ports:
+      - "127.0.0.1:5432:5432"   # localhost-only binding; do NOT expose 0.0.0.0
+    volumes:
+      - ./.docker-data/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POKEMIR_DB_USER:-poker_user} -d ${POKEMIR_DB_NAME:-poker_assistant}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s

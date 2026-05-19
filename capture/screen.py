@@ -34,6 +34,7 @@ class ScreenCapturer:
         self._sct = None
         self._window_rect: Optional[dict] = None   # {left, top, width, height}
         self._monitor: Optional[dict] = None
+        self._found_title: str = ""
 
     def _get_sct(self):
         if self._sct is None:
@@ -42,12 +43,6 @@ class ScreenCapturer:
         return self._sct
 
     # ── Window tracking ──────────────────────────────────
-
-    def __init__(self):
-        self._sct = None
-        self._window_rect: Optional[dict] = None   # {left, top, width, height}
-        self._monitor: Optional[dict] = None
-        self._found_title: str = ""
 
     def find_window_by_title(self, title_substring: str) -> bool:
         """Locate a visible window whose title contains the given string.

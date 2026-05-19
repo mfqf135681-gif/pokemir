@@ -98,7 +98,7 @@ class EventNormalizer:
 
         texture["wet"] = (
             texture["double_suited"]
-            or (texture["monotone"] == False and any(v >= 2 for v in suit_counts.values()))
+            or (not texture["monotone"] and any(v >= 2 for v in suit_counts.values()))
         )
 
         return texture

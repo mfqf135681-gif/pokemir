@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models — maps to the PostgreSQL schema in schema.sql."""
+"""SQLAlchemy ORM models — maps to the PostgreSQL schema in contracts/models.sql."""
 
 import uuid
 

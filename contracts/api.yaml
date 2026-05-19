@@ -1,0 +1,47 @@
+openapi: 3.0.3
+info:
+  title: Poker Learning Assistant API
+  version: 0.1.0
+  description: |
+    AUTHORITATIVE API contract for the Poker Learning Assistant.
+
+    Any HTTP endpoint exposed by `api/server.py` MUST be declared here.
+    Modifications to this file require a confirmed entry in
+    requirement-discussions/ — see .agents/rules-dev.md §6.
+
+    Phase 1 ships only the health probe. WebSocket push for live HUD
+    updates and REST endpoints for stats / hand history will be added
+    in Phase 3+ via explicit contract revisions.
+
+servers:
+  - url: http://127.0.0.1:8765
+    description: Local development server (defaults from config.py)
+
+paths:
+  /health:
+    get:
+      summary: Liveness probe
+      description: Returns service status and version. Used for monitoring and smoke tests.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          description: Always "ok" when the service responds.
+        version:
+          type: string
+          description: Semantic version of the API surface.
+          example: "0.1.0"

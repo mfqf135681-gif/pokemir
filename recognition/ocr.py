@@ -22,8 +22,19 @@ class OCREngine:
     def _init(self):
         if self._reader is not None:
             return
+        import os
         import easyocr
-        self._reader = easyocr.Reader(["en"], gpu=self._gpu)
+        from config import EASYOCR_MODEL_DIR
+        os.makedirs(EASYOCR_MODEL_DIR, exist_ok=True)
+        user_network_dir = os.path.join(EASYOCR_MODEL_DIR, "user_network")
+        os.makedirs(user_network_dir, exist_ok=True)
+        self._reader = easyocr.Reader(
+            ["en"],
+            gpu=self._gpu,
+            model_storage_directory=EASYOCR_MODEL_DIR,
+            user_network_directory=user_network_dir,
+            download_enabled=True,
+        )
 
     def read_text(self, image: np.ndarray) -> str:
         """Extract text from an image region. Returns empty string if nothing found."""
