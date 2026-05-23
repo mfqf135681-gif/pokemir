@@ -127,7 +127,7 @@ DEV 模式任务在 §5.2 验证全通过 + change-log §1-§9 写完后，**默
 #### 护栏 checklist（任一不过 → 停手让用户介入，不自动 push）
 
 1. ✅ **本次改动文件全部在安全列表内**：
-   - 允许：`tools/*` · `tests/*` · `change-logs/*.md` · `requirement-discussions/*.md` · 业务代码（`capture/` · `events/` · `pipeline/` · `recognition/` · `storage/` · `api/`）· `docs/*.md` · `.gitignore`
+   - 允许：`tools/*` · `tests/*` · `change-logs/*.md` · `requirement-discussions/*.md` · 业务代码（`capture/` · `events/` · `pipeline/` · `recognition/` · `storage/` · `api/`）· `docs/*.md` · `.gitignore` · `rois/*`（ROI 配置 = 项目数据，非密钥非契约）
    - **禁止自动**（除非当次 REQ 明示批准这条 .agents 改动）：`.agents/*`（治理规则）· `contracts/*`（数据/API 契约）· `.env*` / `*.key` / `*.pem` / `*.token` · `docker-compose.yml` · `requirements.txt`
 2. ✅ **Secrets 扫描**：本次 `git diff` 不含 `password=` / `token=` / `Bearer ` / 长度 ≥ 32 的 hex 字串
 3. ✅ **规模限制**：单文件 ≤ 5MB；本次累计改动文件 ≤ 20 个
