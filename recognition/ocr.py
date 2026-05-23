@@ -36,12 +36,22 @@ class OCREngine:
             download_enabled=True,
         )
 
-    def read_text(self, image: np.ndarray) -> str:
-        """Extract text from an image region. Returns empty string if nothing found."""
+    def read_text(self, image: np.ndarray, allowlist: str = "") -> str:
+        """Extract text from an image region. Returns empty string if nothing found.
+
+        Args:
+            image: BGR / BGRA crop
+            allowlist: if non-empty, restrict OCR output to these characters.
+                Useful for digit-only or known-charset reads (e.g. card ranks,
+                stack amounts). Empty string = no restriction (general OCR).
+        """
         self._init()
         processed = self._preprocess(image)
         try:
-            results = self._reader.readtext(processed, detail=0)
+            kwargs = {"detail": 0}
+            if allowlist:
+                kwargs["allowlist"] = allowlist
+            results = self._reader.readtext(processed, **kwargs)
         except Exception:
             logger.warning("OCR call failed", exc_info=True)
             return ""

@@ -115,30 +115,60 @@ class CardRecognizer:
             return "c"  # default to clubs for black; spade disambiguation deferred
 
     def _detect_rank_by_ocr(self, image: np.ndarray) -> Optional[str]:
-        """Crop top-left corner (rank area) and OCR the character."""
+        """Multi-crop OCR for card rank; first non-empty result wins.
+
+        Empirical (from baseline 31-fixture diagnostic):
+        - corner 1/3×1/3 → works for single-digit 3/4/6/8/9 + letters K/A
+        - top-left 1/2×1/2 → catches '2' (corner misses) and '10' for T
+        - top-half (1/2 × full width) → fallback for '2'/'10' edge cases
+        Trying in this order avoids picking up the upside-down bottom-rank
+        (which whole-image OCR introduced as false positives).
+        """
         if self._ocr is None:
             self._ocr = OCREngine()
 
         if image.shape[2] == 4:
             image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
 
-        h, w = image.shape[:2]
-        # Rank is typically in the top-left ~40% x ~40% of the card
-        rank_region = image[0 : h // 3, 0 : w // 3]
-        if rank_region.size == 0:
+        if image.size == 0:
             return None
 
-        text = self._ocr.read_text(rank_region)
-        return self._normalize_rank(text)
+        h, w = image.shape[:2]
+        crops = [
+            image[0 : h // 3, 0 : w // 3],
+            image[0 : h // 2, 0 : w // 2],
+            image[0 : h // 2, :],
+        ]
+        for crop in crops:
+            if crop.size == 0:
+                continue
+            text = self._ocr.read_text(crop, allowlist="0123456789TJQKA")
+            rank = self._normalize_rank(text)
+            if rank:
+                return rank
+        return None
 
     def _normalize_rank(self, text: str) -> Optional[str]:
-        """Map OCR output to standard rank characters."""
+        """Map OCR output to standard rank characters.
+
+        Order of checks matters: full-string "10" beats bare-char checks
+        (otherwise "10" would resolve to "1" → "A" via single-char mapping).
+        Q is misread as patterns starting with "0" in WePoker's font
+        (baseline diagnostic: Qc → "04", Qs → "037") — so bare "0" outside
+        of "10" maps to Q rather than T.
+        """
         text = text.strip().upper()
-        # Handle common OCR confusions
+        if not text:
+            return None
+        # Two-digit ranks: "10" → T (handle before single-char loop)
+        if "10" in text:
+            return "T"
+        # Single-char mapping; first valid hit wins.
+        # Note: "0" maps to Q here (not T) because we already handled "10" above;
+        # any bare "0" in WePoker fixtures is a Q-glyph misread.
         mapping = {
-            "0": "T", "10": "T", "1": "A", "I": "J", "L": "J",
-            "Z": "2", "S": "5", "B": "8", "G": "9", "Q": "Q",
-            "K": "K", "A": "A",
+            "0": "Q", "1": "A", "I": "J", "L": "J",
+            "Z": "2", "S": "5", "B": "8", "G": "9",
         }
         for char in text:
             if char in CARD_RANKS:
