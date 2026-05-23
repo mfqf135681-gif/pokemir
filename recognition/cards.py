@@ -1,4 +1,4 @@
-"""Poker card recognition — dual-path: moondream vision + color/OCR heuristic."""
+"""Poker card recognition — triple-path: CNN → vision LM → color/OCR heuristic."""
 
 import logging
 from typing import Optional
@@ -6,6 +6,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from recognition.cnn_classifier import CnnClassifier
 from recognition.ocr import OCREngine
 from recognition.vision import VisionClient
 
@@ -20,12 +21,14 @@ class CardRecognizer:
     """Recognizes playing cards from image crops.
 
     Priority:
-        1. Moondream vision model (if available)
-        2. Color-based suit + OCR rank heuristic
-        3. Return None (don't block the pipeline)
+        1. Custom-trained CNN (if models/card_cnn.pth exists)
+        2. Vision LM (SmolVLM, if transformers installed)
+        3. Color-based suit + OCR rank heuristic
+        4. Return None (don't block the pipeline)
     """
 
     def __init__(self):
+        self._cnn: Optional[CnnClassifier] = None
         self._vision: Optional[VisionClient] = None
         self._ocr: Optional[OCREngine] = None
 
@@ -33,6 +36,10 @@ class CardRecognizer:
         """Recognize a single card. Returns {"rank": "A", "suit": "h"} or None."""
         if image.size == 0:
             return None
+
+        result = self._try_cnn(image)
+        if result:
+            return result
 
         result = self._try_vision(image)
         if result:
@@ -42,8 +49,17 @@ class CardRecognizer:
         if result:
             return result
 
-        logger.debug("Card recognition failed — both paths returned None")
+        logger.debug("Card recognition failed — all paths returned None")
         return None
+
+    # ── CNN path ──────────────────────────────────────────
+
+    def _try_cnn(self, image: np.ndarray) -> Optional[dict]:
+        if self._cnn is None:
+            self._cnn = CnnClassifier()
+            if not self._cnn.available:
+                return None
+        return self._cnn.identify_card(image)
 
     def recognize(self, image: np.ndarray) -> list[dict]:
         """Recognize multiple cards (e.g. community card area). Splits by vertical bounds."""
