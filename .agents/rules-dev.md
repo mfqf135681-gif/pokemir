@@ -6,7 +6,7 @@
 
 **权威来源**（只读 —— 本模式下禁止修改）：
 - `docs/*` — 系统文档
-- `contracts/*` — 契约文件（API + 数据模型，如 `api.yaml` / `models.json` / `models.sql`，按项目实际命名）
+- `contracts/*` — 契约文件（API 契约 + 数据模型契约，按项目实际命名与技术栈）
 - `tests/*` — 测试套件
 - `requirement-discussions/*` — 需求讨论记录（`confirmed` / `accepted` 状态为权威依据）
 
@@ -117,6 +117,49 @@ DEV 启动任何编辑之前，**一律先 `grep` 同主题关键词扫描** `ch
   3. 反复执行直至全通过
 - **例外——经批准的契约变更**：若失败的唯一原因是同一任务中经用户明确批准修改了契约，或 `confirmed` 记录已确认契约修订 → 允许更新测试匹配新契约。change-log 记录"变更了哪条测试 + 原因"
 - **禁止在测试未全通过时结束任务**
+
+### 5.3 Commit + Push 默认行为（半自动机制）
+
+**授权来源**：`requirement-discussions/2026-05-22_20-23-00_DEV结束自动commit和push.md`（confirmed）
+
+DEV 模式任务在 §5.2 验证全通过 + change-log §1-§9 写完后，**默认自动 commit + push**（前提：6 项护栏全部通过）。
+
+#### 护栏 checklist（任一不过 → 停手让用户介入，不自动 push）
+
+1. ✅ **本次改动文件全部在安全列表内**：
+   - 允许：`tools/*` · `tests/*` · `change-logs/*.md` · `requirement-discussions/*.md` · 业务代码（`capture/` · `events/` · `pipeline/` · `recognition/` · `storage/` · `api/`）· `docs/*.md` · `.gitignore`
+   - **禁止自动**（除非当次 REQ 明示批准这条 .agents 改动）：`.agents/*`（治理规则）· `contracts/*`（数据/API 契约）· `.env*` / `*.key` / `*.pem` / `*.token` · `docker-compose.yml` · `requirements.txt`
+2. ✅ **Secrets 扫描**：本次 `git diff` 不含 `password=` / `token=` / `Bearer ` / 长度 ≥ 32 的 hex 字串
+3. ✅ **规模限制**：单文件 ≤ 5MB；本次累计改动文件 ≤ 20 个
+4. ✅ **pytest 0 failed**（§5.2 全通过）
+5. ✅ **change-log §1-§9 完整**
+6. ✅ **working dir 干净**：除本次 DEV 改动外，**没有用户手写未 commit 的文件**（用 `git status` 核；防止误带）
+
+#### 护栏触发时的 fallback
+
+- 跑到 `git add` 那步停下
+- 跟用户报告"护栏第 N 项命中"+ 具体证据
+- 用户决定后续动作（可能：跳过那部分手动处理 / stash / 一起 commit / etc.）
+
+#### Commit message 约定
+
+```
+<verb> <subject>
+
+<一两句概述本次干啥>
+
+change-log: <change-log 文件名>
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+```
+
+#### 明确**不在**授权范围（仍需用户确认）
+
+- `git push --force` / `--force-with-lease`
+- `git commit --amend`
+- `git reset --hard` / `git revert`
+- 删 branch / 删 tag
+- 任何 Win 端 git 操作（我不操作 Win 机）
+- TEST / REQ / DOC 模式结束时（仅 DEV 模式生效）
 
 ---
 
