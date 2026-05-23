@@ -63,14 +63,19 @@ class TableROIs:
 
     @classmethod
     def from_dict(cls, data: dict) -> "TableROIs":
-        """Deserialize from dict."""
+        """Deserialize from dict. Tolerates missing/None values for optional ROIs
+        (skipped during roi_config); falls back to dataclass defaults."""
         rois = cls()
         rois._window_title = data.get("window_title", "")
-        rois.hero_card_1 = _tuple_to_roi(data["hero_card_1"], "hero_card_1")
-        rois.hero_card_2 = _tuple_to_roi(data["hero_card_2"], "hero_card_2")
-        rois.pot_size = _tuple_to_roi(data["pot_size"], "pot_size")
-        for tup in data.get("community_cards", []):
-            rois.add_community_card_roi(*tup)
+        if data.get("hero_card_1"):
+            rois.hero_card_1 = _tuple_to_roi(data["hero_card_1"], "hero_card_1")
+        if data.get("hero_card_2"):
+            rois.hero_card_2 = _tuple_to_roi(data["hero_card_2"], "hero_card_2")
+        if data.get("pot_size"):
+            rois.pot_size = _tuple_to_roi(data["pot_size"], "pot_size")
+        for tup in data.get("community_cards", []) or []:
+            if tup:
+                rois.add_community_card_roi(*tup)
         for s in data.get("seats", []):
             seat = SeatROI(
                 seat_index=s.get("seat_index", 0),
