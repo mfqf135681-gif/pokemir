@@ -160,6 +160,7 @@ def main():
         stack_rect = select_roi(f"Seat {i} — Stack Amount", img)
         btn_rect = select_roi(f"Seat {i} — Button Indicator (small 'D' icon area, ESC to skip)", img)
         cards_rect = select_roi(f"Seat {i} — Cards Area (optional, ESC to skip)", img)
+        id_rect = select_roi(f"Seat {i} — User ID (platform digit ID; ESC to skip)", img)
 
         if action_rect or stack_rect:
             result["seats"].append({
@@ -168,6 +169,7 @@ def main():
                 "stack": stack_rect,
                 "button_indicator": btn_rect,
                 "cards": cards_rect,
+                "id": id_rect,
             })
 
     # ── Save ─────────────────────────────────────────────
@@ -214,6 +216,7 @@ def _draw_rois(img: np.ndarray, data: dict):
         draw_rect(s.get("stack"), colors["seat"])
         draw_rect(s.get("cards"), colors["seat"])
         draw_rect(s.get("button_indicator"), colors["button"], "BTN?" if s.get("button_indicator") else "")
+        draw_rect(s.get("id"), colors["seat"], "ID" if s.get("id") else "")
 
 
 def _find_poker_windows() -> list[dict]:

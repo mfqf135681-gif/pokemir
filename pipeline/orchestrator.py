@@ -140,9 +140,31 @@ class PipelineOrchestrator:
         # Detect button position and compute seat→position mapping
         self._detect_button_position()
 
-        hand.seats = {Position(v): f"Player_{k}" for k, v in self.tracker._position_map.items()}
+        # Capture each seat's platform user-ID before any in-hand action obscures it
+        self._capture_player_ids()
+
+        hand.seats = {
+            Position(v): self.tracker.player_id_map.get(k, f"Player_{k}")
+            for k, v in self.tracker._position_map.items()
+        }
         self.hand_repo.create(db, hand)
-        logger.info(f"Hand {hand.id} — hero: {hand.hero_cards}")
+        logger.info(f"Hand {hand.id} — hero: {hand.hero_cards} — ids: {self.tracker.player_id_map}")
+
+    def _capture_player_ids(self):
+        """OCR each seat's id_area at hand-start; record into tracker.player_id_map.
+
+        Hand-start is the only window where IDs are unobstructed: no action text
+        ('CALL' / 'RAISE' / etc.) covers them and no fold-grey state degrades them.
+        """
+        id_map: dict[int, str] = {}
+        for seat in self.roi_manager.rois.seat_regions:
+            if seat.id_area is None or seat.id_area.width == 0:
+                continue
+            img = self.capturer.capture_roi(seat.id_area)
+            text = self.ocr.read_text(img).strip()
+            if text:
+                id_map[seat.seat_index] = text
+        self.tracker.player_id_map = id_map
 
     def _end_current_hand(self, db):
         hand = self.tracker.finalize_hand()
@@ -196,9 +218,10 @@ class PipelineOrchestrator:
                 # Detect facing action from previous actions in this hand
                 facing = self._build_facing_action(i)
 
+                player_name = self.tracker.player_id_map.get(i, f"Player_{i}")
                 event = self.tracker.normalizer.create_event(
                     hand=self.tracker.current_hand,
-                    player_name=f"Player_{i}",
+                    player_name=player_name,
                     position=position,
                     action_type=parsed["action_type"],
                     amount=parsed.get("amount"),

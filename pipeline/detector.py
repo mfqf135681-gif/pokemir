@@ -36,6 +36,9 @@ class StateTracker:
         # Latest pot size (from _process_pot), attached to subsequent action events
         self.latest_pot_bb: float | None = None
 
+        # Per-hand seat_index → platform user-ID (OCR'd at hand-start; used as player_name for cross-hand stats)
+        self.player_id_map: dict[int, str] = {}
+
     @property
     def has_active_hand(self) -> bool:
         return self.current_hand is not None
@@ -109,6 +112,7 @@ class StateTracker:
         self._prev_action_texts.clear()
         self._prev_community_count = 0
         self.latest_pot_bb = None
+        self.player_id_map = {}
         logger.info(f"New hand started: {self.current_hand.id}")
         return self.current_hand
 

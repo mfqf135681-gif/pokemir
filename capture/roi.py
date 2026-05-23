@@ -56,6 +56,8 @@ class TableROIs:
                                              seat.button_indicator.width, seat.button_indicator.height)
             if seat.cards_area:
                 entry["cards"] = (seat.cards_area.left, seat.cards_area.top, seat.cards_area.width, seat.cards_area.height)
+            if seat.id_area:
+                entry["id"] = (seat.id_area.left, seat.id_area.top, seat.id_area.width, seat.id_area.height)
             result["seats"].append(entry)
         return result
 
@@ -76,6 +78,7 @@ class TableROIs:
                 stack_area=_tuple_to_roi(s["stack"], "seat_stack"),
                 button_indicator=_tuple_to_roi(s["button_indicator"], "seat_btn") if s.get("button_indicator") else None,
                 cards_area=_tuple_to_roi(s["cards"], "seat_cards") if s.get("cards") else None,
+                id_area=_tuple_to_roi(s["id"], "seat_id") if s.get("id") else None,
             )
             rois.seat_regions.append(seat)
         return rois
@@ -89,6 +92,7 @@ class SeatROI:
     stack_area: ROIRegion = None       # where chip count is displayed
     button_indicator: ROIRegion | None = None  # small area showing dealer button (D icon)
     cards_area: ROIRegion | None = None  # opponent hole cards (usually not visible)
+    id_area: ROIRegion | None = None   # platform stable user-ID display (digits); OCR'd at hand-start before any action obscures it
 
 
 class ROIManager:
