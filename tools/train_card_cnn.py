@@ -51,10 +51,17 @@ SUIT_TO_IDX = {s: i for i, s in enumerate(SUITS)}
 
 INPUT_H = 96
 INPUT_W = 64
+RARE_THRESHOLD = 2  # rank-suit classes with ≤ this many base fixtures get strong-aug + extra loss weight
 
 
 class CardDataset(Dataset):
-    """Loads fixture PNG + JSON pairs; applies augmentation N times per sample."""
+    """Loads fixture PNG + JSON pairs; applies augmentation N times per sample.
+
+    Rare-class handling (A + B improvements):
+    - rare_set = rank-suit combos with ≤ RARE_THRESHOLD base fixtures
+    - Per-sample is_rare flag returned for per-sample loss weighting (A)
+    - Strong augmentation transform applied to rare samples in train mode (B)
+    """
 
     def __init__(self, fixture_dir: Path, augmentations: int = 50, train: bool = True):
         self.train = train
@@ -73,25 +80,44 @@ class CardDataset(Dataset):
                 continue
             self.samples.append((png, rank, suit))
 
+        # Detect rare classes (sample count ≤ threshold) for class-weighted training (A)
+        # and stronger augmentation (B).
+        counts: dict[str, int] = {}
+        for _, r, s in self.samples:
+            counts[r + s] = counts.get(r + s, 0) + 1
+        self.rare_set = {k for k, v in counts.items() if v <= RARE_THRESHOLD}
+
         # Replicate each base sample N times so augmentation diversity creates virtual size.
         self.virtual = self.samples * augmentations if train else self.samples
 
-        if train:
-            self.tf = transforms.Compose([
-                transforms.Resize((INPUT_H + 16, INPUT_W + 12)),
-                transforms.RandomCrop((INPUT_H, INPUT_W)),
-                transforms.RandomRotation(degrees=5, fill=255),
-                transforms.ColorJitter(brightness=0.3, contrast=0.2, saturation=0.2, hue=0.03),
-                transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 1.0))], p=0.3),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
-        else:
-            self.tf = transforms.Compose([
-                transforms.Resize((INPUT_H, INPUT_W)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
+        # Normal augmentation (for well-represented classes)
+        self.tf_normal = transforms.Compose([
+            transforms.Resize((INPUT_H + 16, INPUT_W + 12)),
+            transforms.RandomCrop((INPUT_H, INPUT_W)),
+            transforms.RandomRotation(degrees=5, fill=255),
+            transforms.ColorJitter(brightness=0.3, contrast=0.2, saturation=0.2, hue=0.03),
+            transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 1.0))], p=0.3),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        # Strong augmentation for rare classes (B): bigger crops, more rotation,
+        # stronger color jitter, higher blur prob.
+        self.tf_strong = transforms.Compose([
+            transforms.Resize((INPUT_H + 24, INPUT_W + 20)),
+            transforms.RandomCrop((INPUT_H, INPUT_W)),
+            transforms.RandomRotation(degrees=10, fill=255),
+            transforms.ColorJitter(brightness=0.5, contrast=0.35, saturation=0.35, hue=0.06),
+            transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 1.5))], p=0.5),
+            transforms.RandomApply([transforms.RandomAffine(degrees=0, translate=(0.05, 0.05))], p=0.5),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        # Val/test: no augmentation
+        self.tf_val = transforms.Compose([
+            transforms.Resize((INPUT_H, INPUT_W)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
 
     def __len__(self):
         return len(self.virtual)
@@ -99,8 +125,15 @@ class CardDataset(Dataset):
     def __getitem__(self, idx):
         png, rank, suit = self.virtual[idx]
         img = Image.open(png).convert("RGB")
-        x = self.tf(img)
-        return x, RANK_TO_IDX[rank], SUIT_TO_IDX[suit]
+        key = rank + suit
+        is_rare = 1.0 if key in self.rare_set else 0.0
+        if not self.train:
+            x = self.tf_val(img)
+        elif is_rare:
+            x = self.tf_strong(img)
+        else:
+            x = self.tf_normal(img)
+        return x, RANK_TO_IDX[rank], SUIT_TO_IDX[suit], is_rare
 
 
 class CardCNN(nn.Module):
@@ -142,17 +175,24 @@ class CardCNN(nn.Module):
 def evaluate(model, loader, device):
     model.eval()
     correct_rank = correct_suit = correct_both = total = 0
+    correct_rare_both = total_rare = 0
     with torch.no_grad():
-        for x, yr, ys in loader:
-            x, yr, ys = x.to(device), yr.to(device), ys.to(device)
+        for x, yr, ys, ir in loader:
+            x, yr, ys, ir = x.to(device), yr.to(device), ys.to(device), ir.to(device)
             pr, ps = model(x)
             rr = pr.argmax(1)
             ss = ps.argmax(1)
+            both_mask = (rr == yr) & (ss == ys)
             correct_rank += (rr == yr).sum().item()
             correct_suit += (ss == ys).sum().item()
-            correct_both += ((rr == yr) & (ss == ys)).sum().item()
+            correct_both += both_mask.sum().item()
             total += yr.size(0)
-    return correct_rank / total, correct_suit / total, correct_both / total
+            # Rare-class breakdown
+            rare_mask = ir > 0.5
+            correct_rare_both += (both_mask & rare_mask).sum().item()
+            total_rare += rare_mask.sum().item()
+    rare_acc = (correct_rare_both / total_rare) if total_rare > 0 else None
+    return correct_rank / total, correct_suit / total, correct_both / total, rare_acc, total_rare
 
 
 def main() -> int:
@@ -165,6 +205,10 @@ def main() -> int:
     parser.add_argument("--val-frac", type=float, default=0.20,
                         help="Fraction of base fixtures held out for validation (non-augmented)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--rare-weight", type=float, default=5.0,
+                        help=f"Per-sample loss multiplier for rare classes "
+                             f"(rank-suit combos with ≤ {RARE_THRESHOLD} base fixtures). "
+                             f"1.0 = no extra weight. Default 5.0 = 5× loss on rare samples.")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -208,6 +252,12 @@ def main() -> int:
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
     print(f"Train batches: {len(train_loader)} (augmented={len(train_ds)})")
     print(f"Val batches:   {len(val_loader)} (samples={len(val_ds)})")
+    rare_in_train = {k for k in train_ds.rare_set if any(r + s == k for _, r, s in train_samples)}
+    rare_in_val = {k for k in val_ds.rare_set if any(r + s == k for _, r, s in val_samples)}
+    print(f"Rare classes (≤{RARE_THRESHOLD} base fixtures): {len(train_ds.rare_set)} total")
+    print(f"  in train split: {sorted(rare_in_train)}")
+    print(f"  in val split:   {sorted(rare_in_val)}")
+    print(f"Rare-sample loss weight: {args.rare_weight}×")
 
     model = CardCNN().to(device)
     n_params = sum(p.numel() for p in model.parameters())
@@ -215,17 +265,22 @@ def main() -> int:
 
     opt = optim.Adam(model.parameters(), lr=args.lr)
     sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
-    criterion = nn.CrossEntropyLoss()
+    # reduction='none' so we can multiply per-sample by rare-weight before averaging.
+    criterion = nn.CrossEntropyLoss(reduction='none')
 
     best_val = 0.0
     for epoch in range(1, args.epochs + 1):
         model.train()
         loss_acc = 0.0
         n = 0
-        for x, yr, ys in train_loader:
-            x, yr, ys = x.to(device), yr.to(device), ys.to(device)
+        for x, yr, ys, ir in train_loader:
+            x, yr, ys, ir = x.to(device), yr.to(device), ys.to(device), ir.to(device)
             pr, ps = model(x)
-            loss = criterion(pr, yr) + criterion(ps, ys)
+            # Per-sample loss * rare weight (rare samples get amplified gradient).
+            sample_w = 1.0 + (args.rare_weight - 1.0) * ir
+            loss_r = (criterion(pr, yr) * sample_w).mean()
+            loss_s = (criterion(ps, ys) * sample_w).mean()
+            loss = loss_r + loss_s
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -233,7 +288,7 @@ def main() -> int:
             n += x.size(0)
         sched.step()
         train_loss = loss_acc / max(1, n)
-        rank_acc, suit_acc, both_acc = evaluate(model, val_loader, device)
+        rank_acc, suit_acc, both_acc, rare_acc, n_rare = evaluate(model, val_loader, device)
         marker = ""
         if both_acc > best_val:
             best_val = both_acc
@@ -247,9 +302,10 @@ def main() -> int:
                 "val_both_acc": best_val,
             }, MODEL_OUT)
             marker = "  ✓ saved"
+        rare_str = f" rare={rare_acc:.2%}({n_rare})" if rare_acc is not None else ""
         print(f"Epoch {epoch:3d}/{args.epochs}  "
               f"train_loss={train_loss:.4f}  "
-              f"val rank={rank_acc:.2%} suit={suit_acc:.2%} both={both_acc:.2%}{marker}")
+              f"val rank={rank_acc:.2%} suit={suit_acc:.2%} both={both_acc:.2%}{rare_str}{marker}")
 
     print(f"\nBest val both-acc: {best_val:.2%}")
     print(f"Saved: {MODEL_OUT}")
