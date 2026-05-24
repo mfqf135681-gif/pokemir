@@ -172,25 +172,31 @@ class CardCNN(nn.Module):
         return self.rank_head(h), self.suit_head(h)
 
 
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, use_amp=False, amp_dtype=None):
     model.eval()
     correct_rank = correct_suit = correct_both = total = 0
     correct_rare_both = total_rare = 0
+    if amp_dtype is None:
+        amp_dtype = torch.float32
     with torch.no_grad():
-        for x, yr, ys, ir in loader:
-            x, yr, ys, ir = x.to(device), yr.to(device), ys.to(device), ir.to(device)
-            pr, ps = model(x)
-            rr = pr.argmax(1)
-            ss = ps.argmax(1)
-            both_mask = (rr == yr) & (ss == ys)
-            correct_rank += (rr == yr).sum().item()
-            correct_suit += (ss == ys).sum().item()
-            correct_both += both_mask.sum().item()
-            total += yr.size(0)
-            # Rare-class breakdown
-            rare_mask = ir > 0.5
-            correct_rare_both += (both_mask & rare_mask).sum().item()
-            total_rare += rare_mask.sum().item()
+        with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+            for x, yr, ys, ir in loader:
+                x = x.to(device, non_blocking=True)
+                yr = yr.to(device, non_blocking=True)
+                ys = ys.to(device, non_blocking=True)
+                ir = ir.to(device, non_blocking=True)
+                pr, ps = model(x)
+                rr = pr.argmax(1)
+                ss = ps.argmax(1)
+                both_mask = (rr == yr) & (ss == ys)
+                correct_rank += (rr == yr).sum().item()
+                correct_suit += (ss == ys).sum().item()
+                correct_both += both_mask.sum().item()
+                total += yr.size(0)
+                # Rare-class breakdown
+                rare_mask = ir > 0.5
+                correct_rare_both += (both_mask & rare_mask).sum().item()
+                total_rare += rare_mask.sum().item()
     rare_acc = (correct_rare_both / total_rare) if total_rare > 0 else None
     return correct_rank / total, correct_suit / total, correct_both / total, rare_acc, total_rare
 
@@ -200,7 +206,8 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--augmentations", type=int, default=50,
                         help="Virtual replication of base fixtures via augmentation")
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=64,
+                        help="Mini-batch size. With small model + GPU can go to 128/256.")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--val-frac", type=float, default=0.20,
                         help="Fraction of base fixtures held out for validation (non-augmented)")
@@ -209,6 +216,13 @@ def main() -> int:
                         help=f"Per-sample loss multiplier for rare classes "
                              f"(rank-suit combos with ≤ {RARE_THRESHOLD} base fixtures). "
                              f"1.0 = no extra weight. Default 5.0 = 5× loss on rare samples.")
+    parser.add_argument("--num-workers", type=int, default=4,
+                        help="DataLoader worker processes for parallel augmentation. "
+                             "0 = single-thread (CPU augment blocks GPU). "
+                             "4 default fits most GPUs; bump to 8 on beefy CPUs.")
+    parser.add_argument("--amp", choices=("auto", "on", "off"), default="auto",
+                        help="Mixed-precision training (bf16 on GPU). "
+                             "'auto' enables on CUDA, disables on CPU. Speeds GPU 1.5-2×.")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -248,8 +262,25 @@ def main() -> int:
     val_ds.samples = val_samples
     val_ds.virtual = val_samples
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    # GPU utilization tuning
+    use_cuda = (device.type == "cuda")
+    pin_mem = use_cuda
+    persistent = (args.num_workers > 0)
+    use_amp = (args.amp == "on") or (args.amp == "auto" and use_cuda)
+    amp_dtype = torch.bfloat16 if use_amp else torch.float32
+    print(f"GPU tuning: num_workers={args.num_workers}  pin_memory={pin_mem}  "
+          f"persistent_workers={persistent}  amp={use_amp} (dtype={amp_dtype})")
+
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True,
+        num_workers=args.num_workers, pin_memory=pin_mem,
+        persistent_workers=persistent,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.num_workers, pin_memory=pin_mem,
+        persistent_workers=persistent,
+    )
     print(f"Train batches: {len(train_loader)} (augmented={len(train_ds)})")
     print(f"Val batches:   {len(val_loader)} (samples={len(val_ds)})")
     rare_in_train = {k for k in train_ds.rare_set if any(r + s == k for _, r, s in train_samples)}
@@ -274,13 +305,17 @@ def main() -> int:
         loss_acc = 0.0
         n = 0
         for x, yr, ys, ir in train_loader:
-            x, yr, ys, ir = x.to(device), yr.to(device), ys.to(device), ir.to(device)
-            pr, ps = model(x)
-            # Per-sample loss * rare weight (rare samples get amplified gradient).
-            sample_w = 1.0 + (args.rare_weight - 1.0) * ir
-            loss_r = (criterion(pr, yr) * sample_w).mean()
-            loss_s = (criterion(ps, ys) * sample_w).mean()
-            loss = loss_r + loss_s
+            x = x.to(device, non_blocking=True)
+            yr = yr.to(device, non_blocking=True)
+            ys = ys.to(device, non_blocking=True)
+            ir = ir.to(device, non_blocking=True)
+            with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                pr, ps = model(x)
+                # Per-sample loss * rare weight (rare samples get amplified gradient).
+                sample_w = 1.0 + (args.rare_weight - 1.0) * ir
+                loss_r = (criterion(pr, yr) * sample_w).mean()
+                loss_s = (criterion(ps, ys) * sample_w).mean()
+                loss = loss_r + loss_s
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -288,7 +323,7 @@ def main() -> int:
             n += x.size(0)
         sched.step()
         train_loss = loss_acc / max(1, n)
-        rank_acc, suit_acc, both_acc, rare_acc, n_rare = evaluate(model, val_loader, device)
+        rank_acc, suit_acc, both_acc, rare_acc, n_rare = evaluate(model, val_loader, device, use_amp, amp_dtype)
         marker = ""
         if both_acc > best_val:
             best_val = both_acc
