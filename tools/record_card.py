@@ -4,16 +4,22 @@ Usage (Win PowerShell):
     .\\.venv\\Scripts\\python.exe tools\\record_card.py
     .\\.venv\\Scripts\\python.exe tools\\record_card.py --profile party_poker --source pm
 
-Reads hero_card_1 + hero_card_2 ROIs from the named profile, captures them
-on Enter, prompts for rank/suit, and writes <rank><suit>_<source>_<NNN>.{png,json}
-pairs into tests/fixtures/cards/ per the fixture format in _README.md.
+Reads all single-card ROIs from the named profile (hero_card_1 + hero_card_2
++ each individually-configured community card slot), captures them on Enter,
+prompts for rank/suit per non-blank ROI, and writes
+<rank><suit>_<source>_<NNN>.{png,json} pairs into tests/fixtures/cards/
+per the fixture format in _README.md.
 
-Hero cards only — community card single-card splitting is deferred until
-`_split_card_regions` (recognition/cards.py) is fixed.
+Use cases:
+  - Hero cards: record at hand-start; works during real play
+  - Community cards: record after flop / turn / river is revealed; works even
+    while spectating (no real-money cost, no fold-state brightness variance,
+    3-5 cards visible per hand). Requires community ROIs configured
+    individually (not a single horizontal strip).
 
 Red line compliance:
   R-1: pure screenshot via mss; no input injection / memory access / network.
-  R-3: ROIs are small (~50×100 px), physically cannot include nicknames/chat.
+  R-3: ROIs are small (~50-110 px), physically cannot include nicknames/chat.
   R-9: only uses ScreenCapturer.capture_roi (never capture_raw).
 """
 
@@ -148,19 +154,28 @@ def main() -> int:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Build single-card ROI list: hero_1/2 + each configured community card.
+    # Community cards (when configured individually in ROI profile) appear here
+    # as separate ROIRegion entries. This lets observer / non-playing sessions
+    # record fixtures from publicly-visible community cards too — same renderer
+    # as hero, more cards per hand (3-5 per flop/turn/river).
+    single_card_rois = [rois.hero_card_1, rois.hero_card_2] + list(rois.community_cards)
+
     print()
     print(f"Fixture 录制启动")
     print(f"  profile : {args.profile}")
     print(f"  source  : {args.source}")
     print(f"  out dir : {args.out_dir}")
-    print(f"  hero ROI: {rois.hero_card_1.width}×{rois.hero_card_1.height}"
-          f" / {rois.hero_card_2.width}×{rois.hero_card_2.height}")
+    print(f"  ROIs    : {len(single_card_rois)} 个（hero ×2 + community ×{len(rois.community_cards)}）")
+    for roi in single_card_rois:
+        print(f"     · {roi.name}: {roi.width}×{roi.height}")
     print()
     print("操作:")
-    print("  - 在牌桌摆好 hero 卡 → 按 Enter 截图")
-    print("  - 每张截到的卡，输入 'rank suit'（例: 'A h' / 'T s'）或 's' 跳过")
-    print("  - rank: 2-9 / T / J / Q / K / A")
-    print("  - suit: s(黑桃) / h(红心) / d(方块) / c(梅花)")
+    print("  - 在牌桌摆好你想录的卡 → 按 Enter 截图（脚本逐 ROI 处理）")
+    print("  - hero 卡：发牌瞬间录（包括弃牌后暗态都行）")
+    print("  - 公共牌：flop/turn/river 出现后整局都可录；观战也行（无 ToS 风险）")
+    print("  - 每张非空区会 prompt 你输入 'rank suit'（例: 'A h' / 'T s'）或 's' 跳过")
+    print("  - rank: 2-9 / T / J / Q / K / A    suit: s(黑桃) / h(红心) / d(方块) / c(梅花)")
     print("  - 全部录完，输入 'q' 退出")
     print()
 
@@ -171,7 +186,9 @@ def main() -> int:
             if cmd.lower() == "q":
                 break
 
-            for roi in (rois.hero_card_1, rois.hero_card_2):
+            for roi in single_card_rois:
+                if roi is None or roi.width == 0 or roi.height == 0:
+                    continue
                 img = capturer.capture_roi(roi)
                 if looks_blank(img):
                     print(f"  · {roi.name}: 空白区，跳过")
