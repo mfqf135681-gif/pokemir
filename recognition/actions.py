@@ -54,6 +54,7 @@ class ActionRecognizer:
 
         return None
 
-    def _extract_amount(self, text: str) -> Optional[float]:
-        m = self.AMOUNT_RE.search(text)
+    @staticmethod
+    def _extract_amount(text: str) -> Optional[float]:
+        m = ActionRecognizer.AMOUNT_RE.search(text)
         return float(m.group(1)) if m else None

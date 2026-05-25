@@ -57,7 +57,28 @@ class PipelineOrchestrator:
         self.hand_repo = HandRepository()
         self.event_repo = ActionEventRepository()
 
+        # Auto-detect PG availability at startup; falls back to "no-db" mode
+        # if unreachable (lets smoke testing proceed without forcing PG setup).
+        self._db_enabled = self._probe_db()
+        if not self._db_enabled:
+            logger.warning(
+                "PostgreSQL unreachable — running in NO-DB mode. "
+                "Pipeline will identify cards/actions but **not persist** to DB. "
+                "Configure PG (see docs/dev-workflow.md) when ready for real data."
+            )
+
         self.running = False
+
+    def _probe_db(self) -> bool:
+        """Test DB engine can connect; return False on any failure."""
+        try:
+            from storage.database import engine
+            with engine.connect():
+                pass
+            return True
+        except Exception as exc:
+            logger.debug(f"DB probe failed: {type(exc).__name__}")
+            return False
 
     def start(self):
         """Run the main capture loop."""
@@ -80,7 +101,7 @@ class PipelineOrchestrator:
 
     def _tick(self):
         rois = self.roi_manager.rois
-        db = SessionLocal()
+        db = SessionLocal() if self._db_enabled else None
 
         try:
             # 1. Capture hero cards
@@ -108,12 +129,15 @@ class PipelineOrchestrator:
             if self.tracker.has_active_hand:
                 self._process_pot(db, rois)
 
-            db.commit()
+            if db is not None:
+                db.commit()
         except Exception:
             logger.error("Tick failed", exc_info=True)
-            db.rollback()
+            if db is not None:
+                db.rollback()
         finally:
-            db.close()
+            if db is not None:
+                db.close()
 
     # ── Hand lifecycle ────────────────────────────────────
 
@@ -147,7 +171,8 @@ class PipelineOrchestrator:
             Position(v): self.tracker.player_id_map.get(k, f"Player_{k}")
             for k, v in self.tracker._position_map.items()
         }
-        self.hand_repo.create(db, hand)
+        if db is not None:
+            self.hand_repo.create(db, hand)
         logger.info(f"Hand {hand.id} — hero: {hand.hero_cards} — ids: {self.tracker.player_id_map}")
 
     def _capture_player_ids(self):
@@ -168,7 +193,7 @@ class PipelineOrchestrator:
 
     def _end_current_hand(self, db):
         hand = self.tracker.finalize_hand()
-        if hand:
+        if hand and db is not None:
             self.hand_repo.update(db, hand)
 
     # ── Community cards ───────────────────────────────────
@@ -190,7 +215,8 @@ class PipelineOrchestrator:
             street = self.tracker.normalizer._current_street
             if street.value not in hand.community_cards:
                 hand.community_cards[street] = all_cards
-                self.hand_repo.update(db, hand)
+                if db is not None:
+                    self.hand_repo.update(db, hand)
                 logger.info(f"Street {street.value}: {all_cards}")
 
     # ── Seat actions ──────────────────────────────────────
@@ -236,7 +262,8 @@ class PipelineOrchestrator:
                 if self.tracker.latest_pot_bb is not None:
                     event.pot_size_bb = self.tracker.latest_pot_bb
 
-                self.event_repo.create(db, event)
+                if db is not None:
+                    self.event_repo.create(db, event)
                 logger.info(
                     f"Action: {event.player_name}({position.value}) "
                     f"{event.action_type.value} {event.amount or ''} [{event.street.value}]"
@@ -288,11 +315,13 @@ class PipelineOrchestrator:
         return None
 
     def _shutdown(self):
-        db = SessionLocal()
+        db = SessionLocal() if self._db_enabled else None
         try:
             if self.tracker.has_active_hand:
                 self._end_current_hand(db)
-                db.commit()
+                if db is not None:
+                    db.commit()
         finally:
-            db.close()
+            if db is not None:
+                db.close()
         logger.info("Pipeline shutdown complete")
