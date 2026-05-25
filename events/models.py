@@ -81,3 +81,4 @@ class Hand:
     id: UUID = field(default_factory=uuid4)
     result: Optional[dict] = None            # {"win_loss": 15.5, "showdown": true, ...}
     raw_data: Optional[dict] = None
+    pot_size_final: Optional[float] = None   # final pot size at hand end (from pot_size ROI OCR)

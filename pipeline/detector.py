@@ -145,9 +145,10 @@ class StateTracker:
         if self.current_hand is None:
             return None
         self.current_hand.ended_at = datetime.now(timezone.utc)
+        self.current_hand.pot_size_final = self.latest_pot_bb
         hand = self.current_hand
         self.current_hand = None
-        logger.info(f"Hand ended: {hand.id}")
+        logger.info(f"Hand ended: {hand.id} (pot={hand.pot_size_final})")
         return hand
 
     # ── Position mapping ──────────────────────────────────

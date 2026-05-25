@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS hands (
     result          JSONB,                  -- {"win_loss":15.5,"showdown":true,...}
     raw_data        JSONB,                  -- extensibility
 
+    pot_size_final  DOUBLE PRECISION,       -- final pot size at hand end (from pot_size ROI OCR)
+
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

@@ -29,6 +29,7 @@ class HandModel(Base):
     ended_at = Column(DateTime(timezone=True))
     result = Column(JSONB)
     raw_data = Column(JSONB)
+    pot_size_final = Column(Float)
     created_at = Column(DateTime(timezone=True), server_default="now()")
 
     action_events = relationship(

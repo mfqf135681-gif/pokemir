@@ -37,6 +37,7 @@ class HandRepository:
         model.ended_at = hand.ended_at
         model.result = hand.result
         model.raw_data = hand.raw_data
+        model.pot_size_final = hand.pot_size_final
         session.commit()
         return model
 
