@@ -31,7 +31,7 @@ CAPTURE_INTERVAL_MS = int(os.getenv("POKEMIR_CAPTURE_INTERVAL_MS", "500"))
 
 # ── ROI ──────────────────────────────────────────────────
 ROI_CONFIG_DIR = os.getenv("POKEMIR_ROI_DIR", "./rois")
-ROI_PROFILE = os.getenv("POKEMIR_ROI_PROFILE", "default")
+ROI_PROFILE = os.getenv("POKEMIR_ROI_PROFILE", "party_poker")
 
 # ── Stats ─────────────────────────────────────────────────
 ROLLING_WINDOW_HANDS = int(os.getenv("POKEMIR_ROLLING_WINDOW", "50"))
