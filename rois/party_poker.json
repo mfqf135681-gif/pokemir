@@ -1,31 +1,50 @@
 {
   "name": "party_poker",
-  "window_title": "WePoker",
+  "num_seats": 6,
+  "window_title": "WePoker\u7f51\u9875\u7248\uff5c\u514d\u4e0b\u8f7d\u5feb\u901f\u8fdb\u5165 - Google Chrome",
   "resolution": [
     1454,
-    848
+    1287
   ],
-  "hero_card_1": [
-    674,
-    601,
-    53,
-    98
-  ],
-  "hero_card_2": [
-    732,
-    615,
-    47,
-    68
-  ],
+  "hero_card_1": null,
+  "hero_card_2": null,
   "community_cards": [
     [
-      470,
-      392,
-      544,
-      136
+      568,
+      605,
+      61,
+      92
+    ],
+    [
+      632,
+      605,
+      61,
+      89
+    ],
+    [
+      697,
+      606,
+      61,
+      90
+    ],
+    [
+      763,
+      606,
+      59,
+      91
+    ],
+    [
+      827,
+      606,
+      62,
+      91
     ]
   ],
-  "pot_size": null,
-  "button_roi": null,
+  "pot_size": [
+    656,
+    430,
+    148,
+    32
+  ],
   "seats": []
 }
