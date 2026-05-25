@@ -59,12 +59,25 @@ def select_roi(window_name: str, img: np.ndarray) -> tuple | None:
     return (x, y, w, h)
 
 
+VALID_FIELDS = {"hero_card_1", "hero_card_2", "pot_size"} | {
+    f"community_{i}" for i in range(1, 6)
+}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Poker ROI Configuration Tool")
     parser.add_argument("--name", default="default", help="Profile name (default: default)")
     parser.add_argument("--seats", type=int, default=6, help="Number of seats (6 or 9, default: 6)")
     parser.add_argument("--window", default="", help="Window title substring to find (e.g. 'Poker' or 'GGPoker')")
     parser.add_argument("--verify", action="store_true", help="Preview existing ROI config")
+    parser.add_argument(
+        "--field",
+        default=None,
+        choices=sorted(VALID_FIELDS),
+        help="Incremental mode: configure ONE field in the existing profile and "
+             "merge with the rest. Avoids the 'roi_config wipes everything else' "
+             "footgun. Example: --field pot_size. Profile file must already exist.",
+    )
     args = parser.parse_args()
 
     capturer = ScreenCapturer()
@@ -125,6 +138,37 @@ def main():
     full = capturer.capture()
     img = cv2.cvtColor(full, cv2.COLOR_BGRA2BGR)
     print(f"  Resolution: {img.shape[1]}x{img.shape[0]}\n")
+
+    # ── Incremental --field mode ─────────────────────────
+    if args.field:
+        if not output_path.exists():
+            print(f"ERROR: {output_path} not found. --field requires an existing profile.")
+            return 1
+        with open(output_path) as f:
+            existing = json.load(f)
+        print(f"Loaded existing profile {output_path.name}")
+        print(f"Configuring only: {args.field}")
+        prompt = f"{args.field.replace('_', ' ').title()} — drag rect, SPACE to confirm, C to skip"
+        rect = select_roi(prompt, img)
+        if rect is None:
+            print(f"Skipped — {args.field} not changed.")
+            cv2.destroyAllWindows()
+            return 0
+        if args.field.startswith("community_"):
+            idx = int(args.field.split("_")[1]) - 1  # community_1 → index 0
+            cc = existing.get("community_cards") or []
+            while len(cc) <= idx:
+                cc.append(None)
+            cc[idx] = list(rect)
+            existing["community_cards"] = cc
+        else:
+            existing[args.field] = list(rect)
+        cv2.destroyAllWindows()
+        with open(output_path, "w") as f:
+            json.dump(existing, f, indent=2)
+        print(f"\n{args.field} updated in {output_path}")
+        print(f"Verify with: python tools/roi_config.py --verify --name {args.name}")
+        return 0
 
     # ── Select ROIs ──────────────────────────────────────
     print("For each ROI, drag a rectangle and press SPACE to confirm.")

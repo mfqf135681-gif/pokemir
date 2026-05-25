@@ -91,15 +91,28 @@ class StateTracker:
 
     # ── Community card detection ──────────────────────────
 
+    # Canonical poker community counts: 0=preflop, 3=flop, 4=turn, 5=river.
+    # Counts 1 and 2 only occur as flop-dealing-animation artifacts and
+    # are filtered out of street-change logs (still tracked internally).
+    _CANONICAL_COUNTS = frozenset({0, 3, 4, 5})
+
     def check_community_change(self, card_texts: list[str]) -> bool:
-        """Return True if community cards changed (street advance)."""
+        """Return True if community cards changed to a canonical street state.
+
+        Internal count is always updated to reflect reality (so the
+        community_just_reset signal works), but the public return value
+        only fires on transitions into {0, 3, 4, 5} — avoiding misleading
+        "Street preflop: ['6s']" lines mid-flop-animation.
+        """
         count = len([c for c in card_texts if c])
         prev = self._prev_community_count
         if count != prev:
             self._prev_community_count = count
             self._community_just_reset = (prev > 0 and count == 0)
-            self.normalizer.set_community_card_count(count)
-            return True
+            if count in self._CANONICAL_COUNTS:
+                self.normalizer.set_community_card_count(count)
+                return True
+            return False
         self._community_just_reset = False
         return False
 
