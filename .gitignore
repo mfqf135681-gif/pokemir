@@ -29,7 +29,13 @@ env/
 Thumbs.db
 
 # Project-specific
-models/                  # HuggingFace / ONNX model cache (machine-specific)
-tests/output/            # screenshots saved by test_capture
-tests/fixtures/_pending/ # un-vetted fixture captures (Win side)
+# NB: trailing comments on a pattern line are taken as part of the pattern.
+# Always put comments on a SEPARATE line above the pattern.
+
+# HuggingFace / ONNX model cache (machine-specific)
+models/
+# screenshots saved by test_capture
+tests/output/
+# un-vetted fixture captures (Win side)
+tests/fixtures/_pending/
 *.log
