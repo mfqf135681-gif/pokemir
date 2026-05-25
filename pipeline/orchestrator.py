@@ -247,7 +247,10 @@ class PipelineOrchestrator:
                 hand.community_cards[street] = all_cards
                 if db is not None:
                     self.hand_repo.update(db, hand)
-                logger.info(f"Street {street.value}: {all_cards}")
+                # Suppress "Street preflop: []" — that's redundant with the
+                # "Community reset detected" log right after.
+                if all_cards:
+                    logger.info(f"Street {street.value}: {all_cards}")
 
     # ── Seat actions ──────────────────────────────────────
 
@@ -304,7 +307,8 @@ class PipelineOrchestrator:
         pot_img = self.capturer.capture_roi(rois.pot_size)
         pot_text = self.ocr.read_text(pot_img)
         amount = ActionRecognizer._extract_amount(pot_text)
-        if amount is not None:
+        if amount is not None and amount != self.tracker.latest_pot_bb:
+            logger.info(f"Pot: {amount} (was {self.tracker.latest_pot_bb})")
             self.tracker.latest_pot_bb = amount
 
     # ── Helpers ───────────────────────────────────────────
