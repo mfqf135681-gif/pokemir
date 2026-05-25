@@ -28,8 +28,11 @@ class OCREngine:
         os.makedirs(EASYOCR_MODEL_DIR, exist_ok=True)
         user_network_dir = os.path.join(EASYOCR_MODEL_DIR, "user_network")
         os.makedirs(user_network_dir, exist_ok=True)
+        # 'ch_sim' enables WePoker Chinese action text (跟注/加注/弃牌/...);
+        # 'en' kept for card rank glyphs + numeric amounts. First-time loading
+        # auto-downloads ~50MB ch_sim model to POKEMIR_EASYOCR_DIR (.cache/easyocr/).
         self._reader = easyocr.Reader(
-            ["en"],
+            ["ch_sim", "en"],
             gpu=self._gpu,
             model_storage_directory=EASYOCR_MODEL_DIR,
             user_network_directory=user_network_dir,
