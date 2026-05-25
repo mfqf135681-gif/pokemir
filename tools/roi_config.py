@@ -62,7 +62,7 @@ def select_roi(window_name: str, img: np.ndarray) -> tuple | None:
 VALID_FIELDS = {"hero_card_1", "hero_card_2", "pot_size"} | {
     f"community_{i}" for i in range(1, 6)
 } | {
-    f"seat_{i}" for i in range(6)
+    f"seat_{i}" for i in range(9)
 }
 
 
