@@ -65,6 +65,19 @@ VALID_FIELDS = {"hero_card_1", "hero_card_2", "pot_size"} | {
     f"seat_{i}" for i in range(9)
 }
 
+# Per-seat sub-element names for --element flag. Order matches the full-seat prompt order.
+# REQUIRED_SEAT_ELEMENTS = {action, stack} — final-save validation refuses entries lacking these.
+SEAT_ELEMENT_ORDER = ["action", "fold_area", "stack", "button_indicator", "cards", "id"]
+REQUIRED_SEAT_ELEMENTS = {"action", "stack"}
+ELEMENT_HINTS = {
+    "action": "头像上方,玩家行动时显示「跟注/加注/下注/过牌」文字(空闲时此位置显示玩家 ID)",
+    "fold_area": "头像正中,玩家弃牌时显示「弃牌」两字 + 头像变灰(独立于上方动作区)",
+    "stack": "头像下方的筹码量数字",
+    "button_indicator": "头像旁的 D 按钮(轮换 dealer 标志);ESC 可跳过",
+    "cards": "对手底牌区(showdown 时偶现可见);ESC 可跳过",
+    "id": "玩家 ID 数字 — WePoker 中与 action 同像素,直接框跟 action 一模一样的区域;ESC 可跳过(将来 hand-start 缓存 ID)",
+}
+
 
 def main():
     parser = argparse.ArgumentParser(description="Poker ROI Configuration Tool")
@@ -79,6 +92,15 @@ def main():
         help="Incremental mode: configure ONE field in the existing profile and "
              "merge with the rest. Avoids the 'roi_config wipes everything else' "
              "footgun. Example: --field pot_size. Profile file must already exist.",
+    )
+    parser.add_argument(
+        "--element",
+        default=None,
+        choices=SEAT_ELEMENT_ORDER,
+        help=("Used with --field seat_N: pick ONE sub-ROI to (re)frame this run. "
+              "Example: --field seat_4 --element fold_area. Without --element, all "
+              "6 seat ROIs are prompted in sequence. Existing values for un-prompted "
+              "ROIs are preserved."),
     )
     args = parser.parse_args()
 
@@ -151,50 +173,69 @@ def main():
         print(f"Loaded existing profile {output_path.name}")
         print(f"Configuring only: {args.field}")
 
-        # seat_N: collect 5 ROIs (action / stack / button_indicator / cards / id) in one invocation.
-        # Existing seat with same seat_index is replaced; otherwise appended.
+        # seat_N: collect ALL 6 sub-ROIs OR just one (with --element).
+        # Existing seat with same seat_index is merged element-by-element: an
+        # un-prompted element keeps its previous value, while a prompted-but-ESC'd
+        # element is also preserved (NOT cleared) — multi-pass workflow friendly.
         if args.field.startswith("seat_"):
             idx = int(args.field.split("_")[1])
-            print(f"\n--- Seat {idx}: 5 ROIs (ESC/C to skip individual ones) ---")
-            action_rect = select_roi(f"Seat {idx} — Action Text (FOLD/CHECK/CALL/BET/跟注/加注/弃牌)", img)
-            stack_rect = select_roi(f"Seat {idx} — Stack Amount", img)
-            btn_rect = select_roi(f"Seat {idx} — Button Indicator (small 'D' icon area; ESC to skip)", img)
-            cards_rect = select_roi(f"Seat {idx} — Cards Area (optional showdown reveal; ESC to skip)", img)
-            id_rect = select_roi(f"Seat {idx} — User ID (platform digit ID; ESC to skip)", img)
 
-            if not action_rect or not stack_rect:
-                # Both are required: capture/roi.py from_dict() calls
-                # _tuple_to_roi(s["action"], ...) and s["stack"] unconditionally,
-                # so a half-configured seat would crash pipeline load.
-                print(f"Skipped — seat_{idx} requires BOTH action AND stack ROIs; nothing changed.")
+            # Find pre-existing entry for this seat_index, if any
+            seats = existing.get("seats") or []
+            prev_entry = None
+            prev_idx_in_list = None
+            for i, s in enumerate(seats):
+                if s.get("seat_index") == idx:
+                    prev_entry = s
+                    prev_idx_in_list = i
+                    break
+
+            elements_to_prompt = [args.element] if args.element else SEAT_ELEMENT_ORDER
+
+            print(f"\n{'=' * 56}")
+            print(f"  SEAT {idx}: framing {len(elements_to_prompt)} element"
+                  f"{'' if len(elements_to_prompt) == 1 else 's'}"
+                  f" — un-prompted elements keep existing values")
+            print(f"{'=' * 56}")
+
+            captured = {}
+            for elem in elements_to_prompt:
+                print(f"\n▶ NOW FRAMING:  seat_{idx} → {elem.upper()}")
+                print(f"  位置说明:    {ELEMENT_HINTS[elem]}")
+                print(f"  操作:        鼠标拖框 → 按 SPACE 确认 / 按 ESC 跳过(保留旧值)")
+                rect = select_roi(f"seat_{idx} — {elem}", img)
+                captured[elem] = rect  # None if ESC
+
+            # Build final entry merging captured + prev_entry
+            # Schema keys in JSON differ slightly: action / fold_area / stack / button_indicator / cards / id
+            seat_entry = dict(prev_entry) if prev_entry else {"seat_index": idx}
+            for elem in elements_to_prompt:
+                if captured[elem] is not None:
+                    seat_entry[elem] = list(captured[elem])
+                # else: keep whatever prev_entry had (or leave absent if new entry)
+
+            # Validate: action + stack required (capture/roi.py from_dict crashes otherwise)
+            missing = [e for e in REQUIRED_SEAT_ELEMENTS if not seat_entry.get(e)]
+            if missing:
+                print(f"\n⚠️  Not saved — seat_{idx} still missing required ROI(s): {missing}")
+                print(f"   Run again with --element <name> to fill them in.")
                 cv2.destroyAllWindows()
                 return 0
 
-            seat_entry = {
-                "seat_index": idx,
-                "action": list(action_rect) if action_rect else None,
-                "stack": list(stack_rect) if stack_rect else None,
-                "button_indicator": list(btn_rect) if btn_rect else None,
-                "cards": list(cards_rect) if cards_rect else None,
-                "id": list(id_rect) if id_rect else None,
-            }
-            seats = existing.get("seats") or []
             # Replace existing by seat_index, else append
-            replaced = False
-            for i, s in enumerate(seats):
-                if s.get("seat_index") == idx:
-                    seats[i] = seat_entry
-                    replaced = True
-                    break
-            if not replaced:
+            if prev_idx_in_list is not None:
+                seats[prev_idx_in_list] = seat_entry
+                verb = "updated"
+            else:
                 seats.append(seat_entry)
+                verb = "added"
             seats.sort(key=lambda s: s.get("seat_index", 0))
             existing["seats"] = seats
             cv2.destroyAllWindows()
             with open(output_path, "w") as f:
                 json.dump(existing, f, indent=2)
-            print(f"\nseat_{idx} {'updated' if replaced else 'added'} in {output_path}")
-            print(f"  action={bool(action_rect)} stack={bool(stack_rect)} button={bool(btn_rect)} cards={bool(cards_rect)} id={bool(id_rect)}")
+            print(f"\n✓ seat_{idx} {verb} in {output_path}")
+            print(f"  configured: {[k for k in SEAT_ELEMENT_ORDER if seat_entry.get(k)]}")
             print(f"Verify with: python tools/roi_config.py --verify --name {args.name}")
             return 0
 
@@ -246,25 +287,22 @@ def main():
         else:
             result[key] = rect
 
-    # Per-seat ROIs
+    # Per-seat ROIs (full setup path — 6 elements per seat)
     seat_labels = _get_seat_labels(args.seats)
     for i, seat_name in enumerate(seat_labels):
         print(f"\n--- {seat_name} ---")
-        action_rect = select_roi(f"Seat {i} — Action Text (FOLD/CHECK/CALL/BET)", img)
-        stack_rect = select_roi(f"Seat {i} — Stack Amount", img)
-        btn_rect = select_roi(f"Seat {i} — Button Indicator (small 'D' icon area, ESC to skip)", img)
-        cards_rect = select_roi(f"Seat {i} — Cards Area (optional, ESC to skip)", img)
-        id_rect = select_roi(f"Seat {i} — User ID (platform digit ID; ESC to skip)", img)
+        rects = {}
+        for elem in SEAT_ELEMENT_ORDER:
+            print(f"\n▶ seat_{i} → {elem.upper()}   {ELEMENT_HINTS[elem]}")
+            rects[elem] = select_roi(f"seat_{i} — {elem}", img)
 
-        if action_rect or stack_rect:
-            result["seats"].append({
-                "seat_index": i,
-                "action": action_rect,
-                "stack": stack_rect,
-                "button_indicator": btn_rect,
-                "cards": cards_rect,
-                "id": id_rect,
-            })
+        # Save only if action + stack present (required for pipeline load)
+        if rects.get("action") and rects.get("stack"):
+            entry = {"seat_index": i, "action": rects["action"], "stack": rects["stack"]}
+            for opt in ("fold_area", "button_indicator", "cards", "id"):
+                if rects.get(opt):
+                    entry[opt] = rects[opt]
+            result["seats"].append(entry)
 
     # ── Save ─────────────────────────────────────────────
     cv2.destroyAllWindows()
@@ -287,6 +325,7 @@ def _draw_rois(img: np.ndarray, data: dict):
         "pot": (0, 255, 255),      # yellow
         "button": (255, 0, 255),   # magenta
         "seat": (0, 165, 255),     # orange
+        "fold": (0, 0, 255),       # red — emphasises fold_area distinct from action
     }
 
     def draw_rect(tup, color, label=""):
@@ -307,6 +346,7 @@ def _draw_rois(img: np.ndarray, data: dict):
     for s in data.get("seats", []):
         label = f"Seat {s.get('seat_index', '?')}"
         draw_rect(s.get("action"), colors["seat"], label)
+        draw_rect(s.get("fold_area"), colors["fold"], "FOLD" if s.get("fold_area") else "")
         draw_rect(s.get("stack"), colors["seat"])
         draw_rect(s.get("cards"), colors["seat"])
         draw_rect(s.get("button_indicator"), colors["button"], "BTN?" if s.get("button_indicator") else "")

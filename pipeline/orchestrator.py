@@ -256,8 +256,19 @@ class PipelineOrchestrator:
 
     def _process_seat_actions(self, db, rois):
         for i, seat_roi in enumerate(rois.seat_regions):
-            action_img = self.capturer.capture_roi(seat_roi.action_area)
-            action_text = self.ocr.read_text(action_img)
+            # Priority: check fold_area first — WePoker shows "弃牌" at avatar center
+            # (separate pixel zone from action_area which is above the avatar). If a fold
+            # is detected here, skip the action_area read for this tick.
+            action_text = None
+            if seat_roi.fold_area is not None:
+                fold_img = self.capturer.capture_roi(seat_roi.fold_area)
+                fold_text = self.ocr.read_text(fold_img)
+                if fold_text and "弃牌" in fold_text:
+                    action_text = fold_text
+
+            if action_text is None:
+                action_img = self.capturer.capture_roi(seat_roi.action_area)
+                action_text = self.ocr.read_text(action_img)
 
             if not action_text:
                 continue
