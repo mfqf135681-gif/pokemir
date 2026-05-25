@@ -61,6 +61,8 @@ def select_roi(window_name: str, img: np.ndarray) -> tuple | None:
 
 VALID_FIELDS = {"hero_card_1", "hero_card_2", "pot_size"} | {
     f"community_{i}" for i in range(1, 6)
+} | {
+    f"seat_{i}" for i in range(6)
 }
 
 
@@ -148,6 +150,54 @@ def main():
             existing = json.load(f)
         print(f"Loaded existing profile {output_path.name}")
         print(f"Configuring only: {args.field}")
+
+        # seat_N: collect 5 ROIs (action / stack / button_indicator / cards / id) in one invocation.
+        # Existing seat with same seat_index is replaced; otherwise appended.
+        if args.field.startswith("seat_"):
+            idx = int(args.field.split("_")[1])
+            print(f"\n--- Seat {idx}: 5 ROIs (ESC/C to skip individual ones) ---")
+            action_rect = select_roi(f"Seat {idx} — Action Text (FOLD/CHECK/CALL/BET/跟注/加注/弃牌)", img)
+            stack_rect = select_roi(f"Seat {idx} — Stack Amount", img)
+            btn_rect = select_roi(f"Seat {idx} — Button Indicator (small 'D' icon area; ESC to skip)", img)
+            cards_rect = select_roi(f"Seat {idx} — Cards Area (optional showdown reveal; ESC to skip)", img)
+            id_rect = select_roi(f"Seat {idx} — User ID (platform digit ID; ESC to skip)", img)
+
+            if not action_rect or not stack_rect:
+                # Both are required: capture/roi.py from_dict() calls
+                # _tuple_to_roi(s["action"], ...) and s["stack"] unconditionally,
+                # so a half-configured seat would crash pipeline load.
+                print(f"Skipped — seat_{idx} requires BOTH action AND stack ROIs; nothing changed.")
+                cv2.destroyAllWindows()
+                return 0
+
+            seat_entry = {
+                "seat_index": idx,
+                "action": list(action_rect) if action_rect else None,
+                "stack": list(stack_rect) if stack_rect else None,
+                "button_indicator": list(btn_rect) if btn_rect else None,
+                "cards": list(cards_rect) if cards_rect else None,
+                "id": list(id_rect) if id_rect else None,
+            }
+            seats = existing.get("seats") or []
+            # Replace existing by seat_index, else append
+            replaced = False
+            for i, s in enumerate(seats):
+                if s.get("seat_index") == idx:
+                    seats[i] = seat_entry
+                    replaced = True
+                    break
+            if not replaced:
+                seats.append(seat_entry)
+            seats.sort(key=lambda s: s.get("seat_index", 0))
+            existing["seats"] = seats
+            cv2.destroyAllWindows()
+            with open(output_path, "w") as f:
+                json.dump(existing, f, indent=2)
+            print(f"\nseat_{idx} {'updated' if replaced else 'added'} in {output_path}")
+            print(f"  action={bool(action_rect)} stack={bool(stack_rect)} button={bool(btn_rect)} cards={bool(cards_rect)} id={bool(id_rect)}")
+            print(f"Verify with: python tools/roi_config.py --verify --name {args.name}")
+            return 0
+
         prompt = f"{args.field.replace('_', ' ').title()} — drag rect, SPACE to confirm, C to skip"
         rect = select_roi(prompt, img)
         if rect is None:
