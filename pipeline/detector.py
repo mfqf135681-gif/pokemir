@@ -94,11 +94,22 @@ class StateTracker:
     def check_community_change(self, card_texts: list[str]) -> bool:
         """Return True if community cards changed (street advance)."""
         count = len([c for c in card_texts if c])
-        if count != self._prev_community_count:
+        prev = self._prev_community_count
+        if count != prev:
             self._prev_community_count = count
+            self._community_just_reset = (prev > 0 and count == 0)
             self.normalizer.set_community_card_count(count)
             return True
+        self._community_just_reset = False
         return False
+
+    def community_just_reset(self) -> bool:
+        """True if community count just dropped to 0 (new hand dealing).
+
+        Used as a fallback hand-start signal in observer mode where hero
+        cards are not available to detect hand change via _prev_hero_hash.
+        """
+        return getattr(self, "_community_just_reset", False)
 
     # ── Hand lifecycle ────────────────────────────────────
 

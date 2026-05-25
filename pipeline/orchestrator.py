@@ -121,6 +121,14 @@ class PipelineOrchestrator:
             if self.tracker.has_active_hand:
                 self._process_community_cards(db, rois)
 
+            # 3b. Observer-mode hand-start fallback: if hero cards are not
+            # available (default ROI = stable browser chrome, never changes),
+            # use community count drop from > 0 to 0 as the new-hand signal.
+            if self.tracker.has_active_hand and self.tracker.community_just_reset():
+                logger.info("Community reset detected → starting new hand (observer mode)")
+                self._end_current_hand(db)
+                self._start_new_hand(db, hero_1, hero_2)
+
             # 4. Seat actions
             if self.tracker.has_active_hand:
                 self._process_seat_actions(db, rois)
@@ -150,6 +158,23 @@ class PipelineOrchestrator:
         std2 = hero_2.std() if hero_2.size > 0 else 0
         # Visible cards have variation; blank areas are uniform
         return std1 > 30 and std2 > 30
+
+    @staticmethod
+    def _slot_has_card(img) -> bool:
+        """Detect whether an ROI looks like a card slot with a card present.
+
+        Card-present ROIs have a white-ish background (mean luminance ≳ 150);
+        empty slots show table felt (green/blue, mean ≲ 100). Avoids feeding
+        garbage pixels to the CNN classifier which would produce random
+        misclassifications (seen as repeated wrong cards in observer mode
+        when fewer than 5 community cards are dealt).
+        """
+        if img is None or img.size == 0:
+            return False
+        # mss returns BGRA; take BGR for luminance
+        bgr = img[..., :3] if img.ndim == 3 and img.shape[2] >= 3 else img
+        mean_lum = float(bgr.mean())
+        return mean_lum > 150.0
 
     def _start_new_hand(self, db, hero_1, hero_2):
         hand = self.tracker.start_new_hand()
@@ -203,6 +228,11 @@ class PipelineOrchestrator:
         all_cards = []
         for cc_roi in rois.community_cards:
             img = self.capturer.capture_roi(cc_roi)
+            if not self._slot_has_card(img):
+                # Empty community slot (street hasn't dealt this card yet);
+                # don't feed garbage pixels to CNN — would predict random card.
+                texts.append("")
+                continue
             result = self.card_recognizer.recognize_single(img)
             if result:
                 texts.append(f"{result['rank']}{result['suit']}")
