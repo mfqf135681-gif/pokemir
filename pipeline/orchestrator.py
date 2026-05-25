@@ -325,27 +325,29 @@ class PipelineOrchestrator:
     # ── Helpers ───────────────────────────────────────────
 
     def _detect_button_position(self):
-        """Scan each seat's button indicator area to find the dealer button."""
+        """Scan each seat's button_indicator ROI and OCR for the 'D' dealer marker.
+
+        WePoker shows a small "D" tag immediately left of the dealer's chip count.
+        The earlier brightness-heuristic was too noisy for such small icons;
+        OCR with allowlist='D' gives a definitive signal even at low resolution.
+        """
         button_seat = None
         for seat_roi in self.roi_manager.rois.seat_regions:
             if seat_roi.button_indicator is None:
                 continue
             img = self.capturer.capture_roi(seat_roi.button_indicator)
-            # The button indicator is usually a bright "D" or a distinct icon.
-            # Simple heuristic: higher brightness variance = button present
-            if img.size > 0:
-                gray = img[..., :3].mean(axis=2) if img.shape[2] >= 3 else img
-                brightness = gray.mean()
-                # Button area tends to be brighter than empty seat area
-                if brightness > 60:
-                    button_seat = seat_roi.seat_index
-                    break
+            if img.size == 0:
+                continue
+            text = self.ocr.read_text(img, allowlist="D")
+            if "D" in text.upper():
+                button_seat = seat_roi.seat_index
+                break
 
         if button_seat is not None:
             self.roi_manager.button_seat_index = button_seat
-            logger.info(f"Button detected at physical seat {button_seat}")
+            logger.info(f"Button detected at seat {button_seat} (OCR)")
         else:
-            logger.warning("No button detected, using seat 0 as default")
+            logger.warning("No button detected via OCR, using seat 0 as default")
             self.roi_manager.button_seat_index = 0
 
         mapping = self.roi_manager.compute_positions()

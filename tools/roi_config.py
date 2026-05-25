@@ -33,19 +33,34 @@ ROI_PROMPTS = [
 def _get_seat_labels(num_seats: int) -> list[str]:
     """Generate seat labels for the given table size.
 
-    Seats are numbered clockwise starting from top-left on screen.
-    Positions (BTN/SB/BB/...) are assigned dynamically at runtime.
+    Convention (2026-05-25 redesigned, hero-centric):
+      seat_0 = hero (bottom-center; even in observer mode this is the position
+               where the user would sit if they sat down)
+      seat_N = N-th seat clockwise from hero (N=1..num_seats-1)
+
+    BTN/SB/BB positions are still computed dynamically at runtime from the
+    detected dealer button location (compute_positions is independent of this
+    labelling convention).
     """
     if num_seats == 6:
-        return ["Seat 0 (top-left)", "Seat 1 (top-right)",
-                "Seat 2 (right)", "Seat 3 (bottom-right)",
-                "Seat 4 (bottom-left)", "Seat 5 (left)"]
+        return ["Seat 0 (you / bottom-center)",
+                "Seat 1 (1 clockwise — bottom-right)",
+                "Seat 2 (2 clockwise — upper-right)",
+                "Seat 3 (3 clockwise — top)",
+                "Seat 4 (4 clockwise — upper-left)",
+                "Seat 5 (5 clockwise — bottom-left / your left neighbour)"]
     elif num_seats == 9:
-        return ["Seat 0 (top-left)", "Seat 1 (top)", "Seat 2 (top-right)",
-                "Seat 3 (right)", "Seat 4 (bottom-right)", "Seat 5 (bottom)",
-                "Seat 6 (bottom-left)", "Seat 7 (left)", "Seat 8 (center-left)"]
+        return ["Seat 0 (you / bottom-center)",
+                "Seat 1 (1 clockwise — bottom-right)",
+                "Seat 2 (2 clockwise — lower-right side)",
+                "Seat 3 (3 clockwise — upper-right side)",
+                "Seat 4 (4 clockwise — top-right)",
+                "Seat 5 (5 clockwise — top-center / top-left)",
+                "Seat 6 (6 clockwise — upper-left side)",
+                "Seat 7 (7 clockwise — lower-left side)",
+                "Seat 8 (8 clockwise — bottom-left / your left neighbour)"]
     else:
-        return [f"Seat {i}" for i in range(num_seats)]
+        return [f"Seat {i} ({'you' if i == 0 else f'{i} clockwise from you'})" for i in range(num_seats)]
 
 
 def select_roi(window_name: str, img: np.ndarray) -> tuple | None:
@@ -70,12 +85,12 @@ VALID_FIELDS = {"hero_card_1", "hero_card_2", "pot_size"} | {
 SEAT_ELEMENT_ORDER = ["action", "fold_area", "stack", "button_indicator", "cards", "id"]
 REQUIRED_SEAT_ELEMENTS = {"action", "stack"}
 ELEMENT_HINTS = {
-    "action": "头像上方,玩家行动时显示「跟注/加注/下注/过牌」文字(空闲时此位置显示玩家 ID)",
+    "action": "头像上方,玩家行动时显示「跟注/加注/下注/过牌」文字(空闲时此位置显示玩家昵称)",
     "fold_area": "头像正中,玩家弃牌时显示「弃牌」两字 + 头像变灰(独立于上方动作区)",
     "stack": "头像下方的筹码量数字",
-    "button_indicator": "头像旁的 D 按钮(轮换 dealer 标志);ESC 可跳过",
+    "button_indicator": "玩家筹码量数字**左侧紧贴**的小 D 标记(轮换 dealer 标志,~10-20 像素);本次默认走 OCR 识别「D」字符;ESC 可跳过",
     "cards": "对手底牌区(showdown 时偶现可见);ESC 可跳过",
-    "id": "玩家 ID 数字 — WePoker 中与 action 同像素,直接框跟 action 一模一样的区域;ESC 可跳过(将来 hand-start 缓存 ID)",
+    "id": "玩家昵称区域 — WePoker 显示中文/英文/数字混排昵称(如「白鸢飞ix」「湖南闷高」),与 action 同像素;直接框跟 action 一模一样的区域即可;ESC 可跳过(将来 hand-start 缓存昵称用)",
 }
 
 

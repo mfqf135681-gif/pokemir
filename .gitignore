@@ -38,4 +38,6 @@ models/
 tests/output/
 # un-vetted fixture captures (Win side)
 tests/fixtures/_pending/
+# local reference snapshots (Win/VPS each maintain own copies for debugging)
+resource/
 *.log
