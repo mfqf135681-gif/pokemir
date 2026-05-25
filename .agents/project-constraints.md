@@ -16,7 +16,7 @@
 |:---|:---|:---|:---|
 | R-1 | 牌室 ToS 合规 | 引入键鼠注入 / 进程内存 / 抓包 / 非白名单 Win hook | 立即停止；REQ 评估 ToS |
 | R-2 | 凭据硬编码禁止 | 源码 default 含真实密码/token；或代码内 `password=` / `token=` 字面量 | 立即停止；迁 .env；轮换 |
-| R-3 | 本地手牌数据不外传 | 向非 localhost 发送 hands / action_events / * 表数据 | 立即停止；保留本地；REQ 讨论脱敏 |
+| R-3 | 数据仅限用户自控基础设施 | 向**第三方运维可读**的服务（公有 SaaS）发送 hands / action_events / * 表数据 | 立即停止；保留至用户自控目标；REQ 讨论脱敏 |
 | R-4 | API 契约不可绕过 | 新增/修改对外接口或字段；修改 `contracts/api.yaml` | 阻塞；契约已声明 + 修改须 confirmed 讨论 |
 | R-5 | 数据模型契约不可绕过 | 新增/修改数据库表或字段写入；修改 `contracts/models.sql` | 阻塞；契约已声明 + 修改须 confirmed 讨论 |
 | R-6 | ORM 与 SQL 模型同步 | 修改 `contracts/models.sql` | 阻塞；同步 `storage/models.py`；必要时生成 Alembic migration |
@@ -78,31 +78,34 @@
 
 ---
 
-### R-3：本地手牌数据不外传
+### R-3：数据仅限用户自控基础设施
 
-**核心约束**：本地数据库中的手牌相关表是用户私有数据，代码不得集成主动上报、第三方分析、云同步。
+**核心约束**：手牌相关表的数据**必须落在用户自控的基础设施**上 — 包括 `localhost` / 用户拥有的 VPS / 用户租赁的私有 mesh（如 Tailscale 接入的私有 IP）。**禁止落到"第三方运维可读"的服务**(公有 SaaS / 托管数据库的运营方可读权限范围)。
 
-**触发条件**：
-- 代码中 `requests` / `httpx` / `urllib` / `aiohttp` / 任何 HTTP 客户端，向**非 localhost / 非用户显式配置内网地址**发送以下表中任一条记录：
-  - `hands`
-  - `action_events`
-  - `player_stats_cache`
-  - `player_situational_stats`
-  - `replay_corrections`
-- 集成读取上述表内容的第三方 SDK / Pipeline / Telemetry
-- 例外（不触发）：纯运行时监控（CPU / 内存 / 进程崩溃堆栈，如 Sentry / PostHog SDK），前提是**不读取上述业务表**
+> **2026-05-25 修订说明**：原措辞为"本地手牌数据不外传 / 向非 localhost 发送即触发"。经 REQ `2026-05-25_01-14-00_R3边界扩展_私有云数据库架构.md`（confirmed）讨论：用户判定**项目流传失控**风险大于数据外泄风险,需要私有云数据库作为"fork 没凭据无法运行"的反流传闸口。新措辞保留"自控"内核,允许 VPS / Tailscale mesh,排除公有 SaaS。
 
-**为什么是红线**：手牌数据是高敏感个人数据 + 可能涉及隐私法规。开源后第三方贡献者顺手加分析 SDK 即可导致大规模数据外泄。
+**判定原则**：
+- ✅ **不触发**：localhost / 用户自有 VPS(可经 SSH / Tailscale / WireGuard 等加密私网到达)/ 同 LAN 私有机
+- ❌ **触发**：Supabase / Neon / Render / RDS 之类托管 PG(其运营方运维有数据库 root 访问能力)
+- ❌ **触发**：任何 HTTP/SDK 上报到第三方分析平台(Mixpanel / Amplitude / Datadog 业务面板)
+- ✅ **例外（不触发）**：纯运行时监控(CPU / 内存 / 进程崩溃堆栈,如 Sentry / PostHog 等仅采纯错误流),前提**不读取业务表**
+
+**关注的表**：`hands` · `action_events` · `player_stats_cache` · `player_situational_stats` · `replay_corrections`
+
+**为什么是红线**：
+1. 手牌数据是高敏感个人数据 + 可能涉及隐私法规
+2. 用户自控基础设施 = 用户控制凭据与访问 → 真正"自己持有"
+3. 第三方运维可读 = 用户失去最终控制权
 
 **合规动作**：
-1. **立即停止**
-2. 数据保留本地（默认行为）
-3. 如确需上报：先 REQ 模式讨论
-   - 数据脱敏方案（玩家名 hash / 牌面去标识 / 金额归一化）
-   - 用户显式同意机制（首次启动弹窗、可关闭开关、明确的隐私政策链接）
+1. **立即停止** 触发性的代码或配置
+2. 数据保留至用户自控目标(localhost 备用)
+3. 如确需走第三方:先 REQ 模式讨论
+   - 数据脱敏方案(玩家名 hash / 牌面去标识 / 金额归一化)
+   - 用户显式同意机制(首次启动弹窗、可关闭开关、明确的隐私政策链接)
 4. change-log §5 记录
 
-**例外条款**：用户在 REQ 中显式同意的上报方案，按 confirmed 记录执行。
+**例外条款**：用户在 REQ 中显式同意的上报方案,按 confirmed 记录执行。
 
 ---
 

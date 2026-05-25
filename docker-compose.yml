@@ -23,7 +23,11 @@ services:
       POSTGRES_PASSWORD: ${POKEMIR_DB_PASSWORD:?ERROR set POKEMIR_DB_PASSWORD in .env first}
       POSTGRES_DB: ${POKEMIR_DB_NAME:-poker_assistant}
     ports:
-      - "127.0.0.1:5432:5432"   # localhost-only binding; do NOT expose 0.0.0.0
+      # Local Linux dev (Claude mcp__postgres__query 也走这条)
+      - "127.0.0.1:5432:5432"
+      # Tailscale private mesh — Win 端 pipeline 走这条; 公网完全不可达
+      # IP 来自 REQ 2026-05-25_01-14-00 (R-3 边界扩展)。如 Tailscale IP 变更须同步改。
+      - "${POKEMIR_TAILSCALE_IP:-100.101.105.46}:5432:5432"
     volumes:
       - ./.docker-data/postgres:/var/lib/postgresql/data
     restart: unless-stopped
