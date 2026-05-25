@@ -1,7 +1,9 @@
 # Path A 第 3 步：Win 端 pipeline 全链路 smoke
 
 - **讨论时间**：2026-05-24 20:54
-- **状态**：pending
+- **状态**：accepted
+- **落地时间**：2026-05-25 00:42
+- **落地结果**：5/5 验收项通过——pipeline 启动 / Chrome 窗口检测 / community 识别(空槽过滤) / pot OCR 追踪 / 跨手循环全部 OK;Win 5070 Ti 上 GPU bf16 推理稳定;详见 `change-logs/2026-05-25_00-42-00_PathA第3步pipeline_smoke_accepted.md`
 - **触发红线**：本讨论不触发；下游执行会触发 R-1（ToS）/ R-3（数据外传）/ R-7（ROI 完整性）/ R-9（屏幕捕获）
 - **无关红线已检查**：R-2, R-4, R-5, R-6, R-8, R-10
 - **关联既有讨论**：
