@@ -470,6 +470,11 @@ class PipelineOrchestrator:
             insurance_results = self._infer_insurance(cur, final_stacks)
             if insurance_results:
                 cur.raw_data["insurance_inferred"] = insurance_results
+            # Showdown card detection: scan non-folded seats' fold_area with CNN.
+            # WePoker reveals 2 hole cards at avatar center at showdown.
+            showdown_cards = self._capture_showdown_cards()
+            if showdown_cards:
+                cur.raw_data["showdown_cards"] = showdown_cards
 
         hand = self.tracker.finalize_hand()
         if hand and db is not None:
@@ -537,6 +542,69 @@ class PipelineOrchestrator:
                 "gain": gain, "pot": pot, "classification": classification,
             })
         return results
+
+    def _process_timer(self, sidx: int, countdown: int) -> None:
+        """Timer countdown digit just observed at fold_area. Track per seat:
+        first sighting → start clock; subsequent sightings update; if countdown
+        increased > 2 since last seen, timebank was used.
+        """
+        state = self.tracker._timer_state.get(sidx)
+        now = time.time()
+        if state is None:
+            # First appearance of countdown for this seat this hand
+            self.tracker._timer_state[sidx] = (countdown, now)
+            return
+        prev_countdown, started_at = state
+        if countdown > prev_countdown + 2:
+            # Countdown rebounded upward → timebank consumed
+            self.tracker._used_timebank[sidx] = True
+        # Keep started_at as the original start (decision_time = total elapsed)
+        self.tracker._timer_state[sidx] = (countdown, started_at)
+
+    def _finalize_timer(self, sidx: int) -> None:
+        """Timer disappeared (action happened or idle). Idempotent: only fires
+        if a timer state existed for this seat. Stores elapsed ms into
+        _pending_decision_time for attribution to the NEXT action event.
+        """
+        state = self.tracker._timer_state.pop(sidx, None)
+        if state is None:
+            return
+        _, started_at = state
+        decision_time_ms = int((time.time() - started_at) * 1000)
+        self.tracker._pending_decision_time[sidx] = decision_time_ms
+
+    def _capture_showdown_cards(self) -> dict[int, list[str]]:
+        """At hand-end, for each NON-folded seat try CNN on fold_area to read
+        the 2 revealed hole cards (showdown). Returns {seat_index: [card1, card2]}.
+
+        Best-effort: failures (no cards visible, CNN low-confidence, only 1 card
+        detected) silently skip that seat. Stored in hand.raw_data['showdown_cards'].
+        """
+        cards_by_seat = {}
+        for seat in self.roi_manager.rois.seat_regions:
+            sidx = seat.seat_index
+            if sidx in self.tracker._folded_seats:
+                continue
+            if seat.fold_area is None or seat.fold_area.width == 0:
+                continue
+            img = self.capturer.capture_roi(seat.fold_area)
+            if img is None or img.size == 0:
+                continue
+            h, w = img.shape[:2]
+            if w < 20 or h < 20:
+                continue
+            # Try CNN on left half and right half (each card is ~half the width)
+            left_card = self.card_recognizer.recognize_single(img[:, : w // 2])
+            right_card = self.card_recognizer.recognize_single(img[:, w // 2 :])
+            cards = []
+            if left_card:
+                cards.append(f"{left_card['rank']}{left_card['suit']}")
+            if right_card:
+                cards.append(f"{right_card['rank']}{right_card['suit']}")
+            if len(cards) == 2:  # only save if both cards detected
+                cards_by_seat[sidx] = cards
+                logger.info(f"[showdown] seat_{sidx} cards: {cards}")
+        return cards_by_seat
 
     def _capture_seat_stacks(self) -> dict[int, float]:
         """Snapshot per-seat stack via OCR (digit-only allowlist).
@@ -621,19 +689,36 @@ class PipelineOrchestrator:
                                  f"likely digit miss, keeping prev")
                     stack_now = prev_stack
 
-            # Priority: check fold_area first — WePoker shows both "弃牌" (fold) AND
-            # "ALL IN" (all-in) overlaid on the avatar center. Use the parser to detect
-            # whether OCR'd text is a definitive avatar-overlay action (FOLD/ALL_IN);
-            # if so, short-circuit the action_area read for this tick.
+            # fold_area is a MULTI-PURPOSE overlay zone at the avatar center.
+            # WePoker shows different things at different game states:
+            #   - 1-2 digit countdown → seat is currently acting (decision timer)
+            #   - "弃牌" → FOLD action
+            #   - "ALL IN" → ALL_IN action
+            #   - 2 card images → showdown hole cards reveal (CNN-readable)
+            #   - empty → idle
             action_text = None
             action_img = None  # T1: track for later artifact saving
             if seat_roi.fold_area is not None:
                 fold_img = self.capturer.capture_roi(seat_roi.fold_area)
                 fold_text = self.ocr.read_text(fold_img)
-                if fold_text:
-                    parsed_fold = self.action_recognizer.parse(fold_text)
+                ft = fold_text.strip() if fold_text else ""
+                # Branch 1: digit-only short text → countdown timer
+                if ft and ft.isdigit() and 1 <= len(ft) <= 2:
+                    self._process_timer(sidx, int(ft))
+                    # While timer running, action hasn't happened yet — skip action_area
+                    # (no need to OCR; saves cost). Update _prev_stack and continue.
+                    if stack_now is not None:
+                        self.tracker._prev_stack[sidx] = stack_now
+                    continue
+                # Branch 2: parser hits FOLD / ALL_IN keyword → action via fold_area
+                elif ft:
+                    parsed_fold = self.action_recognizer.parse(ft)
                     if parsed_fold and parsed_fold["action_type"] in (ActionType.FOLD, ActionType.ALL_IN):
-                        action_text = fold_text
+                        action_text = ft
+                        self._finalize_timer(sidx)  # timer ended via fold/all-in
+                # Branch 3: empty (idle / between actions) → finalize timer if it was running
+                else:
+                    self._finalize_timer(sidx)
 
             if action_text is None:
                 action_img = self.capturer.capture_roi(seat_roi.action_area)
@@ -755,6 +840,19 @@ class PipelineOrchestrator:
                 # 12a: mark seat as having gone all-in this hand (for insurance inference)
                 if final_action == ActionType.ALL_IN or (stack_after is not None and stack_after <= 5):
                     self.tracker._went_all_in_this_hand.add(sidx)
+
+                # Track folded seats (for showdown CNN skip + insurance defaults)
+                if final_action == ActionType.FOLD:
+                    self.tracker._folded_seats.add(sidx)
+
+                # Attach decision_time (timer-derived) + timebank flag to event.raw_data.
+                # _finalize_timer was called when fold_area returned non-digit/empty —
+                # decision_time was stashed in _pending_decision_time keyed by sidx.
+                dt_ms = self.tracker._pending_decision_time.pop(sidx, None)
+                if dt_ms is not None:
+                    event.raw_data["decision_time_ms"] = dt_ms
+                if self.tracker._used_timebank.pop(sidx, False):
+                    event.raw_data["used_timebank"] = True
 
                 if db is not None:
                     self.event_repo.create(db, event)

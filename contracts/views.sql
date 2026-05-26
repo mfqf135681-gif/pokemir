@@ -136,6 +136,40 @@ WHERE p.next_init_s IS NOT NULL
 ORDER BY p.started_at DESC, fp.key;
 
 
+-- ── Decision-time stats per player (for 水上/水下 profiling) ────
+-- avg / median / std of decision_time_ms across action_events;
+-- snap rate (< 3s) and timebank usage rate.
+CREATE OR REPLACE VIEW v_player_timing_stats AS
+SELECT
+  ae.player_name,
+  COUNT(*) FILTER (WHERE ae.raw_data->>'decision_time_ms' IS NOT NULL) AS n_timed,
+  ROUND(AVG((ae.raw_data->>'decision_time_ms')::numeric)::numeric, 0) AS avg_ms,
+  ROUND(PERCENTILE_CONT(0.5)
+        WITHIN GROUP (ORDER BY (ae.raw_data->>'decision_time_ms')::numeric)
+        ::numeric, 0) AS median_ms,
+  ROUND(STDDEV((ae.raw_data->>'decision_time_ms')::numeric)::numeric, 0) AS std_ms,
+  SUM(CASE WHEN (ae.raw_data->>'decision_time_ms')::numeric < 3000
+           THEN 1 ELSE 0 END) AS n_snap,
+  SUM(CASE WHEN (ae.raw_data->>'used_timebank')::boolean = true
+           THEN 1 ELSE 0 END) AS n_timebank,
+  ROUND(
+    100.0 * SUM(CASE WHEN (ae.raw_data->>'decision_time_ms')::numeric < 3000
+                     THEN 1 ELSE 0 END)
+    / NULLIF(COUNT(*) FILTER (WHERE ae.raw_data->>'decision_time_ms' IS NOT NULL), 0),
+    1
+  ) AS snap_pct,
+  ROUND(
+    100.0 * SUM(CASE WHEN (ae.raw_data->>'used_timebank')::boolean = true
+                     THEN 1 ELSE 0 END)
+    / NULLIF(COUNT(*) FILTER (WHERE ae.raw_data->>'decision_time_ms' IS NOT NULL), 0),
+    1
+  ) AS timebank_pct
+FROM action_events ae
+GROUP BY ae.player_name
+HAVING COUNT(*) FILTER (WHERE ae.raw_data->>'decision_time_ms' IS NOT NULL) >= 3
+ORDER BY n_timed DESC;
+
+
 -- ── T4 Hand duration sanity ─────────────────────────────────────
 -- Typical hand: 20-180 seconds (median 30-120 with showdown).
 --   < 10s  → likely finalize misfire (community blink, not a real hand end)

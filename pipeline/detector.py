@@ -55,6 +55,16 @@ class StateTracker:
         # #12a Per-hand "went all-in" flag — set when any seat's stack hits ~0 mid-hand.
         # Used at finalize_hand to infer insurance buy/payout from stack pattern.
         self._went_all_in_this_hand: set[int] = set()
+        # Timer (decision-time countdown) tracking — fold_area shows digit countdown
+        # for the seat currently acting. _timer_state maps sidx → (last_seen_countdown,
+        # started_at_wall_clock). On disappearance, decision_time_ms is recorded into
+        # _pending_decision_time for attribution to the next event from that seat.
+        self._timer_state: dict[int, tuple[int, float]] = {}
+        self._pending_decision_time: dict[int, int] = {}  # ms
+        self._used_timebank: dict[int, bool] = {}
+        # Folded seats this hand (set when FOLD event fires) — used to skip them
+        # during showdown card detection.
+        self._folded_seats: set[int] = set()
 
         # Per-hand seat_index → platform user-ID (OCR'd at hand-start; used as player_name for cross-hand stats)
         self.player_id_map: dict[int, str] = {}
@@ -167,6 +177,11 @@ class StateTracker:
         self._street_has_bet = False
         # 12a state: reset went-all-in tracking on new hand
         self._went_all_in_this_hand = set()
+        # Timer / decision-time / folded-seats: reset per hand
+        self._timer_state = {}
+        self._pending_decision_time = {}
+        self._used_timebank = {}
+        self._folded_seats = set()
         # NB: player_id_map NOT reset — #2 cache lock so player IDs persist across
         # hands, preventing OCR drift between hands from creating multiple variants
         # of the same player. Cleared only on pipeline restart.
