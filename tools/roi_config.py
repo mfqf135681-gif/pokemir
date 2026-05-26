@@ -98,12 +98,13 @@ VALID_FIELDS = {"hero_card_1", "hero_card_2", "pot_size"} | {
 
 # Per-seat sub-element names for --element flag. Order matches the full-seat prompt order.
 # REQUIRED_SEAT_ELEMENTS = {action, stack} — final-save validation refuses entries lacking these.
-SEAT_ELEMENT_ORDER = ["action", "fold_area", "stack", "button_indicator", "cards", "id"]
+SEAT_ELEMENT_ORDER = ["action", "amount", "fold_area", "stack", "button_indicator", "cards", "id"]
 REQUIRED_SEAT_ELEMENTS = {"action", "stack"}
 ELEMENT_HINTS = {
-    "action": "头像上方,玩家行动时显示「跟注/加注/下注/过牌」文字(空闲时此位置显示玩家昵称)",
+    "action": "头像上方,玩家行动时**只显示动作汉字**(「跟注/加注/下注/过牌」);WePoker 中**金额不在此**;空闲时此位置显示玩家昵称",
+    "amount": "头像**旁边**,显示筹码图标 + 金额数字(call/raise/bet 时出现的本次下注额);OCR 用 digit allowlist 自动过滤图标;ESC 可跳过(fold/check 不需要金额)",
     "fold_area": "头像正中,玩家弃牌时显示「弃牌」两字 + 头像变灰(独立于上方动作区)",
-    "stack": "头像下方的筹码量数字",
+    "stack": "头像下方的筹码量数字(玩家总筹码,与 amount 不同)",
     "button_indicator": "玩家筹码量数字**左侧紧贴**的小 D 标记(轮换 dealer 标志,~10-20 像素);本次默认走 OCR 识别「D」字符;ESC 可跳过",
     "cards": "对手底牌区(showdown 时偶现可见);ESC 可跳过",
     "id": "玩家昵称区域 — WePoker 显示中文/英文/数字混排昵称(如「白鸢飞ix」「湖南闷高」),与 action 同像素;直接框跟 action 一模一样的区域即可;ESC 可跳过(将来 hand-start 缓存昵称用)",
@@ -328,7 +329,7 @@ def main():
         # Save only if action + stack present (required for pipeline load)
         if rects.get("action") and rects.get("stack"):
             entry = {"seat_index": i, "action": rects["action"], "stack": rects["stack"]}
-            for opt in ("fold_area", "button_indicator", "cards", "id"):
+            for opt in ("amount", "fold_area", "button_indicator", "cards", "id"):
                 if rects.get(opt):
                     entry[opt] = rects[opt]
             result["seats"].append(entry)
@@ -375,6 +376,7 @@ def _draw_rois(img: np.ndarray, data: dict):
     for s in data.get("seats", []):
         label = f"Seat {s.get('seat_index', '?')}"
         draw_rect(s.get("action"), colors["seat"], label)
+        draw_rect(s.get("amount"), colors["pot"], "$" if s.get("amount") else "")
         draw_rect(s.get("fold_area"), colors["fold"], "FOLD" if s.get("fold_area") else "")
         draw_rect(s.get("stack"), colors["seat"])
         draw_rect(s.get("cards"), colors["seat"])

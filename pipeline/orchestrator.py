@@ -290,6 +290,14 @@ class PipelineOrchestrator:
                 action_img = self.capturer.capture_roi(seat_roi.action_area)
                 action_text = self.ocr.read_text(action_img)
 
+                # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
+                # parser regex (\d+\.?\d*) will pull the number from the combined text
+                if action_text and seat_roi.amount_area is not None:
+                    amount_img = self.capturer.capture_roi(seat_roi.amount_area)
+                    amount_text = self.ocr.read_text(amount_img, allowlist="0123456789.")
+                    if amount_text:
+                        action_text = f"{action_text} {amount_text}"
+
             if not action_text:
                 continue
 
@@ -334,13 +342,21 @@ class PipelineOrchestrator:
                 )
 
     def _process_pot(self, db, rois):
-        """Read pot size from ROI and stash on tracker; next action event will pick it up."""
+        """Read pot size from ROI and stash on tracker; next action event will pick it up.
+
+        Also maintains _hand_pot_peak (max over the hand) for hands.pot_size_final
+        so the final value is immune to transient new-hand reset readings.
+        """
         pot_img = self.capturer.capture_roi(rois.pot_size)
         pot_text = self.ocr.read_text(pot_img)
         amount = ActionRecognizer._extract_amount(pot_text)
         if amount is not None and amount != self.tracker.latest_pot_bb:
             logger.info(f"Pot: {amount} (was {self.tracker.latest_pot_bb})")
             self.tracker.latest_pot_bb = amount
+        # Update peak independently of whether amount changed
+        if amount is not None:
+            if self.tracker._hand_pot_peak is None or amount > self.tracker._hand_pot_peak:
+                self.tracker._hand_pot_peak = amount
 
     # ── Helpers ───────────────────────────────────────────
 

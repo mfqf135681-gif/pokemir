@@ -57,6 +57,9 @@ class TableROIs:
                 "action": (seat.action_area.left, seat.action_area.top, seat.action_area.width, seat.action_area.height),
                 "stack": (seat.stack_area.left, seat.stack_area.top, seat.stack_area.width, seat.stack_area.height),
             }
+            if seat.amount_area:
+                entry["amount"] = (seat.amount_area.left, seat.amount_area.top,
+                                   seat.amount_area.width, seat.amount_area.height)
             if seat.fold_area:
                 entry["fold_area"] = (seat.fold_area.left, seat.fold_area.top,
                                        seat.fold_area.width, seat.fold_area.height)
@@ -95,6 +98,7 @@ class TableROIs:
             seat = SeatROI(
                 seat_index=s.get("seat_index", 0),
                 action_area=_tuple_to_roi(s["action"], "seat_action"),
+                amount_area=_tuple_to_roi(s["amount"], "seat_amount") if s.get("amount") else None,
                 fold_area=_tuple_to_roi(s["fold_area"], "seat_fold") if s.get("fold_area") else None,
                 stack_area=_tuple_to_roi(s["stack"], "seat_stack"),
                 button_indicator=_tuple_to_roi(s["button_indicator"], "seat_btn") if s.get("button_indicator") else None,
@@ -112,13 +116,18 @@ class SeatROI:
     WePoker layout (verified 2026-05-25 discussion):
       - action_area = above-avatar pixel zone; displays player ID when idle, replaced
         by call/raise/check/bet text when player acts. Pixel-coincident with id_area.
+        WePoker shows ONLY action keyword here (e.g. "跟注"), NOT the amount.
+      - amount_area = beside-avatar zone; displays chip-icon + amount number for
+        call/raise/bet actions. OCR'd with digit allowlist; result concatenated to
+        action_area text before parser.
       - fold_area = avatar-center zone; displays "弃牌" + avatar greys out on fold only.
-      - stack_area = below-avatar; chip count.
+      - stack_area = below-avatar; chip count (total stack).
       - id_area = pixel-coincident with action_area; OCR'd only at hand-start (before
         any action overwrites the ID display).
     """
     seat_index: int = 0
-    action_area: ROIRegion = None      # above-avatar: call/raise/check/bet/post_sb/post_bb text
+    action_area: ROIRegion = None      # above-avatar: call/raise/check/bet/post_sb/post_bb KEYWORD only
+    amount_area: ROIRegion | None = None  # beside-avatar: chip-icon + amount digits
     fold_area: ROIRegion | None = None # avatar-center: "弃牌" text on fold (different pixel zone than action)
     stack_area: ROIRegion = None       # below-avatar: chip count
     button_indicator: ROIRegion | None = None  # small area showing dealer button (D icon)

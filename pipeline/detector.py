@@ -35,6 +35,10 @@ class StateTracker:
 
         # Latest pot size (from _process_pot), attached to subsequent action events
         self.latest_pot_bb: float | None = None
+        # Peak pot size seen during this hand (immune to new-hand reset transients);
+        # used by finalize_hand for hands.pot_size_final to avoid the "OCR caught a
+        # tiny value at hand-end transition" bug
+        self._hand_pot_peak: float | None = None
 
         # Per-hand seat_index → platform user-ID (OCR'd at hand-start; used as player_name for cross-hand stats)
         self.player_id_map: dict[int, str] = {}
@@ -136,19 +140,25 @@ class StateTracker:
         self._prev_action_texts.clear()
         self._prev_community_count = 0
         self.latest_pot_bb = None
+        self._hand_pot_peak = None
         self.player_id_map = {}
         logger.info(f"New hand started: {self.current_hand.id}")
         return self.current_hand
 
     def finalize_hand(self) -> Hand | None:
-        """Mark the current hand as ended and return it."""
+        """Mark the current hand as ended and return it.
+
+        Uses _hand_pot_peak (max seen during the hand) rather than latest_pot_bb
+        because at the moment of community reset → finalize, OCR may catch a
+        transient new-hand pot value (e.g. tiny blinds) and corrupt the last reading.
+        """
         if self.current_hand is None:
             return None
         self.current_hand.ended_at = datetime.now(timezone.utc)
-        self.current_hand.pot_size_final = self.latest_pot_bb
+        self.current_hand.pot_size_final = self._hand_pot_peak
         hand = self.current_hand
         self.current_hand = None
-        logger.info(f"Hand ended: {hand.id} (pot={hand.pot_size_final})")
+        logger.info(f"Hand ended: {hand.id} (pot peak={hand.pot_size_final})")
         return hand
 
     # ── Position mapping ──────────────────────────────────
