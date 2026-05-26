@@ -330,6 +330,11 @@ class PipelineOrchestrator:
         # back-compute on a hand basis later.
         initial_stacks = self._capture_seat_stacks()
 
+        # 摊牌 baseline 强初始化 — 之前 baseline 只在 fold_area OCR 为空时更新,
+        # 但高活跃玩家很少有 idle empty tick → baseline 永不建立 → 摊牌 skip。
+        # 在 hand 起始时(无 overlay 状态)强制建一次 baseline。
+        self._initialize_avatar_baselines()
+
         seats_map = {}
         for k, v in self.tracker._position_map.items():
             try:
@@ -680,7 +685,9 @@ class PipelineOrchestrator:
         # User insight: 头像区平时稳定;showdown 时 cards overlay 上去 → hash 显著变化.
         # 若当前 fold_area hash ≈ idle_baseline_hash, 头像没真变化 → 没真摊牌 → skip CNN.
         # 这是 root-cause fix for seat_X CNN 幻觉(如 seat_6 头像永久被识别 3s 3s).
-        BASELINE_DIVERGE_THRESHOLD = 10  # hamming > 10 of 64 bits = 显著变化
+        BASELINE_DIVERGE_THRESHOLD = 6  # hamming > 6 of 64 bits;松紧权衡:
+        # 10 太严漏真摊牌(实测 50 min 中 0/30 hands 捕获),
+        # 6 仍能 catch seat_X 头像稳态 (hamming 0-3) 假阳
         candidates = []  # [(seat, current_hash, hamming_diff)]
         for seat in self.roi_manager.rois.seat_regions:
             sidx = seat.seat_index
@@ -743,6 +750,31 @@ class PipelineOrchestrator:
                 logger.info(f"[showdown] seat_{sidx} cards: {cards} "
                             f"(avatar hamming={diff})")
         return cards_by_seat
+
+    def _initialize_avatar_baselines(self) -> None:
+        """Ensure every seat with fold_area has an avatar baseline at hand-start.
+
+        Reasoning: per-tick baseline update only fires when fold_area returns
+        empty (idle state). High-activity players have very few empty ticks →
+        baseline never establishes → showdown gate always skips them. By forcing
+        baseline capture at hand-start (when no overlay is active yet), we
+        guarantee every configured seat has SOMETHING to compare against at
+        showdown. Subsequent per-tick updates still refine during idle.
+
+        Only initializes;does NOT overwrite existing baselines (those came from
+        confirmed idle moments and are higher quality).
+        """
+        for seat in self.roi_manager.rois.seat_regions:
+            sidx = seat.seat_index
+            if sidx in self.tracker._idle_avatar_hash:
+                continue  # already established, don't overwrite
+            if seat.fold_area is None or seat.fold_area.width == 0:
+                continue
+            img = self.capturer.capture_roi(seat.fold_area)
+            if img is None or img.size == 0:
+                continue
+            self.tracker._idle_avatar_hash[sidx] = _avg_hash_64(img)
+            logger.debug(f"_initialize_avatar_baselines: seat_{sidx} baseline set at hand-start")
 
     def _capture_seat_stacks(self) -> dict[int, float]:
         """Snapshot per-seat stack via OCR (digit-only allowlist).
