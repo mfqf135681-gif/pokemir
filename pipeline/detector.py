@@ -149,7 +149,9 @@ class StateTracker:
         self._hand_pot_peak = None
         self._pot_before_tick = None
         self._prev_stack.clear()
-        self.player_id_map = {}
+        # NB: player_id_map NOT reset — #2 cache lock so player IDs persist across
+        # hands, preventing OCR drift between hands from creating multiple variants
+        # of the same player. Cleared only on pipeline restart.
         logger.info(f"New hand started: {self.current_hand.id}")
         return self.current_hand
 

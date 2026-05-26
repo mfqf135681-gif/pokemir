@@ -7,8 +7,19 @@ from datetime import datetime, timezone
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
 from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE
+from difflib import get_close_matches
+
 from events.models import ActionType, Position
 from events.normalizer import compute_confidence
+
+# Allowlist for action_area OCR — restricts charset to known action keywords + amounts.
+# Filters out garbage like "疯鱼罩轩 2"(player name bleed)or random Chinese characters.
+ACTION_OCR_ALLOWLIST = (
+    "跟加注弃牌过让看盖下全押压前"               # Chinese action keywords
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"                  # English (parser uppers text first)
+    "0123456789"                                  # digit amounts
+    "-., $"                                       # common separators
+)
 from pipeline.detector import StateTracker
 from recognition.actions import ActionRecognizer
 from recognition.cards import CardRecognizer
@@ -229,14 +240,24 @@ class PipelineOrchestrator:
         Hand-start is the only window where IDs are unobstructed: no action text
         ('CALL' / 'RAISE' / etc.) covers them and no fold-grey state degrades them.
 
-        Defensive filter: WePoker shows ID and action text at the SAME pixel zone.
-        At hand-start transition, the previous hand's action keyword may still be
-        on screen. If OCR'd text parses as an ActionType ("跟注"/"加注"/...) treat
-        it as ID OCR failure and let player_name fall back to "Player_<sidx>".
+        #2 Cache lock: player_id_map persists across hands (not reset by start_new_hand).
+                       Already-cached seats are skipped, preventing OCR drift between
+                       hands from re-writing the player's name as a variant.
+
+        #3 Fuzzy match: if a new OCR text is within Levenshtein distance ~1 of an
+                        existing known player name (any seat), it's treated as an
+                        OCR variant of that same player (e.g. "覃" mis-read as "罩")
+                        and canonicalized to the existing name.
+
+        Filter: WePoker shows ID and action text at the SAME pixel zone. At hand-start
+        transition, the previous hand's action keyword may still be on screen. If
+        OCR'd text parses as an ActionType ("跟注"/...) treat as OCR failure.
         """
-        id_map: dict[int, str] = {}
         for seat in self.roi_manager.rois.seat_regions:
             if seat.id_area is None or seat.id_area.width == 0:
+                continue
+            # #2 Cache lock: don't re-OCR a seat we already have a valid name for
+            if seat.seat_index in self.tracker.player_id_map:
                 continue
             img = self.capturer.capture_roi(seat.id_area)
             text = self.ocr.read_text(img).strip()
@@ -248,8 +269,18 @@ class PipelineOrchestrator:
                 logger.debug(f"_capture_player_ids: seat_{seat.seat_index} got action-text "
                              f"{text!r}, skipping (likely transition frame)")
                 continue
-            id_map[seat.seat_index] = text
-        self.tracker.player_id_map = id_map
+            # #3 Fuzzy match against names already in the registry (any seat).
+            # cutoff=0.75 chosen so 4-char names with 1-char OCR drift match (ratio
+            # 0.75 exactly) while 7-char names with 2-char drift don't (ratio 0.71).
+            known = list(self.tracker.player_id_map.values())
+            if known and len(text) >= 3:
+                matches = get_close_matches(text, known, n=1, cutoff=0.75)
+                if matches:
+                    if matches[0] != text:
+                        logger.info(f"_capture_player_ids: seat_{seat.seat_index} OCR'd "
+                                    f"{text!r} → canonicalized to {matches[0]!r} (alias)")
+                    text = matches[0]
+            self.tracker.player_id_map[seat.seat_index] = text
 
     def _end_current_hand(self, db):
         hand = self.tracker.finalize_hand()
@@ -304,19 +335,25 @@ class PipelineOrchestrator:
                 stack_text = self.ocr.read_text(stack_img, allowlist="0123456789.")
                 stack_now = ActionRecognizer._extract_amount(stack_text)
 
-            # Priority: check fold_area first — WePoker shows "弃牌" at avatar center
-            # (separate pixel zone from action_area which is above the avatar). If a fold
-            # is detected here, skip the action_area read for this tick.
+            # Priority: check fold_area first — WePoker shows both "弃牌" (fold) AND
+            # "ALL IN" (all-in) overlaid on the avatar center. Use the parser to detect
+            # whether OCR'd text is a definitive avatar-overlay action (FOLD/ALL_IN);
+            # if so, short-circuit the action_area read for this tick.
             action_text = None
             if seat_roi.fold_area is not None:
                 fold_img = self.capturer.capture_roi(seat_roi.fold_area)
                 fold_text = self.ocr.read_text(fold_img)
-                if fold_text and "弃牌" in fold_text:
-                    action_text = fold_text
+                if fold_text:
+                    parsed_fold = self.action_recognizer.parse(fold_text)
+                    if parsed_fold and parsed_fold["action_type"] in (ActionType.FOLD, ActionType.ALL_IN):
+                        action_text = fold_text
 
             if action_text is None:
                 action_img = self.capturer.capture_roi(seat_roi.action_area)
-                action_text = self.ocr.read_text(action_img)
+                # #1 OCR allowlist: restrict to known action chars to suppress noise
+                # like player-name bleed or random Chinese text. Allowlist is wide
+                # enough for all parser-supported keywords + amounts.
+                action_text = self.ocr.read_text(action_img, allowlist=ACTION_OCR_ALLOWLIST)
 
                 # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
                 # parser regex (\d+\.?\d*) will pull the number from the combined text
