@@ -65,6 +65,10 @@ class StateTracker:
         # Folded seats this hand (set when FOLD event fires) — used to skip them
         # during showdown card detection.
         self._folded_seats: set[int] = set()
+        # Seats that fired ANY event this hand (active set). Used at showdown:
+        # non_folded_active = _seats_with_events - _folded_seats;
+        # if < 2 → no real showdown (single winner / fold-around) → skip CNN.
+        self._seats_with_events_this_hand: set[int] = set()
 
         # Per-hand seat_index → platform user-ID (OCR'd at hand-start; used as player_name for cross-hand stats)
         self.player_id_map: dict[int, str] = {}
@@ -182,6 +186,7 @@ class StateTracker:
         self._pending_decision_time = {}
         self._used_timebank = {}
         self._folded_seats = set()
+        self._seats_with_events_this_hand = set()
         # NB: player_id_map NOT reset — #2 cache lock so player IDs persist across
         # hands, preventing OCR drift between hands from creating multiple variants
         # of the same player. Cleared only on pipeline restart.

@@ -598,7 +598,18 @@ class PipelineOrchestrator:
         if not community or len(community) < 5:
             return {}
 
-        CONF_THRESHOLD = 0.7
+        # Gate 2: real showdown requires ≥ 2 non-folded ACTIVE seats.
+        # Fold-around-on-river (single winner takes pot) = NO showdown,no cards revealed.
+        # Active = seats that fired any event this hand (excludes silent skips).
+        active = self.tracker._seats_with_events_this_hand - self.tracker._folded_seats
+        if len(active) < 2:
+            logger.debug(f"[showdown] skip: only {len(active)} non-folded active seat(s) "
+                         f"(active={active}, folded={self.tracker._folded_seats})")
+            return {}
+
+        # Gate 3: per-card confidence threshold (raised 0.7 → 0.9 because CNN tends
+        # to over-confidently classify avatar pixels as cards).
+        CONF_THRESHOLD = 0.9
         cards_by_seat = {}
         for seat in self.roi_manager.rois.seat_regions:
             sidx = seat.seat_index
@@ -878,6 +889,8 @@ class PipelineOrchestrator:
                 # Track folded seats (for showdown CNN skip + insurance defaults)
                 if final_action == ActionType.FOLD:
                     self.tracker._folded_seats.add(sidx)
+                # Track ALL active seats (had any event this hand) for showdown gate
+                self.tracker._seats_with_events_this_hand.add(sidx)
 
                 # Attach decision_time (timer-derived) + timebank flag to event.raw_data.
                 # _finalize_timer was called when fold_area returned non-digit/empty —
