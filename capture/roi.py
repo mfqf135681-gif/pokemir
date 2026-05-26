@@ -153,6 +153,8 @@ class ROIManager:
 
         if num_seats == 6:
             pos_order = ["BTN", "SB", "BB", "UTG", "MP", "CO"]
+        elif num_seats == 8:
+            pos_order = ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "HJ", "CO"]
         elif num_seats == 9:
             pos_order = ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "MP+1", "CO", "HJ"]
         else:

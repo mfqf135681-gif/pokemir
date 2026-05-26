@@ -33,32 +33,48 @@ ROI_PROMPTS = [
 def _get_seat_labels(num_seats: int) -> list[str]:
     """Generate seat labels for the given table size.
 
-    Convention (2026-05-25 redesigned, hero-centric):
+    Convention (2026-05-25 fixed, hero-centric clockwise = poker action order):
       seat_0 = hero (bottom-center; even in observer mode this is the position
                where the user would sit if they sat down)
       seat_N = N-th seat clockwise from hero (N=1..num_seats-1)
 
+    "Clockwise" here follows the physical clock-hand direction in a top-down
+    table view: from 6 o'clock (hero/bottom) → 9 o'clock (screen LEFT) → 12
+    o'clock (top) → 3 o'clock (screen right). This matches the standard poker
+    action order (BTN → SB → BB → UTG → ... is left of BTN on screen for
+    hero-bottom tables).
+
     BTN/SB/BB positions are still computed dynamically at runtime from the
-    detected dealer button location (compute_positions is independent of this
-    labelling convention).
+    detected dealer button location.
     """
     if num_seats == 6:
         return ["Seat 0 (you / bottom-center)",
-                "Seat 1 (1 clockwise — bottom-right)",
-                "Seat 2 (2 clockwise — upper-right)",
+                "Seat 1 (1 clockwise — bottom-LEFT / your left neighbour)",
+                "Seat 2 (2 clockwise — upper-left)",
                 "Seat 3 (3 clockwise — top)",
-                "Seat 4 (4 clockwise — upper-left)",
-                "Seat 5 (5 clockwise — bottom-left / your left neighbour)"]
-    elif num_seats == 9:
+                "Seat 4 (4 clockwise — upper-right)",
+                "Seat 5 (5 clockwise — bottom-right / your right neighbour)"]
+    elif num_seats == 8:
+        # 8-max: hero + 7 others; top has 1 player centered (the key difference vs 9-max).
         return ["Seat 0 (you / bottom-center)",
-                "Seat 1 (1 clockwise — bottom-right)",
-                "Seat 2 (2 clockwise — lower-right side)",
-                "Seat 3 (3 clockwise — upper-right side)",
-                "Seat 4 (4 clockwise — top-right)",
-                "Seat 5 (5 clockwise — top-center / top-left)",
-                "Seat 6 (6 clockwise — upper-left side)",
-                "Seat 7 (7 clockwise — lower-left side)",
-                "Seat 8 (8 clockwise — bottom-left / your left neighbour)"]
+                "Seat 1 (1 clockwise — bottom-LEFT / your left neighbour)",
+                "Seat 2 (2 clockwise — left-side mid)",
+                "Seat 3 (3 clockwise — upper-left)",
+                "Seat 4 (4 clockwise — TOP-center, the only top seat in 8-max)",
+                "Seat 5 (5 clockwise — upper-right)",
+                "Seat 6 (6 clockwise — right-side mid)",
+                "Seat 7 (7 clockwise — bottom-right / your right neighbour)"]
+    elif num_seats == 9:
+        # 9-max: hero + 8 others; top has 2 players side-by-side (vs 8-max single).
+        return ["Seat 0 (you / bottom-center)",
+                "Seat 1 (1 clockwise — bottom-LEFT / your left neighbour)",
+                "Seat 2 (2 clockwise — left-side mid)",
+                "Seat 3 (3 clockwise — upper-left)",
+                "Seat 4 (4 clockwise — top-LEFT of the two top seats)",
+                "Seat 5 (5 clockwise — top-RIGHT of the two top seats)",
+                "Seat 6 (6 clockwise — upper-right)",
+                "Seat 7 (7 clockwise — right-side mid)",
+                "Seat 8 (8 clockwise — bottom-right / your right neighbour)"]
     else:
         return [f"Seat {i} ({'you' if i == 0 else f'{i} clockwise from you'})" for i in range(num_seats)]
 
