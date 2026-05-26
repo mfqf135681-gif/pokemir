@@ -275,7 +275,11 @@ class PipelineOrchestrator:
     # ── Seat actions ──────────────────────────────────────
 
     def _process_seat_actions(self, db, rois):
-        for i, seat_roi in enumerate(rois.seat_regions):
+        # NB: iterate using seat_roi.seat_index (NOT enumerate's i) for all
+        # tracker state lookups — list-position differs from physical seat_index
+        # when only some seats are configured (e.g. partial stage-B setup).
+        for seat_roi in rois.seat_regions:
+            sidx = seat_roi.seat_index
             # Priority: check fold_area first — WePoker shows "弃牌" at avatar center
             # (separate pixel zone from action_area which is above the avatar). If a fold
             # is detected here, skip the action_area read for this tick.
@@ -301,22 +305,25 @@ class PipelineOrchestrator:
             if not action_text:
                 continue
 
-            if self.tracker.check_action_change(i, action_text):
+            if self.tracker.check_action_change(sidx, action_text):
                 parsed = self.action_recognizer.parse(action_text)
+                # Diagnostic: log every state-changed action OCR result, even when
+                # parser fails. Critical for raise-detection diagnosis.
+                parsed_label = parsed["action_type"].value if parsed else "UNPARSED"
+                logger.info(f"[OCR seat_{sidx}] text={action_text!r} -> {parsed_label}")
                 if parsed is None:
-                    logger.debug(f"Seat {i} unparsed: {action_text!r}")
                     continue
 
-                position_str = self.tracker.get_position(i)
+                position_str = self.tracker.get_position(sidx)
                 try:
                     position = Position(position_str)
                 except ValueError:
                     position = Position.UTG  # fallback
 
                 # Detect facing action from previous actions in this hand
-                facing = self._build_facing_action(i)
+                facing = self._build_facing_action(sidx)
 
-                player_name = self.tracker.player_id_map.get(i, f"Player_{i}")
+                player_name = self.tracker.player_id_map.get(sidx, f"Player_{sidx}")
                 event = self.tracker.normalizer.create_event(
                     hand=self.tracker.current_hand,
                     player_name=player_name,
