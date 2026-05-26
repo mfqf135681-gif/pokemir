@@ -52,6 +52,31 @@ def _hamming(a: str, b: str) -> int:
     return sum(c1 != c2 for c1, c2 in zip(a, b))
 
 
+# T1 Visual debug artifacts — save ROI screenshots for low-confidence events
+REVIEW_ARTIFACTS_DIR = Path("data/review")
+
+
+def _save_review_artifacts(hand_id, sidx, ts_str: str, images: dict, metadata: dict) -> None:
+    """Persist captured ROI images + metadata when an event lands at confidence < 0.7.
+
+    Layout: data/review/<hand_id>/seat_<sidx>_<ts>_<kind>.png + meta.json
+    User can visually verify the OCR reads against actual screenshots, then
+    correct via tools/replay_review.py.
+    """
+    try:
+        hand_dir = REVIEW_ARTIFACTS_DIR / str(hand_id)
+        hand_dir.mkdir(parents=True, exist_ok=True)
+        prefix = f"seat_{sidx}_{ts_str}"
+        for kind, img in images.items():
+            if img is None or img.size == 0:
+                continue
+            cv2.imwrite(str(hand_dir / f"{prefix}_{kind}.png"), img)
+        with open(hand_dir / f"{prefix}_meta.json", "w") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        logger.warning("Failed to save review artifacts", exc_info=True)
+
+
 def _is_round_rebuy(amount: float) -> bool:
     """Heuristic: is this value a likely rebuy/top-up (round number)?
 
@@ -601,6 +626,7 @@ class PipelineOrchestrator:
             # whether OCR'd text is a definitive avatar-overlay action (FOLD/ALL_IN);
             # if so, short-circuit the action_area read for this tick.
             action_text = None
+            action_img = None  # T1: track for later artifact saving
             if seat_roi.fold_area is not None:
                 fold_img = self.capturer.capture_roi(seat_roi.fold_area)
                 fold_text = self.ocr.read_text(fold_img)
@@ -732,6 +758,37 @@ class PipelineOrchestrator:
 
                 if db is not None:
                     self.event_repo.create(db, event)
+
+                # T1 Visual debug artifacts: low-confidence events get a screenshot
+                # dump for human review. User can browse data/review/<hand_id>/ +
+                # use tools/replay_review.py to apply corrections.
+                if event.confidence_score < 0.7 and self.tracker.current_hand is not None:
+                    ts_str = datetime.now(timezone.utc).strftime("%H%M%S")
+                    # Re-capture stack img (we already used stack_now; re-capture is cheap)
+                    artifacts = {
+                        "action": action_img,  # may be None if fold_area path
+                        "stack": self.capturer.capture_roi(seat_roi.stack_area) if seat_roi.stack_area else None,
+                    }
+                    if seat_roi.fold_area is not None:
+                        artifacts["fold"] = self.capturer.capture_roi(seat_roi.fold_area)
+                    if seat_roi.amount_area is not None:
+                        artifacts["amount"] = self.capturer.capture_roi(seat_roi.amount_area)
+                    _save_review_artifacts(
+                        hand_id=self.tracker.current_hand.id,
+                        sidx=sidx,
+                        ts_str=ts_str,
+                        images=artifacts,
+                        metadata={
+                            "event_id": str(event.id),
+                            "player_name": event.player_name,
+                            "position": position.value,
+                            "action_type": event.action_type.value,
+                            "amount": event.amount,
+                            "confidence_score": event.confidence_score,
+                            "raw_data": event.raw_data,
+                        },
+                    )
+
                 logger.info(
                     f"Action: {event.player_name}({position.value}) "
                     f"{event.action_type.value} {event.amount or ''} [{event.street.value}]"
@@ -756,6 +813,17 @@ class PipelineOrchestrator:
         pot_img = self.capturer.capture_roi(rois.pot_size)
         pot_text = self.ocr.read_text(pot_img)
         amount = ActionRecognizer._extract_amount(pot_text)
+
+        # T2 pot monotonicity sanity: pot can only INCREASE within a hand (or stay
+        # same). A drop > 10% is almost certainly OCR misread (e.g. lost a digit:
+        # 1234 → 234). Ignore the bad reading; keep latest_pot_bb stable.
+        if (amount is not None
+                and self.tracker.latest_pot_bb is not None
+                and amount < self.tracker.latest_pot_bb * 0.9):
+            logger.warning(f"Pot OCR decrease ignored: "
+                           f"{self.tracker.latest_pot_bb} → {amount} (likely OCR error)")
+            return
+
         if amount is not None and amount != self.tracker.latest_pot_bb:
             logger.info(f"Pot: {amount} (was {self.tracker.latest_pot_bb})")
             self.tracker.latest_pot_bb = amount

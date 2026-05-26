@@ -96,3 +96,63 @@ FROM action_events ae
 WHERE ae.confidence_score < 0.7
   AND ae.raw_data->>'override_reason' IS NULL
 ORDER BY ae.timestamp DESC;
+
+
+-- ── T3 Cross-hand stack continuity ──────────────────────────────
+-- For each (hand N, seat X) compares the final stack at end-of-hand N to the
+-- initial stack at start-of-hand N+1. Significant unexplained jumps (delta >
+-- 50 chips AND not a round rebuy) signal OCR drift or untracked rebuy events.
+CREATE OR REPLACE VIEW v_cross_hand_stack_continuity AS
+WITH paired AS (
+  SELECT
+    h.id AS hand_id,
+    h.started_at,
+    h.raw_data->'player_stacks_final' AS final_s,
+    LEAD(h.raw_data->'player_stacks_initial')
+      OVER (ORDER BY h.started_at) AS next_init_s,
+    LEAD(h.id) OVER (ORDER BY h.started_at) AS next_hand_id
+  FROM hands h
+  WHERE h.raw_data ? 'player_stacks_final'
+)
+SELECT
+  p.hand_id,
+  p.next_hand_id,
+  to_char(p.started_at AT TIME ZONE 'Asia/Shanghai','MM-DD HH24:MI:SS') AS hand_ts,
+  fp.key AS seat,
+  fp.value::float AS stack_final_n,
+  (p.next_init_s->>fp.key)::float AS stack_initial_n_plus_1,
+  ((p.next_init_s->>fp.key)::float - fp.value::float) AS delta,
+  CASE
+    WHEN p.next_init_s->>fp.key IS NULL THEN 'absent_in_next'
+    WHEN abs((p.next_init_s->>fp.key)::float - fp.value::float) <= 50 THEN 'OK'
+    WHEN ((p.next_init_s->>fp.key)::float - fp.value::float) > 50
+         AND (((p.next_init_s->>fp.key)::float - fp.value::float)::int % 50 = 0
+              OR (p.next_init_s->>fp.key)::float IN (100,200,500,1000,2000,5000,10000))
+      THEN 'rebuy'
+    ELSE 'CHECK_REQUIRED'
+  END AS status
+FROM paired p, jsonb_each_text(p.final_s) AS fp
+WHERE p.next_init_s IS NOT NULL
+ORDER BY p.started_at DESC, fp.key;
+
+
+-- ── T4 Hand duration sanity ─────────────────────────────────────
+-- Typical hand: 20-180 seconds (median 30-120 with showdown).
+--   < 10s  → likely finalize misfire (community blink, not a real hand end)
+--   > 5min → likely hand-start/end detection failure or stuck pipeline
+CREATE OR REPLACE VIEW v_hand_duration_sanity AS
+SELECT
+  id AS hand_id,
+  to_char(started_at AT TIME ZONE 'Asia/Shanghai','MM-DD HH24:MI:SS') AS started_cn,
+  ended_at - started_at AS duration,
+  EXTRACT(EPOCH FROM (ended_at - started_at))::int AS dur_sec,
+  pot_size_final AS pot,
+  CASE
+    WHEN ended_at IS NULL THEN 'in_progress'
+    WHEN EXTRACT(EPOCH FROM (ended_at - started_at)) < 10 THEN 'TOO_FAST'
+    WHEN EXTRACT(EPOCH FROM (ended_at - started_at)) > 300 THEN 'TOO_SLOW'
+    ELSE 'OK'
+  END AS status
+FROM hands
+WHERE ended_at IS NOT NULL
+ORDER BY started_at DESC;
