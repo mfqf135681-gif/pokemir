@@ -480,6 +480,8 @@ class PipelineOrchestrator:
         hand = self.tracker.finalize_hand()
         if hand and db is not None:
             self.hand_repo.update(db, hand)
+        # 周期 dedupe player_id_map(catch 后 OCR 出现的变体,如小鬼微熏/徵熏)
+        self._canonicalize_player_id_map()
         # #10 Persist player registry at hand end (cheap; small JSON file)
         _save_player_registry(self.tracker._avatar_fingerprints)
 
@@ -546,6 +548,49 @@ class PipelineOrchestrator:
             })
         return results
 
+    def _canonicalize_player_id_map(self) -> None:
+        """周期性 dedupe player_id_map.
+
+        Initial fuzzy match only runs on first registration per seat. If seat_A
+        first reads "小鬼徵熏" then seat_B later reads "小鬼微熏", neither will
+        trigger merge (cache lock + one-way fuzzy). This sweeps the whole map and
+        canonicalizes aliases:
+          - Build clusters by fuzzy similarity (cutoff 0.75)
+          - Pick LONGEST name in cluster as canonical (more chars = more info)
+          - Rewrite all seat → canonical
+        """
+        names_set = set(self.tracker.player_id_map.values())
+        if len(names_set) <= 1:
+            return
+        names = list(names_set)
+        # Build canonical map: alias → canonical (longest in cluster)
+        canonical: dict[str, str] = {n: n for n in names}
+        for i, n_i in enumerate(names):
+            if len(n_i) < 3:
+                continue
+            for n_j in names[i + 1:]:
+                if len(n_j) < 3:
+                    continue
+                # Case-insensitive fuzzy compare
+                matches = get_close_matches(n_i.lower(), [n_j.lower()], n=1, cutoff=0.75)
+                if not matches:
+                    continue
+                # Aliased — pick longer as canonical (or first alphabetically tiebreak)
+                pick = n_i if len(n_i) > len(n_j) else (n_j if len(n_j) > len(n_i) else min(n_i, n_j))
+                # Apply: rewrite both their canonical entries
+                old_can_i = canonical.get(n_i, n_i)
+                old_can_j = canonical.get(n_j, n_j)
+                # Propagate to all entries that map to either
+                for k, v in list(canonical.items()):
+                    if v == old_can_i or v == old_can_j:
+                        canonical[k] = pick
+        # Apply to player_id_map
+        for sidx, current in list(self.tracker.player_id_map.items()):
+            new = canonical.get(current, current)
+            if new != current:
+                logger.info(f"_canonicalize: seat_{sidx} {current!r} → {new!r} (alias merged)")
+                self.tracker.player_id_map[sidx] = new
+
     def _process_timer(self, sidx: int, countdown: int) -> None:
         """Timer countdown digit just observed at fold_area. Track per seat:
         first sighting → start clock; subsequent sightings update; if countdown
@@ -599,23 +644,52 @@ class PipelineOrchestrator:
             return {}
 
         # Gate 2: real showdown requires ≥ 2 non-folded ACTIVE seats.
-        # Fold-around-on-river (single winner takes pot) = NO showdown,no cards revealed.
-        # Active = seats that fired any event this hand (excludes silent skips).
+        # Fold-around-on-river (single winner takes pot) = NO showdown.
         active = self.tracker._seats_with_events_this_hand - self.tracker._folded_seats
         if len(active) < 2:
-            logger.debug(f"[showdown] skip: only {len(active)} non-folded active seat(s) "
-                         f"(active={active}, folded={self.tracker._folded_seats})")
+            logger.debug(f"[showdown] skip: only {len(active)} non-folded active seat(s)")
             return {}
 
-        # Gate 3: per-card confidence threshold (raised 0.7 → 0.9 because CNN tends
-        # to over-confidently classify avatar pixels as cards).
-        CONF_THRESHOLD = 0.9
-        cards_by_seat = {}
+        # Gate 3: PRE-FILTER candidate seats by avatar baseline divergence.
+        # User insight: 头像区平时稳定;showdown 时 cards overlay 上去 → hash 显著变化.
+        # 若当前 fold_area hash ≈ idle_baseline_hash, 头像没真变化 → 没真摊牌 → skip CNN.
+        # 这是 root-cause fix for seat_X CNN 幻觉(如 seat_6 头像永久被识别 3s 3s).
+        BASELINE_DIVERGE_THRESHOLD = 10  # hamming > 10 of 64 bits = 显著变化
+        candidates = []  # [(seat, current_hash, hamming_diff)]
         for seat in self.roi_manager.rois.seat_regions:
             sidx = seat.seat_index
             if sidx in self.tracker._folded_seats:
                 continue
-            # cards_area is the wider showdown-cards display ROI (≠ fold_area)
+            if seat.fold_area is None or seat.fold_area.width == 0:
+                continue
+            fold_img_now = self.capturer.capture_roi(seat.fold_area)
+            if fold_img_now is None or fold_img_now.size == 0:
+                continue
+            current_hash = _avg_hash_64(fold_img_now)
+            baseline = self.tracker._idle_avatar_hash.get(sidx)
+            if baseline is None:
+                # 没建过 baseline — 保守跳过(宁可漏不假阳)
+                logger.debug(f"[showdown] seat_{sidx} skipped: no idle baseline yet")
+                continue
+            diff = _hamming(current_hash, baseline)
+            if diff < BASELINE_DIVERGE_THRESHOLD:
+                # 头像跟基线一样 — 没 overlay,跳过
+                logger.debug(f"[showdown] seat_{sidx} baseline matches "
+                             f"(hamming={diff}<{BASELINE_DIVERGE_THRESHOLD}), no overlay")
+                continue
+            candidates.append((seat, diff))
+
+        # Gate 4: 多 seat 同步性 — 真摊牌必然 ≥ 2 seat 同时 avatar diverge
+        if len(candidates) < 2:
+            logger.debug(f"[showdown] skip: only {len(candidates)} seat with avatar diverge "
+                         f"(real showdown requires ≥ 2)")
+            return {}
+
+        # Gate 5: per-card CNN confidence threshold
+        CONF_THRESHOLD = 0.9
+        cards_by_seat = {}
+        for seat, diff in candidates:
+            sidx = seat.seat_index
             if seat.cards_area is None or seat.cards_area.width == 0:
                 continue
             img = self.capturer.capture_roi(seat.cards_area)
@@ -624,17 +698,14 @@ class PipelineOrchestrator:
             h, w = img.shape[:2]
             if w < 40 or h < 40:
                 continue
-            # Each card is ~half the width;crop the upper portion to skip
-            # the badge ("对子"/"两对" 等) below the card images.
             card_zone = img[: int(h * 0.8), :]
             left_card = self.card_recognizer.recognize_single(card_zone[:, : w // 2])
             right_card = self.card_recognizer.recognize_single(card_zone[:, w // 2 :])
-            # Gate 2: per-card confidence threshold (skip hallucinations)
             cards = []
             for c in (left_card, right_card):
                 if not c:
                     continue
-                rc = c.get("rank_conf", 1.0)  # back-compat: if no conf, accept
+                rc = c.get("rank_conf", 1.0)
                 sc = c.get("suit_conf", 1.0)
                 if rc < CONF_THRESHOLD or sc < CONF_THRESHOLD:
                     logger.debug(f"seat_{sidx} skipped low-conf card "
@@ -643,7 +714,8 @@ class PipelineOrchestrator:
                 cards.append(f"{c['rank']}{c['suit']}")
             if len(cards) == 2:
                 cards_by_seat[sidx] = cards
-                logger.info(f"[showdown] seat_{sidx} cards: {cards}")
+                logger.info(f"[showdown] seat_{sidx} cards: {cards} "
+                            f"(avatar hamming={diff})")
         return cards_by_seat
 
     def _capture_seat_stacks(self) -> dict[int, float]:
@@ -762,8 +834,12 @@ class PipelineOrchestrator:
                         action_text = ft
                         self._finalize_timer(sidx)  # timer ended via fold/all-in
                 # Branch 3: empty (idle / between actions) → finalize timer
+                # AND update idle_avatar_hash baseline (this is the stable "no overlay"
+                # state for this seat). Used at hand-end to detect真摊牌 vs hallucination.
                 else:
                     self._finalize_timer(sidx)
+                    if sidx not in self.tracker._folded_seats and fold_img.size > 0:
+                        self.tracker._idle_avatar_hash[sidx] = _avg_hash_64(fold_img)
 
             if action_text is None:
                 action_img = self.capturer.capture_roi(seat_roi.action_area)

@@ -69,6 +69,12 @@ class StateTracker:
         # non_folded_active = _seats_with_events - _folded_seats;
         # if < 2 → no real showdown (single winner / fold-around) → skip CNN.
         self._seats_with_events_this_hand: set[int] = set()
+        # Per-seat idle avatar hash (baseline). Captured when fold_area is empty
+        # (no overlay text/timer/弃牌/all-in). Persistent across hands (not reset
+        # by start_new_hand) — same player at same seat keeps baseline. Used at
+        # showdown to detect avatar diverge: if hash ≈ baseline, no overlay
+        # appeared on this seat → skip CNN (root-cause fix for seat_X hallucinations).
+        self._idle_avatar_hash: dict[int, str] = {}
 
         # Per-hand seat_index → platform user-ID (OCR'd at hand-start; used as player_name for cross-hand stats)
         self.player_id_map: dict[int, str] = {}
