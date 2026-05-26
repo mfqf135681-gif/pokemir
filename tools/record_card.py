@@ -41,7 +41,7 @@ VALID_RANKS = {"2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"}
 VALID_SUITS = {"s", "h", "d", "c"}
 
 DEFAULT_OUT_DIR = Path(__file__).parent.parent / "tests" / "fixtures" / "cards"
-DEFAULT_PROFILE = "party_poker"
+DEFAULT_PROFILE = "party_poker_9"
 
 
 def next_seq(out_dir: Path, rank: str, suit: str, source: str) -> int:

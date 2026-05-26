@@ -21,7 +21,7 @@ def main():
     parser.add_argument(
         "--profile",
         default=None,
-        help="ROI profile name (e.g. party_poker, wepoker_table_1). "
+        help="ROI profile name (e.g. party_poker_9, party_poker_8). "
              "Defaults to POKEMIR_ROI_PROFILE env var or config.py default. "
              "Used in pipeline mode; ignored in api mode.",
     )

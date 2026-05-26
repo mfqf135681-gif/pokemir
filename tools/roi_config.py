@@ -2,7 +2,7 @@
 
 Usage:
     python tools/roi_config.py              # create/overwrite a profile
-    python tools/roi_config.py --name party_poker
+    python tools/roi_config.py --name party_poker_9
     python tools/roi_config.py --verify     # preview existing profile
 """
 
