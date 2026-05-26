@@ -9,6 +9,9 @@ from capture.screen import ScreenCapturer
 from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE
 from difflib import get_close_matches
 
+import cv2
+import numpy as np
+
 from events.models import ActionType, Position
 from events.normalizer import compute_confidence, infer_action_from_delta
 
@@ -20,6 +23,31 @@ ACTION_OCR_ALLOWLIST = (
     "0123456789"                                  # digit amounts
     "-., $"                                       # common separators
 )
+
+
+def _avg_hash_64(bgr_img: np.ndarray) -> str:
+    """Simple 64-bit average hash (avg-hash / aHash) of an image region.
+
+    Used as a player avatar fingerprint (#4): same avatar pixels → same hash
+    → same identity, regardless of OCR character drift on the nickname.
+
+    Returns 64-char "0"/"1" string. Hamming distance ≤ ~10 considered "same".
+    """
+    if bgr_img is None or bgr_img.size == 0:
+        return ""
+    if bgr_img.shape[2] == 4:
+        bgr_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGRA2BGR)
+    gray = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2GRAY)
+    thumb = cv2.resize(gray, (8, 8), interpolation=cv2.INTER_AREA)
+    avg = thumb.mean()
+    bits = (thumb > avg).astype(int).flatten()
+    return "".join(str(b) for b in bits)
+
+
+def _hamming(a: str, b: str) -> int:
+    if not a or not b or len(a) != len(b):
+        return 999
+    return sum(c1 != c2 for c1, c2 in zip(a, b))
 from pipeline.detector import StateTracker
 from recognition.actions import ActionRecognizer
 from recognition.cards import CardRecognizer
@@ -259,6 +287,29 @@ class PipelineOrchestrator:
             # #2 Cache lock: don't re-OCR a seat we already have a valid name for
             if seat.seat_index in self.tracker.player_id_map:
                 continue
+
+            # #4 Avatar image fingerprint — try BEFORE OCR. If we've seen this avatar
+            # before (anywhere), we already know the player name. fold_area is used as
+            # the avatar source since it covers head-center pixels.
+            avatar_hash = ""
+            if seat.fold_area is not None and seat.fold_area.width > 0:
+                avatar_img = self.capturer.capture_roi(seat.fold_area)
+                avatar_hash = _avg_hash_64(avatar_img)
+                # Match against registry — nearest neighbour by Hamming distance
+                best_match = None
+                best_dist = 999
+                for h, name in self.tracker._avatar_fingerprints.items():
+                    d = _hamming(avatar_hash, h)
+                    if d < best_dist:
+                        best_dist = d
+                        best_match = name
+                if best_match and best_dist <= 6:  # ~9% bit-diff threshold
+                    logger.debug(f"_capture_player_ids: seat_{seat.seat_index} avatar match "
+                                 f"{best_match!r} (hamming={best_dist})")
+                    self.tracker.player_id_map[seat.seat_index] = best_match
+                    continue
+
+            # Fallback to OCR if no fingerprint match
             img = self.capturer.capture_roi(seat.id_area)
             text = self.ocr.read_text(img).strip()
             if not text:
@@ -281,6 +332,9 @@ class PipelineOrchestrator:
                                     f"{text!r} → canonicalized to {matches[0]!r} (alias)")
                     text = matches[0]
             self.tracker.player_id_map[seat.seat_index] = text
+            # #4 Register avatar fingerprint for future lookup
+            if avatar_hash:
+                self.tracker._avatar_fingerprints[avatar_hash] = text
 
     def _end_current_hand(self, db):
         hand = self.tracker.finalize_hand()

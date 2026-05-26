@@ -48,6 +48,10 @@ class StateTracker:
         # P3 Layer 2 inputs: track per-street state for action_type inference
         self._street_to_call: float = 0.0   # max chip contribution by any seat this street
         self._street_has_bet: bool = False  # True after first chip-contributing action this street
+        # #4 Avatar image fingerprint registry — maps phash → canonical player name.
+        # Persistent across hands (not reset by start_new_hand), forms the foundation
+        # of "same avatar = same player" identity regardless of OCR character drift.
+        self._avatar_fingerprints: dict[str, str] = {}
 
         # Per-hand seat_index → platform user-ID (OCR'd at hand-start; used as player_name for cross-hand stats)
         self.player_id_map: dict[int, str] = {}
