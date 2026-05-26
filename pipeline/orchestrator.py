@@ -129,13 +129,15 @@ class PipelineOrchestrator:
                 self._end_current_hand(db)
                 self._start_new_hand(db, hero_1, hero_2)
 
-            # 4. Seat actions
-            if self.tracker.has_active_hand:
-                self._process_seat_actions(db, rois)
-
-            # 5. Pot size
+            # 4. Pot size — runs BEFORE seat actions so that _process_seat_actions
+            # has access to both pot_before (saved on tracker._pot_before_tick)
+            # and pot_after (= tracker.latest_pot_bb) for cross-validation raw_data.
             if self.tracker.has_active_hand:
                 self._process_pot(db, rois)
+
+            # 5. Seat actions — writes raw_data with stack_delta + pot_delta evidence
+            if self.tracker.has_active_hand:
+                self._process_seat_actions(db, rois)
 
             if db is not None:
                 db.commit()
@@ -280,6 +282,15 @@ class PipelineOrchestrator:
         # when only some seats are configured (e.g. partial stage-B setup).
         for seat_roi in rois.seat_regions:
             sidx = seat_roi.seat_index
+
+            # P1 cross-validation: always read stack every tick (not just on action change)
+            # so we have stack_before/stack_after on the action that DOES change.
+            stack_now = None
+            if seat_roi.stack_area is not None and seat_roi.stack_area.width > 0:
+                stack_img = self.capturer.capture_roi(seat_roi.stack_area)
+                stack_text = self.ocr.read_text(stack_img, allowlist="0123456789.")
+                stack_now = ActionRecognizer._extract_amount(stack_text)
+
             # Priority: check fold_area first — WePoker shows "弃牌" at avatar center
             # (separate pixel zone from action_area which is above the avatar). If a fold
             # is detected here, skip the action_area read for this tick.
@@ -303,6 +314,10 @@ class PipelineOrchestrator:
                         action_text = f"{action_text} {amount_text}"
 
             if not action_text:
+                # No event this tick — still update _prev_stack so the NEXT event has
+                # an accurate stack_before reading from the same baseline.
+                if stack_now is not None:
+                    self.tracker._prev_stack[sidx] = stack_now
                 continue
 
             if self.tracker.check_action_change(sidx, action_text):
@@ -333,13 +348,31 @@ class PipelineOrchestrator:
                     facing_action=facing,
                 )
 
-                # Attach stack and pot context
-                if seat_roi.stack_area.width > 0:
-                    stack_img = self.capturer.capture_roi(seat_roi.stack_area)
-                    stack_text = self.ocr.read_text(stack_img)
-                    event.effective_stack_bb = ActionRecognizer._extract_amount(stack_text)
+                # Attach stack and pot context (stack_now already captured at top of loop)
+                event.effective_stack_bb = stack_now
                 if self.tracker.latest_pot_bb is not None:
                     event.pot_size_bb = self.tracker.latest_pot_bb
+
+                # P1 cross-validation: record all signals as evidence in raw_data
+                # so future layers (P2 equation check, P3 stack-derived inference,
+                # P4 review) can reason about them without re-OCR.
+                stack_before = self.tracker._prev_stack.get(sidx)
+                stack_after = stack_now
+                stack_delta = (stack_before - stack_after) if (stack_before is not None and stack_after is not None) else None
+                pot_before = self.tracker._pot_before_tick
+                pot_after = self.tracker.latest_pot_bb
+                pot_delta = (pot_after - pot_before) if (pot_after is not None and pot_before is not None) else None
+                event.raw_data = {
+                    "action_text": action_text,
+                    "stack_before": stack_before,
+                    "stack_after": stack_after,
+                    "stack_delta": stack_delta,
+                    "pot_before": pot_before,
+                    "pot_after": pot_after,
+                    "pot_delta": pot_delta,
+                    "text_derived_action": parsed["action_type"].value,
+                }
+                # P1: confidence stays 1.0 (default);  P2 will start scoring
 
                 if db is not None:
                     self.event_repo.create(db, event)
@@ -348,12 +381,22 @@ class PipelineOrchestrator:
                     f"{event.action_type.value} {event.amount or ''} [{event.street.value}]"
                 )
 
-    def _process_pot(self, db, rois):
-        """Read pot size from ROI and stash on tracker; next action event will pick it up.
+            # Update _prev_stack for NEXT tick's cross-validation baseline (whether or
+            # not an event fired this tick — keep the latest reading current).
+            if stack_now is not None:
+                self.tracker._prev_stack[sidx] = stack_now
 
-        Also maintains _hand_pot_peak (max over the hand) for hands.pot_size_final
-        so the final value is immune to transient new-hand reset readings.
+    def _process_pot(self, db, rois):
+        """Read pot size from ROI and update tracker state.
+
+        Side effects (used by _process_seat_actions downstream for cross-validation):
+          - tracker._pot_before_tick = pot value before this tick's update
+          - tracker.latest_pot_bb = pot value after this tick's OCR
+          - tracker._hand_pot_peak = max over the hand (immune to new-hand transient)
         """
+        # Snapshot BEFORE updating so seat-action raw_data can compute pot_delta
+        self.tracker._pot_before_tick = self.tracker.latest_pot_bb
+
         pot_img = self.capturer.capture_roi(rois.pot_size)
         pot_text = self.ocr.read_text(pot_img)
         amount = ActionRecognizer._extract_amount(pot_text)

@@ -60,6 +60,7 @@ class ActionEvent:
     facing_action: Optional[str] = None      # e.g. "bet 3.5bb" or "raise 12bb"
     effective_stack_bb: Optional[float] = None
     pot_size_bb: Optional[float] = None
+    confidence_score: float = 1.0           # 4-layer cross-validation score (1.0 = all signals agree)
     players_in_pot: int = 0
 
     board_texture: Optional[dict] = None     # {"wet": true, "paired": false, "high_card": "A", ...}

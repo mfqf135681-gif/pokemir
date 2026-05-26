@@ -56,12 +56,14 @@ CREATE TABLE IF NOT EXISTS action_events (
     board_texture       JSONB,              -- {"wet":true,"paired":false,"high_card":"A","straight_draw":true,...}
     timestamp           TIMESTAMPTZ,
 
-    raw_data            JSONB,
+    raw_data            JSONB,                  -- cross-validation evidence (stack_delta, pot_delta, text, etc)
+    confidence_score    DOUBLE PRECISION DEFAULT 1.0,  -- 4-layer cross-validation score (P1=1.0; P2+ populated)
 
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_action_events_hand ON action_events(hand_id);
+CREATE INDEX IF NOT EXISTS idx_action_events_confidence ON action_events(confidence_score);
 CREATE INDEX IF NOT EXISTS idx_action_events_player ON action_events(player_name);
 CREATE INDEX IF NOT EXISTS idx_action_events_hand_seq ON action_events(hand_id, sequence_number);
 

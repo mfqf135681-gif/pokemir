@@ -39,6 +39,12 @@ class StateTracker:
         # used by finalize_hand for hands.pot_size_final to avoid the "OCR caught a
         # tiny value at hand-end transition" bug
         self._hand_pot_peak: float | None = None
+        # P1 cross-validation: pot value BEFORE this tick's _process_pot ran.
+        # Used as pot_before in per-event raw_data evidence (pot_delta = after - before).
+        self._pot_before_tick: float | None = None
+        # P1 cross-validation: per-seat last stack OCR reading.
+        # Used as stack_before in per-event raw_data evidence (stack_delta = before - after).
+        self._prev_stack: dict[int, float] = {}
 
         # Per-hand seat_index → platform user-ID (OCR'd at hand-start; used as player_name for cross-hand stats)
         self.player_id_map: dict[int, str] = {}
@@ -141,6 +147,8 @@ class StateTracker:
         self._prev_community_count = 0
         self.latest_pot_bb = None
         self._hand_pot_peak = None
+        self._pot_before_tick = None
+        self._prev_stack.clear()
         self.player_id_map = {}
         logger.info(f"New hand started: {self.current_hand.id}")
         return self.current_hand

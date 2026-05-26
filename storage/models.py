@@ -56,6 +56,7 @@ class ActionEventModel(Base):
     board_texture = Column(JSONB)
     timestamp = Column(DateTime(timezone=True))
     raw_data = Column(JSONB)
+    confidence_score = Column(Float, default=1.0)
     created_at = Column(DateTime(timezone=True), server_default="now()")
 
     hand = relationship("HandModel", back_populates="action_events")

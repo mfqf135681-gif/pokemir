@@ -65,6 +65,7 @@ class ActionEventRepository:
             board_texture=event.board_texture,
             timestamp=event.timestamp or datetime.now(timezone.utc),
             raw_data=event.raw_data,
+            confidence_score=event.confidence_score,
         )
         session.add(model)
         session.commit()
