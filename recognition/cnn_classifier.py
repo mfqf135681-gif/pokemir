@@ -107,6 +107,14 @@ class CnnClassifier:
         x = self._transform(pil).unsqueeze(0).to(self._device)
         with torch.no_grad():
             pr, ps = self._model(x)
+            # Softmax → max prob = per-head confidence
+            rank_softmax = torch.softmax(pr, dim=1)
+            suit_softmax = torch.softmax(ps, dim=1)
             rank_idx = int(pr.argmax(1).item())
             suit_idx = int(ps.argmax(1).item())
-        return {"rank": self._ranks[rank_idx], "suit": self._suits[suit_idx]}
+            rank_conf = float(rank_softmax[0, rank_idx].item())
+            suit_conf = float(suit_softmax[0, suit_idx].item())
+        return {
+            "rank": self._ranks[rank_idx], "suit": self._suits[suit_idx],
+            "rank_conf": rank_conf, "suit_conf": suit_conf,
+        }

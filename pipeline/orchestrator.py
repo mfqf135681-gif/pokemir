@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -494,7 +495,9 @@ class PipelineOrchestrator:
         Returns list of dicts.
         """
         results = []
-        pot = hand.pot_size_final or 0
+        # Bug 2 fix: pot_size_final is set by finalize_hand() which runs AFTER
+        # _infer_insurance. Use _hand_pot_peak directly (the eventual pot_size_final).
+        pot = self.tracker._hand_pot_peak or hand.pot_size_final or 0
         initial_stacks = (hand.raw_data or {}).get("player_stacks_initial", {})
         for sidx in self.tracker._went_all_in_this_hand:
             sidx_key = str(sidx) if str(sidx) in initial_stacks else sidx
@@ -575,16 +578,27 @@ class PipelineOrchestrator:
 
     def _capture_showdown_cards(self) -> dict[int, list[str]]:
         """At hand-end, for each NON-folded seat try CNN on cards_area to read
-        the 2 revealed hole cards (showdown). Returns {seat_index: [card1, card2]}.
+        the 2 revealed hole cards (showdown).
 
-        Uses cards_area ROI (must be framed to cover the FULL 2-card display zone,
-        which is LARGER than fold_area in showdown state; fold_area is the small
-        avatar-center overlay zone for timer/fold/all-in text only).
+        Bug 1 fix:
+        - GATE 1: only run if community has 5 cards (river / showdown stage).
+          Pre-river fold-arounds have no showdown possible.
+        - GATE 2: per-card CNN confidence threshold (rank_conf > 0.7 AND
+          suit_conf > 0.7). Filters out hallucinations from non-card pixels.
 
-        Best-effort: failures (no cards visible / CNN low-confidence / cards_area
-        not configured / only 1 card detected) silently skip. Saved to
-        hand.raw_data['showdown_cards'].
+        Saved to hand.raw_data['showdown_cards']. Best-effort: silently skip
+        on missing ROI / low confidence / single-card detection.
         """
+        # Gate 1: only at river / showdown stage
+        hand = self.tracker.current_hand
+        if hand is None:
+            return {}
+        from events.models import Street
+        community = hand.community_cards.get(Street.RIVER) if hand.community_cards else None
+        if not community or len(community) < 5:
+            return {}
+
+        CONF_THRESHOLD = 0.7
         cards_by_seat = {}
         for seat in self.roi_manager.rois.seat_regions:
             sidx = seat.seat_index
@@ -604,12 +618,19 @@ class PipelineOrchestrator:
             card_zone = img[: int(h * 0.8), :]
             left_card = self.card_recognizer.recognize_single(card_zone[:, : w // 2])
             right_card = self.card_recognizer.recognize_single(card_zone[:, w // 2 :])
+            # Gate 2: per-card confidence threshold (skip hallucinations)
             cards = []
-            if left_card:
-                cards.append(f"{left_card['rank']}{left_card['suit']}")
-            if right_card:
-                cards.append(f"{right_card['rank']}{right_card['suit']}")
-            if len(cards) == 2:  # only save if both cards detected
+            for c in (left_card, right_card):
+                if not c:
+                    continue
+                rc = c.get("rank_conf", 1.0)  # back-compat: if no conf, accept
+                sc = c.get("suit_conf", 1.0)
+                if rc < CONF_THRESHOLD or sc < CONF_THRESHOLD:
+                    logger.debug(f"seat_{sidx} skipped low-conf card "
+                                 f"{c['rank']}{c['suit']} (rc={rc:.2f}, sc={sc:.2f})")
+                    continue
+                cards.append(f"{c['rank']}{c['suit']}")
+            if len(cards) == 2:
                 cards_by_seat[sidx] = cards
                 logger.info(f"[showdown] seat_{sidx} cards: {cards}")
         return cards_by_seat
@@ -710,21 +731,26 @@ class PipelineOrchestrator:
                 fold_img = self.capturer.capture_roi(seat_roi.fold_area)
                 fold_text = self.ocr.read_text(fold_img)
                 ft = fold_text.strip() if fold_text else ""
-                # Branch 1: digit-only short text → countdown timer
-                if ft and ft.isdigit() and 1 <= len(ft) <= 2:
-                    self._process_timer(sidx, int(ft))
-                    # While timer running, action hasn't happened yet — skip action_area
-                    # (no need to OCR; saves cost). Update _prev_stack and continue.
-                    if stack_now is not None:
-                        self.tracker._prev_stack[sidx] = stack_now
-                    continue
+                # Bug 3 fix: regex extracts digits even with surrounding noise
+                # (e.g. "15 sec" / "15." / " 15"). Permissive but bounded to
+                # 0-60 (reasonable timer range).
+                timer_match = re.search(r"\b(\d{1,2})\b", ft) if ft else None
+                # Branch 1: digit found and looks like timer → countdown
+                if timer_match and 0 <= int(timer_match.group(1)) <= 60:
+                    # Also gate: text shouldn't contain action keywords (avoids
+                    # "跟注 100" being parsed as timer "100").
+                    if self.action_recognizer.parse(ft) is None:
+                        self._process_timer(sidx, int(timer_match.group(1)))
+                        if stack_now is not None:
+                            self.tracker._prev_stack[sidx] = stack_now
+                        continue
                 # Branch 2: parser hits FOLD / ALL_IN keyword → action via fold_area
-                elif ft:
+                if ft:
                     parsed_fold = self.action_recognizer.parse(ft)
                     if parsed_fold and parsed_fold["action_type"] in (ActionType.FOLD, ActionType.ALL_IN):
                         action_text = ft
                         self._finalize_timer(sidx)  # timer ended via fold/all-in
-                # Branch 3: empty (idle / between actions) → finalize timer if it was running
+                # Branch 3: empty (idle / between actions) → finalize timer
                 else:
                     self._finalize_timer(sidx)
 
