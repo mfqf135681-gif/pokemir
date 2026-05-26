@@ -453,48 +453,64 @@ class PipelineOrchestrator:
         _save_player_registry(self.tracker._avatar_fingerprints)
 
     def _infer_insurance(self, hand, final_stacks: dict[int, float]) -> list[dict]:
-        """#12a Infer insurance buys from stack patterns (user hypothesis).
+        """#12a Infer insurance buys from stack patterns (user hypothesis + win/lose split).
 
-        For each seat that went all-in this hand:
-          - stack_final ≈ 0   → lost without insurance (or won 0, rare)
-          - stack_final round → rebuy/top-up (e.g. 100/500/1000 chips)
-          - stack_final random → INSURANCE PAYOUT (= pot − rake − premium)
+        Refined: also uses stack GAIN vs pot to distinguish winners from insurance buyers:
+          - gain ≥ pot × 0.5 → likely won main pot (NOT insurance)
+          - gain ≈ 0  AND stack_final ≈ 0 → lost without insurance
+          - gain ≈ 0  AND stack_final round → rebuy
+          - gain < pot × 0.5 AND non-round → INSURANCE PAYOUT (买保险输了)
 
-        Returns list of dicts:
-          {seat, player_name, stack_final, classification, premium_inferred?}
+        Returns list of dicts.
         """
         results = []
         pot = hand.pot_size_final or 0
+        initial_stacks = (hand.raw_data or {}).get("player_stacks_initial", {})
         for sidx in self.tracker._went_all_in_this_hand:
+            sidx_key = str(sidx) if str(sidx) in initial_stacks else sidx
+            init_val = initial_stacks.get(sidx_key, initial_stacks.get(sidx, 0))
             final_val = final_stacks.get(sidx, 0)
+            try:
+                gain = float(final_val) - float(init_val)
+            except (TypeError, ValueError):
+                gain = 0
             player_name = self.tracker.player_id_map.get(sidx, f"Player_{sidx}")
+
+            # Win detection first — winners have large positive gains relative to pot
+            if pot > 0 and gain >= pot * 0.5:
+                classification = "won_main_pot"
+                results.append({
+                    "seat": sidx, "player_name": player_name,
+                    "stack_initial": init_val, "stack_final": final_val,
+                    "gain": gain, "pot": pot, "classification": classification,
+                })
+                continue
             if final_val < 1:
                 classification = "lost_no_insurance"
-                results.append({
-                    "seat": sidx, "player_name": player_name,
-                    "stack_final": final_val, "classification": classification,
-                })
             elif _is_round_rebuy(final_val):
                 classification = "rebuy"
-                results.append({
-                    "seat": sidx, "player_name": player_name,
-                    "stack_final": final_val, "classification": classification,
-                })
-            else:
-                # Non-zero AND non-round → insurance payout
-                # Approximate: payout = pot − rake (~5%) − premium → premium ≈ pot * 0.95 − payout
-                rake_est = pot * 0.05
-                premium_inferred = max(0, pot - rake_est - final_val)
+            elif pot > 0 and 0 < gain < pot * 0.5:
+                # Small positive gain + non-round = likely insurance payout
                 classification = "insurance_payout"
+                rake_est = pot * 0.05
+                premium_inferred = max(0, pot - rake_est - gain)
                 results.append({
                     "seat": sidx, "player_name": player_name,
-                    "stack_final": final_val, "classification": classification,
+                    "stack_initial": init_val, "stack_final": final_val,
+                    "gain": gain, "pot": pot,
                     "premium_inferred": premium_inferred,
-                    "pot": pot,
+                    "classification": classification,
                 })
                 logger.info(f"[12a insurance] seat_{sidx} {player_name!r} likely bought "
-                            f"insurance: stack_final={final_val} (pot={pot}, "
-                            f"premium~{premium_inferred:.0f})")
+                            f"insurance: gain={gain} (pot={pot}, premium~{premium_inferred:.0f})")
+                continue
+            else:
+                classification = "unknown"
+            results.append({
+                "seat": sidx, "player_name": player_name,
+                "stack_initial": init_val, "stack_final": final_val,
+                "gain": gain, "pot": pot, "classification": classification,
+            })
         return results
 
     def _capture_seat_stacks(self) -> dict[int, float]:
@@ -697,9 +713,11 @@ class PipelineOrchestrator:
                 event.confidence_score = compute_confidence(
                     final_action, stack_delta, pot_delta,
                 )
-                # If P3 overrode, lower confidence (REQ Q4=A 数字优先 + confidence 降)
+                # If P3 overrode: set confidence to 0.7 (signaling "auto-corrected,
+                # use with caution but not pure low-signal"). Distinguishes from 0.5
+                # which means "no signal available to verify".
                 if override_reason:
-                    event.confidence_score = min(event.confidence_score, 0.5)
+                    event.confidence_score = 0.7
 
                 # P3 state: update street tracking after this event
                 if stack_delta is not None and stack_delta > 2:

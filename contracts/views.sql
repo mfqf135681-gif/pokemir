@@ -75,6 +75,12 @@ ORDER BY all_in_hands DESC;
 
 
 -- ── Low-confidence events (P4 review CLI target) ────────────────
+-- Excludes auto-corrected events (override_reason IS NOT NULL) — those are
+-- "auto-resolved by stack-derived inference" not "truly low signal".
+-- After 2026-05-25 fix: override events now get confidence=0.7;
+--   confidence < 0.7 means "no numerical signal available";
+--   confidence == 0.7 may include both override AND multi-actor partial signals.
+-- The override exclusion below is belt-and-suspenders.
 CREATE OR REPLACE VIEW v_low_confidence_events AS
 SELECT
   ae.id AS event_id, ae.hand_id, ae.player_name, ae.position, ae.street,
@@ -88,4 +94,5 @@ SELECT
   ae.timestamp
 FROM action_events ae
 WHERE ae.confidence_score < 0.7
+  AND ae.raw_data->>'override_reason' IS NULL
 ORDER BY ae.timestamp DESC;
