@@ -17,6 +17,7 @@ import numpy as np
 
 from events.models import ActionType, Position
 from events.normalizer import compute_confidence, infer_action_from_delta
+from events import diag
 
 # Allowlist for action_area OCR — restricts charset to known action keywords + amounts.
 # Filters out garbage like "疯鱼罩轩 2"(player name bleed)or random Chinese characters.
@@ -672,6 +673,9 @@ class PipelineOrchestrator:
         from events.models import Street
         community = hand.community_cards.get(Street.RIVER) if hand.community_cards else None
         if not community or len(community) < 5:
+            diag.emit("showdown.gate1_skip",
+                      {"reason": "community_lt_5", "river_count": len(community) if community else 0},
+                      hand_id=hand.id)
             return {}
 
         # Gate 2: real showdown requires ≥ 2 non-folded ACTIVE seats.
@@ -679,7 +683,14 @@ class PipelineOrchestrator:
         active = self.tracker._seats_with_events_this_hand - self.tracker._folded_seats
         if len(active) < 2:
             logger.debug(f"[showdown] skip: only {len(active)} non-folded active seat(s)")
+            diag.emit("showdown.gate2_skip",
+                      {"reason": "active_lt_2", "active_count": len(active),
+                       "active": sorted(active), "folded": sorted(self.tracker._folded_seats)},
+                      hand_id=hand.id)
             return {}
+        diag.emit("showdown.enter",
+                  {"active_seats": sorted(active), "river_count": len(community)},
+                  hand_id=hand.id)
 
         # Gate 3: PRE-FILTER candidate seats by avatar baseline divergence.
         # User insight: 头像区平时稳定;showdown 时 cards overlay 上去 → hash 显著变化.
@@ -703,14 +714,21 @@ class PipelineOrchestrator:
             if baseline is None:
                 # 没建过 baseline — 保守跳过(宁可漏不假阳)
                 logger.debug(f"[showdown] seat_{sidx} skipped: no idle baseline yet")
+                diag.emit("showdown.gate3_no_baseline", {"seat": sidx}, hand_id=hand.id)
                 continue
             diff = _hamming(current_hash, baseline)
             if diff < BASELINE_DIVERGE_THRESHOLD:
                 # 头像跟基线一样 — 没 overlay,跳过
                 logger.debug(f"[showdown] seat_{sidx} baseline matches "
                              f"(hamming={diff}<{BASELINE_DIVERGE_THRESHOLD}), no overlay")
+                diag.emit("showdown.gate3_reject",
+                          {"seat": sidx, "hamming": diff, "threshold": BASELINE_DIVERGE_THRESHOLD},
+                          hand_id=hand.id)
                 continue
             candidates.append((seat, diff))
+        diag.emit("showdown.candidates",
+                  {"count": len(candidates), "seats": [s.seat_index for s, _ in candidates]},
+                  hand_id=hand.id)
 
         # Gate 4 (移除): 多 seat 同步性 — 改由"规则主动触发"逻辑取代。
         # 因 Gate 1+2 已断言 community=5 且 ≥2 非弃 active = 摊牌确定发生,
@@ -744,12 +762,25 @@ class PipelineOrchestrator:
                 if rc < CONF_THRESHOLD or sc < CONF_THRESHOLD:
                     logger.debug(f"seat_{sidx} skipped low-conf card "
                                  f"{c['rank']}{c['suit']} (rc={rc:.2f}, sc={sc:.2f})")
+                    diag.emit("showdown.gate5_low_conf",
+                              {"seat": sidx, "card": f"{c['rank']}{c['suit']}",
+                               "rank_conf": round(rc, 3), "suit_conf": round(sc, 3),
+                               "threshold": CONF_THRESHOLD},
+                              hand_id=hand.id)
                     continue
                 cards.append(f"{c['rank']}{c['suit']}")
             if len(cards) == 2:
-                # Gate 6: 防幻觉 history check
+                # Gate 6a: 牌堆物理约束 — 每张牌全牌堆只有 1 张,card1 == card2
+                # (例 3s,3s = 两张黑桃 3) 必为 CNN 幻觉,第 1 次即 reject。
+                # 早于 history append,避免污染历史。
+                if cards[0] == cards[1]:
+                    logger.info(f"[showdown] seat_{sidx} REJECTED: {cards} 牌堆物理约束违反")
+                    diag.emit("showdown.gate6a_physical_violation",
+                              {"seat": sidx, "cards": cards}, hand_id=hand.id, level="WARN")
+                    continue
+                # Gate 6b: 防幻觉 history check
                 # 若该 seat 最近 5 次 showdown 预测中,本次 (card1,card2) 已出现 ≥ 3 次,
-                # 视为 CNN 对该头像的稳定幻觉(如 seat_X = 3s,3s 多手重复)→ 抑制。
+                # 视为 CNN 对该头像的稳定幻觉 → 抑制。
                 pred_tuple = (cards[0], cards[1])
                 hist = self.tracker._seat_pred_history.setdefault(sidx, deque(maxlen=5))
                 hist.append(pred_tuple)
@@ -757,10 +788,22 @@ class PipelineOrchestrator:
                 if len(hist) >= 3 and hist.count(pred_tuple) >= 3:
                     logger.info(f"[showdown] seat_{sidx} suppressed: prediction {pred_tuple} "
                                 f"appeared {hist.count(pred_tuple)}/{len(hist)} (hallucination)")
+                    diag.emit("showdown.gate6b_hallucination",
+                              {"seat": sidx, "cards": list(pred_tuple),
+                               "occurrences": hist.count(pred_tuple), "window": len(hist)},
+                              hand_id=hand.id, level="WARN")
                     continue
                 cards_by_seat[sidx] = cards
                 logger.info(f"[showdown] seat_{sidx} cards: {cards} "
                             f"(avatar hamming={diff})")
+                diag.emit("showdown.accepted",
+                          {"seat": sidx, "cards": cards, "avatar_hamming": diff},
+                          hand_id=hand.id)
+            else:
+                # 0 or 1 card detected after low-conf filter — neither rejected as
+                # hallucination nor accepted; record for completeness.
+                diag.emit("showdown.incomplete",
+                          {"seat": sidx, "cards_passed_conf": cards}, hand_id=hand.id)
         return cards_by_seat
 
     def _initialize_avatar_baselines(self) -> None:
@@ -1031,6 +1074,22 @@ class PipelineOrchestrator:
                 # 12a: mark seat as having gone all-in this hand (for insurance inference)
                 if final_action == ActionType.ALL_IN or (stack_after is not None and stack_after <= 5):
                     self.tracker._went_all_in_this_hand.add(sidx)
+                    diag.emit("all_in.detected",
+                              {"seat": sidx, "player": player_name,
+                               "final_action": final_action.value,
+                               "stack_before": stack_before, "stack_after": stack_after,
+                               "stack_delta": stack_delta, "action_text": action_text},
+                              hand_id=self.tracker.current_hand.id)
+                # Detection-gap probe: if OCR text contains "all" / "全押" but final_action
+                # is not all_in (means stack OCR missed reading 0 → P3 inference fell through),
+                # log a candidate so we can later diagnose why the explicit signal didn't lift.
+                elif action_text and any(k in action_text.lower() for k in ("all in", "all-in", "allin", "全押")):
+                    diag.emit("all_in.text_only_candidate",
+                              {"seat": sidx, "player": player_name,
+                               "final_action": final_action.value,
+                               "stack_before": stack_before, "stack_after": stack_after,
+                               "stack_delta": stack_delta, "action_text": action_text},
+                              hand_id=self.tracker.current_hand.id, level="WARN")
 
                 # Track folded seats (for showdown CNN skip + insurance defaults)
                 if final_action == ActionType.FOLD:

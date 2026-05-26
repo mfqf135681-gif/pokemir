@@ -131,3 +131,19 @@ CREATE TABLE IF NOT EXISTS replay_corrections (
 );
 
 CREATE INDEX IF NOT EXISTS idx_corrections_hand ON replay_corrections(hand_id);
+
+-- ── Diagnostic Events ─────────────────────────────────────
+-- 结构化决策点(showdown 各 gate 判定 / all_in 候选 / CNN low-conf 等),
+-- 与全量 stderr/file log 互补:Linux 端可 SELECT 查询调试 Win 端运行。
+-- 写入位置:pipeline 在 emit() 时同步插入,失败回退 logger.warning。
+CREATE TABLE IF NOT EXISTS diagnostic_events (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    hand_id     UUID REFERENCES hands(id) ON DELETE CASCADE,  -- 可空 (hand 外的诊断如启动/baseline)
+    tag         TEXT NOT NULL,        -- 'showdown.gate3_reject', 'all_in.candidate', 'cnn.low_conf' 等
+    level       TEXT NOT NULL DEFAULT 'INFO',  -- INFO / WARN / ERROR
+    payload     JSONB NOT NULL,       -- 任意结构 (seat, cards, conf, hamming, ...)
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_diag_hand_tag ON diagnostic_events(hand_id, tag, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_diag_tag_time ON diagnostic_events(tag, occurred_at DESC);

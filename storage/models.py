@@ -115,3 +115,14 @@ class ReplayCorrectionModel(Base):
 
     notes = Column(Text)
     corrected_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DiagnosticEventModel(Base):
+    __tablename__ = "diagnostic_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    hand_id = Column(UUID(as_uuid=True), ForeignKey("hands.id", ondelete="CASCADE"), nullable=True)
+    tag = Column(Text, nullable=False)
+    level = Column(Text, nullable=False, server_default="INFO")
+    payload = Column(JSONB, nullable=False)
+    occurred_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
