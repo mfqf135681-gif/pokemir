@@ -124,6 +124,8 @@ from pipeline.detector import StateTracker
 from recognition.actions import ActionRecognizer
 from recognition.cards import CardRecognizer
 from recognition.ocr import OCREngine
+from sqlalchemy import text as sql_text
+
 from storage.database import SessionLocal
 from storage.repository import ActionEventRepository, HandRepository
 
@@ -584,12 +586,36 @@ class PipelineOrchestrator:
                 for k, v in list(canonical.items()):
                     if v == old_can_i or v == old_can_j:
                         canonical[k] = pick
-        # Apply to player_id_map
+        # Apply to player_id_map AND sync DB (UPDATE historical action_events).
+        # Without DB sync,past rows永远是旧 alias,path B 聚合统计仍把两个名当独立玩家。
+        db_updates: dict[str, str] = {}  # old_name → canonical
         for sidx, current in list(self.tracker.player_id_map.items()):
             new = canonical.get(current, current)
             if new != current:
                 logger.info(f"_canonicalize: seat_{sidx} {current!r} → {new!r} (alias merged)")
                 self.tracker.player_id_map[sidx] = new
+                db_updates[current] = new
+        # Cross-name canonical(handle name→name pairs that may not be in player_id_map)
+        for old, new in canonical.items():
+            if old != new and old not in db_updates:
+                db_updates[old] = new
+        if db_updates and self._db_enabled:
+            try:
+                with SessionLocal() as session:
+                    total_rows = 0
+                    for old, new in db_updates.items():
+                        result = session.execute(
+                            sql_text("UPDATE action_events SET player_name = :new "
+                                     "WHERE player_name = :old"),
+                            {"new": new, "old": old},
+                        )
+                        total_rows += result.rowcount or 0
+                    session.commit()
+                    if total_rows > 0:
+                        logger.info(f"_canonicalize: DB updated {total_rows} action_events "
+                                    f"rows for aliases {list(db_updates.items())}")
+            except Exception:
+                logger.warning("canonicalize DB UPDATE failed", exc_info=True)
 
     def _process_timer(self, sidx: int, countdown: int) -> None:
         """Timer countdown digit just observed at fold_area. Track per seat:
