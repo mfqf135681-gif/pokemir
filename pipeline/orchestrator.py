@@ -186,18 +186,38 @@ class PipelineOrchestrator:
         if c2:
             hand.hero_cards.append(f"{c2['rank']}{c2['suit']}")
 
+        # DB insert FIRST so that any subsequent error in position/id detection doesn't
+        # leave action_events pointing to a non-existent hand_id (FK violation).
+        # Position mapping is metadata that can be patched in via update; the FK is not.
+        if db is not None:
+            try:
+                self.hand_repo.create(db, hand)
+            except Exception:
+                logger.exception(f"Hand {hand.id} DB insert failed; aborting hand")
+                self.tracker.current_hand = None
+                return
+
         # Detect button position and compute seat→position mapping
         self._detect_button_position()
 
         # Capture each seat's platform user-ID before any in-hand action obscures it
         self._capture_player_ids()
 
-        hand.seats = {
-            Position(v): self.tracker.player_id_map.get(k, f"Player_{k}")
-            for k, v in self.tracker._position_map.items()
-        }
-        if db is not None:
-            self.hand_repo.create(db, hand)
+        seats_map = {}
+        for k, v in self.tracker._position_map.items():
+            try:
+                seats_map[Position(v)] = self.tracker.player_id_map.get(k, f"Player_{k}")
+            except ValueError:
+                # Position string not in enum (e.g. fallback "S0" when button unknown);
+                # skip this seat from hand.seats — pipeline still tracks via tracker
+                logger.debug(f"Skipping seat {k}: position '{v}' not in Position enum")
+        hand.seats = seats_map
+        if db is not None and seats_map:
+            # Update DB hand with seats metadata (best-effort; no FK risk now)
+            try:
+                self.hand_repo.update(db, hand)
+            except Exception:
+                logger.warning(f"Hand {hand.id} seats-metadata update failed", exc_info=True)
         logger.info(f"Hand {hand.id} — hero: {hand.hero_cards} — ids: {self.tracker.player_id_map}")
 
     def _capture_player_ids(self):

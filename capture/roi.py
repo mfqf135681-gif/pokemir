@@ -26,8 +26,14 @@ class TableROIs:
     # Pot size area
     pot_size: ROIRegion = field(default_factory=lambda: ROIRegion("pot_size", 0, 0, 120, 30))
 
-    # Per-seat regions (0-5, relative to the table layout)
+    # Per-seat regions (configured count may be less than num_seats during partial setup)
     seat_regions: list["SeatROI"] = field(default_factory=list)
+
+    # Total expected seats at this table (8 / 9 / 6 ...). Read from profile JSON's
+    # "num_seats" field; falls back to len(seat_regions). compute_positions uses
+    # this for the button-relative modulo so partial configs still get correct
+    # position labels (BTN/SB/BB/...).
+    num_seats: int = 0
 
     def add_community_card_roi(self, left: int, top: int, width: int, height: int):
         self.community_cards.append(
@@ -70,6 +76,7 @@ class TableROIs:
         (skipped during roi_config); falls back to dataclass defaults."""
         rois = cls()
         rois._window_title = data.get("window_title", "")
+        rois.num_seats = int(data.get("num_seats", 0))
         if data.get("hero_card_1"):
             rois.hero_card_1 = _tuple_to_roi(data["hero_card_1"], "hero_card_1")
         if data.get("hero_card_2"):
@@ -145,16 +152,24 @@ class ROIManager:
     def compute_positions(self) -> dict[int, str]:
         """Given button position, compute all seat positions.
 
-        Standard 6-max mapping (seat 0 = button, going clockwise):
-            0=BTN, 1=SB, 2=BB, 3=UTG, 4=MP, 5=CO
-        For 9-max: 0=BTN, 1=SB, 2=BB, 3=UTG, 4=UTG+1, 5=MP, 6=MP+1, 7=CO, 8=HJ
+        Uses self.rois.num_seats (from profile JSON) for the modulo so that
+        partial seat configs (e.g. only seat_1 + seat_7 of an 8-max table) still
+        get correct BTN/SB/BB/... labels.
+
+        Standard mappings (BTN=0, clockwise):
+            6-max: BTN, SB, BB, UTG, MP, CO
+            8-max: BTN, SB, BB, UTG, UTG+1, MP, HJ, CO
+            9-max: BTN, SB, BB, UTG, UTG+1, MP, MP+1, CO, HJ
         """
-        num_seats = len(self.rois.seat_regions)
+        # Total seats at the table (from profile); fall back to configured count
+        num_seats = self.rois.num_seats or len(self.rois.seat_regions)
         if num_seats == 0:
             return {}
 
         if self.button_seat_index is None:
-            return {i: f"S{i}" for i in range(num_seats)}
+            # Without a button, we can't compute positions deterministically.
+            # Return empty so callers know to skip Position-dependent metadata.
+            return {}
 
         if num_seats == 6:
             pos_order = ["BTN", "SB", "BB", "UTG", "MP", "CO"]
@@ -163,11 +178,15 @@ class ROIManager:
         elif num_seats == 9:
             pos_order = ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "MP+1", "CO", "HJ"]
         else:
-            pos_order = [f"S{(self.button_seat_index + i) % num_seats}" for i in range(num_seats)]
-            return {i: pos_order[i] for i in range(num_seats)}
+            # Unknown table size — skip position assignment; caller defaults to UTG/etc
+            return {}
 
         mapping = {}
+        # Only emit positions for seats actually configured in this profile.
+        configured_indices = {s.seat_index for s in self.rois.seat_regions}
         for i in range(num_seats):
+            if i not in configured_indices:
+                continue
             relative = (i - self.button_seat_index) % num_seats
-            mapping[i] = pos_order[relative] if relative < len(pos_order) else f"S{i}"
-        return mapping
+            mapping[i] = pos_order[relative] if relative < len(pos_order) else None
+        return {k: v for k, v in mapping.items() if v is not None}

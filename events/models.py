@@ -28,10 +28,19 @@ class Street(StrEnum):
 
 
 class Position(StrEnum):
+    """Poker positions, covering 6/8/9-max tables.
+
+    For 8-max:  BTN, SB, BB, UTG, UTG+1, MP, HJ, CO
+    For 9-max:  BTN, SB, BB, UTG, UTG+1, MP, MP+1, CO, HJ
+    For 6-max:  BTN, SB, BB, UTG, MP, CO
+    """
     SB = "SB"
     BB = "BB"
     UTG = "UTG"
+    UTG1 = "UTG+1"     # name UTG1 because Python enum can't have "+"
     MP = "MP"
+    MP1 = "MP+1"
+    HJ = "HJ"
     CO = "CO"
     BTN = "BTN"
 
