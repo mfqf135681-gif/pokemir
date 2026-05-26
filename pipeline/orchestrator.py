@@ -574,28 +574,36 @@ class PipelineOrchestrator:
         self.tracker._pending_decision_time[sidx] = decision_time_ms
 
     def _capture_showdown_cards(self) -> dict[int, list[str]]:
-        """At hand-end, for each NON-folded seat try CNN on fold_area to read
+        """At hand-end, for each NON-folded seat try CNN on cards_area to read
         the 2 revealed hole cards (showdown). Returns {seat_index: [card1, card2]}.
 
-        Best-effort: failures (no cards visible, CNN low-confidence, only 1 card
-        detected) silently skip that seat. Stored in hand.raw_data['showdown_cards'].
+        Uses cards_area ROI (must be framed to cover the FULL 2-card display zone,
+        which is LARGER than fold_area in showdown state; fold_area is the small
+        avatar-center overlay zone for timer/fold/all-in text only).
+
+        Best-effort: failures (no cards visible / CNN low-confidence / cards_area
+        not configured / only 1 card detected) silently skip. Saved to
+        hand.raw_data['showdown_cards'].
         """
         cards_by_seat = {}
         for seat in self.roi_manager.rois.seat_regions:
             sidx = seat.seat_index
             if sidx in self.tracker._folded_seats:
                 continue
-            if seat.fold_area is None or seat.fold_area.width == 0:
+            # cards_area is the wider showdown-cards display ROI (≠ fold_area)
+            if seat.cards_area is None or seat.cards_area.width == 0:
                 continue
-            img = self.capturer.capture_roi(seat.fold_area)
+            img = self.capturer.capture_roi(seat.cards_area)
             if img is None or img.size == 0:
                 continue
             h, w = img.shape[:2]
-            if w < 20 or h < 20:
+            if w < 40 or h < 40:
                 continue
-            # Try CNN on left half and right half (each card is ~half the width)
-            left_card = self.card_recognizer.recognize_single(img[:, : w // 2])
-            right_card = self.card_recognizer.recognize_single(img[:, w // 2 :])
+            # Each card is ~half the width;crop the upper portion to skip
+            # the badge ("对子"/"两对" 等) below the card images.
+            card_zone = img[: int(h * 0.8), :]
+            left_card = self.card_recognizer.recognize_single(card_zone[:, : w // 2])
+            right_card = self.card_recognizer.recognize_single(card_zone[:, w // 2 :])
             cards = []
             if left_card:
                 cards.append(f"{left_card['rank']}{left_card['suit']}")

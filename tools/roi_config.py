@@ -106,7 +106,7 @@ ELEMENT_HINTS = {
     "fold_area": "头像正中,玩家弃牌时显示「弃牌」两字 + 头像变灰(独立于上方动作区)",
     "stack": "头像下方的筹码量数字(玩家总筹码,与 amount 不同)",
     "button_indicator": "玩家筹码量数字**左侧紧贴**的小 D 标记(轮换 dealer 标志,~10-20 像素);本次默认走 OCR 识别「D」字符;ESC 可跳过",
-    "cards": "对手底牌区(showdown 时偶现可见);ESC 可跳过",
+    "cards": "**摊牌底牌显示区**(showdown 时该 seat 玩家的 2 张底牌)— 范围比 fold_area 大,需覆盖完整 2 卡 + 下方手牌评估 badge(如「对子」「两对」等);可用 --from-image 配合 resource/showdown.png 离线框选;ESC 可跳过",
     "id": "玩家昵称区域 — WePoker 显示中文/英文/数字混排昵称(如「白鸢飞ix」「湖南闷高」),与 action 同像素;直接框跟 action 一模一样的区域即可;ESC 可跳过(将来 hand-start 缓存昵称用)",
 }
 
@@ -142,34 +142,58 @@ def main():
               "ROIs (ESC each prompt to keep prior value). Use to bring a new profile "
               "from empty seats:[] to fully configured in one go."),
     )
+    parser.add_argument(
+        "--from-image",
+        default=None,
+        help=("Read pixels from a PNG file (e.g. resource/showdown.png) instead of "
+              "live screen capture. Use to configure ROIs for sparse / transient UI "
+              "events (showdown cards, insurance popup, etc) by first taking a "
+              "Win+Shift+S screenshot of the relevant moment and saving to disk. "
+              "Combines with --field / --element / --all-seats as usual."),
+    )
     args = parser.parse_args()
 
     capturer = ScreenCapturer()
 
-    # ── Find or select capture source ────────────────────
-    if args.window:
-        if not capturer.find_window_by_title(args.window):
-            print(f"ERROR: No window found matching '{args.window}'")
-            print("  List of visible windows:")
-            _list_windows()
+    # ── --from-image: skip live capture, use a saved PNG instead ─────
+    image_override = None
+    if args.from_image:
+        from_path = Path(args.from_image)
+        if not from_path.exists():
+            print(f"ERROR: --from-image file not found: {from_path}")
             return 1
+        loaded = cv2.imread(str(from_path))
+        if loaded is None:
+            print(f"ERROR: cv2 failed to load image: {from_path}")
+            return 1
+        # imread returns BGR;tool expects BGRA-or-BGR;keep as BGR
+        image_override = loaded
+        print(f"Using static image: {from_path} ({loaded.shape[1]}x{loaded.shape[0]})")
     else:
-        # Interactive window selection
-        print("Searching for poker client windows...")
-        candidates = _find_poker_windows()
-        if candidates:
-            print("\nFound these candidate windows:")
-            for i, w in enumerate(candidates):
-                print(f"  [{i}] {w['title']}  ({w['width']}x{w['height']})")
-            print(f"  [{len(candidates)}] None — use full monitor instead")
-            choice = input(f"\nSelect [0-{len(candidates)}]: ").strip()
-            if choice.isdigit():
-                idx = int(choice)
-                if 0 <= idx < len(candidates):
-                    capturer.find_window_by_title(candidates[idx]["title"])
+        # ── Find or select capture source ────────────────────
+        if args.window:
+            if not capturer.find_window_by_title(args.window):
+                print(f"ERROR: No window found matching '{args.window}'")
+                print("  List of visible windows:")
+                _list_windows()
+                return 1
         else:
-            print("No poker-related windows found, using full monitor.")
-            capturer.select_monitor(1)
+            # Interactive window selection
+            print("Searching for poker client windows...")
+            candidates = _find_poker_windows()
+            if candidates:
+                print("\nFound these candidate windows:")
+                for i, w in enumerate(candidates):
+                    print(f"  [{i}] {w['title']}  ({w['width']}x{w['height']})")
+                print(f"  [{len(candidates)}] None — use full monitor instead")
+                choice = input(f"\nSelect [0-{len(candidates)}]: ").strip()
+                if choice.isdigit():
+                    idx = int(choice)
+                    if 0 <= idx < len(candidates):
+                        capturer.find_window_by_title(candidates[idx]["title"])
+            else:
+                print("No poker-related windows found, using full monitor.")
+                capturer.select_monitor(1)
 
     output_dir = Path(__file__).parent.parent / "rois"
     output_dir.mkdir(exist_ok=True)
@@ -197,11 +221,15 @@ def main():
         cv2.destroyAllWindows()
         return 0
 
-    # ── Capture reference screenshot (window or monitor) ─
-    print("\nTaking reference screenshot...")
-    full = capturer.capture()
-    img = cv2.cvtColor(full, cv2.COLOR_BGRA2BGR)
-    print(f"  Resolution: {img.shape[1]}x{img.shape[0]}\n")
+    # ── Reference image: live capture or static --from-image ─
+    if image_override is not None:
+        img = image_override
+        print(f"  Source: --from-image  ({img.shape[1]}x{img.shape[0]})\n")
+    else:
+        print("\nTaking reference screenshot...")
+        full = capturer.capture()
+        img = cv2.cvtColor(full, cv2.COLOR_BGRA2BGR)
+        print(f"  Resolution: {img.shape[1]}x{img.shape[0]}\n")
 
     # ── --all-seats batch mode ───────────────────────────
     # Two sub-modes (driven by presence of --element):
