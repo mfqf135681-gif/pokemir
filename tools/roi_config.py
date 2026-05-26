@@ -245,14 +245,6 @@ def main():
                     seat_entry[elem] = list(captured[elem])
                 # else: keep whatever prev_entry had (or leave absent if new entry)
 
-            # Validate: action + stack required (capture/roi.py from_dict crashes otherwise)
-            missing = [e for e in REQUIRED_SEAT_ELEMENTS if not seat_entry.get(e)]
-            if missing:
-                print(f"\n⚠️  Not saved — seat_{idx} still missing required ROI(s): {missing}")
-                print(f"   Run again with --element <name> to fill them in.")
-                cv2.destroyAllWindows()
-                return 0
-
             # Replace existing by seat_index, else append
             if prev_idx_in_list is not None:
                 seats[prev_idx_in_list] = seat_entry
@@ -265,8 +257,14 @@ def main():
             cv2.destroyAllWindows()
             with open(output_path, "w") as f:
                 json.dump(existing, f, indent=2)
+
+            configured = [k for k in SEAT_ELEMENT_ORDER if seat_entry.get(k)]
+            missing = [e for e in REQUIRED_SEAT_ELEMENTS if not seat_entry.get(e)]
             print(f"\n✓ seat_{idx} {verb} in {output_path}")
-            print(f"  configured: {[k for k in SEAT_ELEMENT_ORDER if seat_entry.get(k)]}")
+            print(f"  configured: {configured}")
+            if missing:
+                print(f"  ⚠️  Pipeline 暂会忽略此 seat,直到补齐: {missing}")
+                print(f"     Run --element <name> to fill them in (任何画面都可继续).")
             print(f"Verify with: python tools/roi_config.py --verify --name {args.name}")
             return 0
 

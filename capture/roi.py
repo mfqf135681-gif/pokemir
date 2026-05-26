@@ -80,6 +80,11 @@ class TableROIs:
             if tup:
                 rois.add_community_card_roi(*tup)
         for s in data.get("seats", []):
+            # Skip incomplete seat configs (multi-pass roi_config workflow may save
+            # entries with only stack or only button_indicator first; pipeline silently
+            # ignores them until both action+stack are present)
+            if not s.get("action") or not s.get("stack"):
+                continue
             seat = SeatROI(
                 seat_index=s.get("seat_index", 0),
                 action_area=_tuple_to_roi(s["action"], "seat_action"),
