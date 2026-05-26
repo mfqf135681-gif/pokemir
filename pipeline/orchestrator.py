@@ -712,14 +712,15 @@ class PipelineOrchestrator:
                 continue
             candidates.append((seat, diff))
 
-        # Gate 4: 多 seat 同步性 — 真摊牌必然 ≥ 2 seat 同时 avatar diverge
-        if len(candidates) < 2:
-            logger.debug(f"[showdown] skip: only {len(candidates)} seat with avatar diverge "
-                         f"(real showdown requires ≥ 2)")
-            return {}
+        # Gate 4 (移除): 多 seat 同步性 — 改由"规则主动触发"逻辑取代。
+        # 因 Gate 1+2 已断言 community=5 且 ≥2 非弃 active = 摊牌确定发生,
+        # 每个 seat 只需独立判定"我是否真显示牌"(baseline diverge)即可。
+        # 之前 Gate 4 强求多 seat 同时 diverge → 漏单 seat 摊牌(mucker
+        # 不展示)且对 seat_X 频繁假阳无效。改用防幻觉 history 处理后者。
 
         # Gate 5: per-card CNN confidence threshold
         CONF_THRESHOLD = 0.9
+        from collections import deque
         cards_by_seat = {}
         for seat, diff in candidates:
             sidx = seat.seat_index
@@ -746,6 +747,17 @@ class PipelineOrchestrator:
                     continue
                 cards.append(f"{c['rank']}{c['suit']}")
             if len(cards) == 2:
+                # Gate 6: 防幻觉 history check
+                # 若该 seat 最近 5 次 showdown 预测中,本次 (card1,card2) 已出现 ≥ 3 次,
+                # 视为 CNN 对该头像的稳定幻觉(如 seat_X = 3s,3s 多手重复)→ 抑制。
+                pred_tuple = (cards[0], cards[1])
+                hist = self.tracker._seat_pred_history.setdefault(sidx, deque(maxlen=5))
+                hist.append(pred_tuple)
+                # 至少 3 次历史 + 本次预测在历史中出现 ≥ 3 次 → 幻觉
+                if len(hist) >= 3 and hist.count(pred_tuple) >= 3:
+                    logger.info(f"[showdown] seat_{sidx} suppressed: prediction {pred_tuple} "
+                                f"appeared {hist.count(pred_tuple)}/{len(hist)} (hallucination)")
+                    continue
                 cards_by_seat[sidx] = cards
                 logger.info(f"[showdown] seat_{sidx} cards: {cards} "
                             f"(avatar hamming={diff})")

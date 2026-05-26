@@ -1,6 +1,7 @@
 """Game state tracker — detects new hands, action changes, street progression."""
 
 import logging
+from collections import deque
 from datetime import datetime, timezone
 
 import imagehash
@@ -75,6 +76,11 @@ class StateTracker:
         # showdown to detect avatar diverge: if hash ≈ baseline, no overlay
         # appeared on this seat → skip CNN (root-cause fix for seat_X hallucinations).
         self._idle_avatar_hash: dict[int, str] = {}
+        # Per-seat 最近 5 次 showdown 预测历史 (anti-hallucination)。
+        # 若同一 (card1, card2) tuple 在最近 5 次出现 ≥ 3 次 → 视为 CNN 对该 seat
+        # 头像的稳定幻觉 (如 seat_X 永远 3s,3s) → 抑制。
+        # 持久跨手,不在 start_new_hand 重置。
+        self._seat_pred_history: dict[int, deque] = {}
 
         # Per-hand seat_index → platform user-ID (OCR'd at hand-start; used as player_name for cross-hand stats)
         self.player_id_map: dict[int, str] = {}
