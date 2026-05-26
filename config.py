@@ -27,7 +27,7 @@ HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 
 # ── Capture ───────────────────────────────────────────────
-CAPTURE_INTERVAL_MS = int(os.getenv("POKEMIR_CAPTURE_INTERVAL_MS", "500"))
+CAPTURE_INTERVAL_MS = int(os.getenv("POKEMIR_CAPTURE_INTERVAL_MS", "250"))
 
 # ── ROI ──────────────────────────────────────────────────
 ROI_CONFIG_DIR = os.getenv("POKEMIR_ROI_DIR", "./rois")

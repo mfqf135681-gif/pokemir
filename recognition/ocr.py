@@ -39,17 +39,33 @@ class OCREngine:
             download_enabled=True,
         )
 
-    def read_text(self, image: np.ndarray, allowlist: str = "") -> str:
+    def read_text(self, image: np.ndarray, allowlist: str = "", ensemble: bool = False) -> str:
         """Extract text from an image region. Returns empty string if nothing found.
 
         Args:
             image: BGR / BGRA crop
             allowlist: if non-empty, restrict OCR output to these characters.
-                Useful for digit-only or known-charset reads (e.g. card ranks,
-                stack amounts). Empty string = no restriction (general OCR).
+            ensemble: #8 if True, run OCR on TWO preprocessed variants (default
+                2x upscaled + 3x upscaled) and pick the longer non-empty result.
+                Use sparingly (2x cost); good for action / id where accuracy matters.
         """
         self._init()
-        processed = self._preprocess(image)
+        if not ensemble:
+            return self._read_one(image, allowlist, scale=2)
+        # Ensemble: try 2x and 3x scales, prefer longer result
+        result_2x = self._read_one(image, allowlist, scale=2)
+        result_3x = self._read_one(image, allowlist, scale=3)
+        if result_2x == result_3x:
+            return result_2x
+        # Prefer longer (more chars likely captured); empty falls back to other
+        if not result_2x:
+            return result_3x
+        if not result_3x:
+            return result_2x
+        return result_2x if len(result_2x) >= len(result_3x) else result_3x
+
+    def _read_one(self, image: np.ndarray, allowlist: str, scale: int) -> str:
+        processed = self._preprocess(image, scale=scale)
         try:
             kwargs = {"detail": 0}
             if allowlist:
@@ -60,14 +76,14 @@ class OCREngine:
             return ""
         return " ".join(results).strip()
 
-    def _preprocess(self, image: np.ndarray) -> np.ndarray:
+    def _preprocess(self, image: np.ndarray, scale: int = 2) -> np.ndarray:
         """Upscale, grayscale, threshold to improve OCR accuracy."""
         if image.shape[2] == 4:
             image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
 
         h, w = image.shape[:2]
-        # Upscale 2x for small text
-        image = cv2.resize(image, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+        # Upscale (configurable scale for #8 ensemble)
+        image = cv2.resize(image, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)

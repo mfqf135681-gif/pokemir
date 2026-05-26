@@ -10,23 +10,26 @@ def infer_action_from_delta(
     stack_delta: Optional[float],
     current_to_call: float,
     is_first_bet_this_street: bool,
-    full_stack: Optional[float] = None,
+    stack_after: Optional[float] = None,
 ) -> Optional[ActionType]:
     """P3 Layer 2: infer action_type from numerical evidence + poker rules.
 
     Returns None when stack_delta is unknown or ambiguous;
     caller falls back to text-derived action.
 
-    Rules (assuming single-actor tick):
+    `stack_after` is the player's stack AFTER the action (used for all-in detection:
+    if stack_after ≈ 0 the player went all-in).
+
+    Rules:
       stack_delta ≈ 0:
         facing bet (to_call > 0) → fold; else → check
-      stack_delta ≈ full_stack:
-        → all_in
+      stack_after ≈ 0 + stack_delta > 0:
+        → all_in (tightened from prior heuristic — stack_after must be near 0)
       stack_delta ≈ current_to_call:
         → call
       stack_delta > 0 and first bet this street (to_call == 0):
         → bet
-      stack_delta > current_to_call (raise above the to_call):
+      stack_delta > current_to_call:
         → raise
     """
     if stack_delta is None:
@@ -37,8 +40,10 @@ def infer_action_from_delta(
         if current_to_call > 2:
             return ActionType.FOLD
         return ActionType.CHECK
-    # All-in: stack delta covers the whole stack (within tolerance)
-    if full_stack is not None and full_stack > 0 and sd >= full_stack - 2:
+    # All-in: stack_after ≈ 0 (player put all chips in)
+    # Tightened from previous "sd >= full_stack - 2" which triggered too often
+    # when stack_after was non-trivial.
+    if stack_after is not None and stack_after <= 5 and sd > 0:
         return ActionType.ALL_IN
     # Call: matches the current required-to-call amount
     if current_to_call > 0 and abs(sd - current_to_call) <= 2:
@@ -81,17 +86,20 @@ def compute_confidence(
     if stack_delta is None or pot_delta is None:
         return 0.7  # partial signal
 
-    # Both signals present — compare
-    diff = abs(pot_delta - stack_delta)
-    if diff <= 2:  # within OCR noise floor
-        return 1.0
-    base = max(abs(stack_delta), abs(pot_delta), 1.0)
-    rel = diff / base
-    if rel <= 0.10:
+    # #1 Multi-actor aware Layer 1:
+    # In a single-actor tick (the common case) pot_delta ≈ stack_delta.
+    # In a multi-actor tick (rare, e.g. multiple folds in 250ms window) pot_delta
+    # equals SUM of all stack_deltas → pot_delta > this seat's stack_delta. That
+    # is NOT a data conflict, just extra contributors. Only LOWER pot_delta is
+    # suspicious (pot OCR lag).
+    diff = pot_delta - stack_delta  # signed
+    if abs(diff) <= 2:
+        return 1.0  # exact match (single actor confirmed)
+    if diff > 0:
+        # pot grew more than this seat contributed → multi-actor tick (legitimate)
         return 0.9
-    if rel <= 0.30:
-        return 0.7
-    return 0.3
+    # diff < 0: pot grew LESS than this seat — pot OCR likely lagged or wrong
+    return 0.7
 
 
 class EventNormalizer:

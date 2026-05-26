@@ -1,8 +1,10 @@
 """Main capture → recognize → store pipeline."""
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
@@ -48,6 +50,50 @@ def _hamming(a: str, b: str) -> int:
     if not a or not b or len(a) != len(b):
         return 999
     return sum(c1 != c2 for c1, c2 in zip(a, b))
+
+
+def _is_round_rebuy(amount: float) -> bool:
+    """Heuristic: is this value a likely rebuy/top-up (round number)?
+
+    WePoker rebuy presets are typically multiples of 50/100 (BB level). Insurance
+    payouts are arbitrary (pot − rake − premium), almost never round.
+
+    Returns True if the amount looks like a rebuy.
+    """
+    if amount <= 0:
+        return False
+    # Common preset values
+    if amount in (50, 100, 150, 200, 300, 500, 800, 1000, 1500, 2000, 3000, 5000,
+                  8000, 10000, 20000, 50000, 100000):
+        return True
+    # General: multiples of 50 with no fractional cents
+    if amount == int(amount) and int(amount) % 50 == 0:
+        return True
+    return False
+
+
+# #10 Player registry persistence — survives pipeline restart
+PLAYER_REGISTRY_PATH = Path("data/player_registry.json")
+
+
+def _load_player_registry() -> dict:
+    if not PLAYER_REGISTRY_PATH.exists():
+        return {"fingerprints": {}}
+    try:
+        with open(PLAYER_REGISTRY_PATH) as f:
+            return json.load(f)
+    except Exception:
+        logger.warning(f"Failed to load {PLAYER_REGISTRY_PATH}, starting fresh", exc_info=True)
+        return {"fingerprints": {}}
+
+
+def _save_player_registry(fingerprints: dict) -> None:
+    try:
+        PLAYER_REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(PLAYER_REGISTRY_PATH, "w") as f:
+            json.dump({"fingerprints": fingerprints}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        logger.warning(f"Failed to save {PLAYER_REGISTRY_PATH}", exc_info=True)
 from pipeline.detector import StateTracker
 from recognition.actions import ActionRecognizer
 from recognition.cards import CardRecognizer
@@ -93,6 +139,12 @@ class PipelineOrchestrator:
         self.ocr = OCREngine()
 
         self.tracker = StateTracker()
+
+        # #10 Load persistent player registry (avatar fingerprints) from disk
+        registry = _load_player_registry()
+        self.tracker._avatar_fingerprints = dict(registry.get("fingerprints", {}))
+        if self.tracker._avatar_fingerprints:
+            logger.info(f"Loaded player registry: {len(self.tracker._avatar_fingerprints)} fingerprints")
 
         self.hand_repo = HandRepository()
         self.event_repo = ActionEventRepository()
@@ -294,18 +346,35 @@ class PipelineOrchestrator:
         for seat in self.roi_manager.rois.seat_regions:
             if seat.id_area is None or seat.id_area.width == 0:
                 continue
+
+            # #4 Capture avatar hash early — used for both fingerprint match AND
+            # #7 seat-swap detection (avatar diverged from cached → player changed)
+            avatar_hash = ""
+            if seat.fold_area is not None and seat.fold_area.width > 0:
+                avatar_img = self.capturer.capture_roi(seat.fold_area)
+                avatar_hash = _avg_hash_64(avatar_img)
+
+            # #7 Seat-swap detection: if cached player exists but avatar diverged
+            # significantly from cached hash → player changed seat, release cache
+            if avatar_hash and seat.seat_index in self.tracker.player_id_map:
+                cached_name = self.tracker.player_id_map[seat.seat_index]
+                cached_hash = next(
+                    (h for h, n in self.tracker._avatar_fingerprints.items() if n == cached_name),
+                    None,
+                )
+                if cached_hash and _hamming(avatar_hash, cached_hash) > 12:
+                    logger.info(f"_capture_player_ids: seat_{seat.seat_index} avatar swap "
+                                f"(hamming {_hamming(avatar_hash, cached_hash)}), unlocking "
+                                f"{cached_name!r}")
+                    del self.tracker.player_id_map[seat.seat_index]
+
             # #2 Cache lock: don't re-OCR a seat we already have a valid name for
             if seat.seat_index in self.tracker.player_id_map:
                 continue
 
             # #4 Avatar image fingerprint — try BEFORE OCR. If we've seen this avatar
-            # before (anywhere), we already know the player name. fold_area is used as
-            # the avatar source since it covers head-center pixels.
-            avatar_hash = ""
-            if seat.fold_area is not None and seat.fold_area.width > 0:
-                avatar_img = self.capturer.capture_roi(seat.fold_area)
-                avatar_hash = _avg_hash_64(avatar_img)
-                # Match against registry — nearest neighbour by Hamming distance
+            # before (anywhere), we already know the player name.
+            if avatar_hash:
                 best_match = None
                 best_dist = 999
                 for h, name in self.tracker._avatar_fingerprints.items():
@@ -313,15 +382,25 @@ class PipelineOrchestrator:
                     if d < best_dist:
                         best_dist = d
                         best_match = name
-                if best_match and best_dist <= 6:  # ~9% bit-diff threshold
+                if best_match and best_dist <= 6:
                     logger.debug(f"_capture_player_ids: seat_{seat.seat_index} avatar match "
                                  f"{best_match!r} (hamming={best_dist})")
                     self.tracker.player_id_map[seat.seat_index] = best_match
                     continue
 
-            # Fallback to OCR if no fingerprint match
-            img = self.capturer.capture_roi(seat.id_area)
-            text = self.ocr.read_text(img).strip()
+            # #5 ID consensus: 2 OCR passes, take the longer non-empty text (longer
+            # = more characters captured = less truncation/mis-read).
+            img1 = self.capturer.capture_roi(seat.id_area)
+            text1 = self.ocr.read_text(img1).strip()
+            img2 = self.capturer.capture_roi(seat.id_area)
+            text2 = self.ocr.read_text(img2).strip()
+            if text1 == text2:
+                text = text1
+            else:
+                # Pick the longer (or first non-empty)
+                text = text1 if len(text1) >= len(text2) else text2
+                logger.debug(f"_capture_player_ids: seat_{seat.seat_index} consensus "
+                             f"{text1!r}/{text2!r} → {text!r}")
             if not text:
                 continue
             # Filter: if text parses as action keyword, it's transition-frame
@@ -333,14 +412,18 @@ class PipelineOrchestrator:
             # #3 Fuzzy match against names already in the registry (any seat).
             # cutoff=0.75 chosen so 4-char names with 1-char OCR drift match (ratio
             # 0.75 exactly) while 7-char names with 2-char drift don't (ratio 0.71).
+            # #3 case-insensitive comparison: zhixingheyi == Zhixingheyi
             known = list(self.tracker.player_id_map.values())
             if known and len(text) >= 3:
-                matches = get_close_matches(text, known, n=1, cutoff=0.75)
-                if matches:
-                    if matches[0] != text:
+                known_lower_map = {v.lower(): v for v in known}
+                lower_matches = get_close_matches(text.lower(), list(known_lower_map.keys()),
+                                                  n=1, cutoff=0.75)
+                if lower_matches:
+                    canonical = known_lower_map[lower_matches[0]]
+                    if canonical != text:
                         logger.info(f"_capture_player_ids: seat_{seat.seat_index} OCR'd "
-                                    f"{text!r} → canonicalized to {matches[0]!r} (alias)")
-                    text = matches[0]
+                                    f"{text!r} → canonicalized to {canonical!r} (alias)")
+                    text = canonical
             self.tracker.player_id_map[seat.seat_index] = text
             # #4 Register avatar fingerprint for future lookup
             if avatar_hash:
@@ -355,10 +438,64 @@ class PipelineOrchestrator:
             if cur.raw_data is None:
                 cur.raw_data = {}
             cur.raw_data["player_stacks_final"] = final_stacks
+            # #12a Insurance inference from stack pattern (用户假说):
+            #   went-all-in players whose stack_final is non-zero AND non-round
+            #   = likely bought insurance (payout came back as random number).
+            #   Round-number stacks = rebuy; zero = lost without insurance.
+            insurance_results = self._infer_insurance(cur, final_stacks)
+            if insurance_results:
+                cur.raw_data["insurance_inferred"] = insurance_results
 
         hand = self.tracker.finalize_hand()
         if hand and db is not None:
             self.hand_repo.update(db, hand)
+        # #10 Persist player registry at hand end (cheap; small JSON file)
+        _save_player_registry(self.tracker._avatar_fingerprints)
+
+    def _infer_insurance(self, hand, final_stacks: dict[int, float]) -> list[dict]:
+        """#12a Infer insurance buys from stack patterns (user hypothesis).
+
+        For each seat that went all-in this hand:
+          - stack_final ≈ 0   → lost without insurance (or won 0, rare)
+          - stack_final round → rebuy/top-up (e.g. 100/500/1000 chips)
+          - stack_final random → INSURANCE PAYOUT (= pot − rake − premium)
+
+        Returns list of dicts:
+          {seat, player_name, stack_final, classification, premium_inferred?}
+        """
+        results = []
+        pot = hand.pot_size_final or 0
+        for sidx in self.tracker._went_all_in_this_hand:
+            final_val = final_stacks.get(sidx, 0)
+            player_name = self.tracker.player_id_map.get(sidx, f"Player_{sidx}")
+            if final_val < 1:
+                classification = "lost_no_insurance"
+                results.append({
+                    "seat": sidx, "player_name": player_name,
+                    "stack_final": final_val, "classification": classification,
+                })
+            elif _is_round_rebuy(final_val):
+                classification = "rebuy"
+                results.append({
+                    "seat": sidx, "player_name": player_name,
+                    "stack_final": final_val, "classification": classification,
+                })
+            else:
+                # Non-zero AND non-round → insurance payout
+                # Approximate: payout = pot − rake (~5%) − premium → premium ≈ pot * 0.95 − payout
+                rake_est = pot * 0.05
+                premium_inferred = max(0, pot - rake_est - final_val)
+                classification = "insurance_payout"
+                results.append({
+                    "seat": sidx, "player_name": player_name,
+                    "stack_final": final_val, "classification": classification,
+                    "premium_inferred": premium_inferred,
+                    "pot": pot,
+                })
+                logger.info(f"[12a insurance] seat_{sidx} {player_name!r} likely bought "
+                            f"insurance: stack_final={final_val} (pot={pot}, "
+                            f"premium~{premium_inferred:.0f})")
+        return results
 
     def _capture_seat_stacks(self) -> dict[int, float]:
         """Snapshot per-seat stack via OCR (digit-only allowlist).
@@ -399,6 +536,13 @@ class PipelineOrchestrator:
             else:
                 texts.append("")
 
+        # #4 Duplicate-card sanity: poker has no two identical cards in same hand.
+        # If CNN mis-classifies a card mid-animation we may see duplicates; reject
+        # the update to avoid polluting community_cards JSONB.
+        if all_cards and len(set(all_cards)) != len(all_cards):
+            logger.warning(f"Duplicate cards detected in community: {all_cards}; skipping update")
+            return
+
         if self.tracker.check_community_change(texts):
             hand = self.tracker.current_hand
             street = self.tracker.normalizer._current_street
@@ -427,6 +571,14 @@ class PipelineOrchestrator:
                 stack_img = self.capturer.capture_roi(seat_roi.stack_area)
                 stack_text = self.ocr.read_text(stack_img, allowlist="0123456789.")
                 stack_now = ActionRecognizer._extract_amount(stack_text)
+                # Digit-miss sanity: reject sudden ≥10x jump (OCR misread digits like
+                # 3001001 should-be-300100, or 2841 vs 28410). Keep prior reading.
+                prev_stack = self.tracker._prev_stack.get(sidx)
+                if (stack_now is not None and prev_stack is not None and prev_stack > 0
+                        and (stack_now > prev_stack * 9 or stack_now * 9 < prev_stack)):
+                    logger.debug(f"seat_{sidx} stack OCR jump {prev_stack}→{stack_now}, "
+                                 f"likely digit miss, keeping prev")
+                    stack_now = prev_stack
 
             # Priority: check fold_area first — WePoker shows both "弃牌" (fold) AND
             # "ALL IN" (all-in) overlaid on the avatar center. Use the parser to detect
@@ -446,7 +598,10 @@ class PipelineOrchestrator:
                 # #1 OCR allowlist: restrict to known action chars to suppress noise
                 # like player-name bleed or random Chinese text. Allowlist is wide
                 # enough for all parser-supported keywords + amounts.
-                action_text = self.ocr.read_text(action_img, allowlist=ACTION_OCR_ALLOWLIST)
+                # #8 ensemble: dual-scale OCR (2x + 3x) for action — improves Chinese
+                # accuracy at cost of one extra OCR call per actioning seat.
+                action_text = self.ocr.read_text(action_img, allowlist=ACTION_OCR_ALLOWLIST,
+                                                 ensemble=True)
 
                 # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
                 # parser regex (\d+\.?\d*) will pull the number from the combined text
@@ -552,6 +707,10 @@ class PipelineOrchestrator:
                         self.tracker._street_to_call, stack_delta
                     )
                     self.tracker._street_has_bet = True
+
+                # 12a: mark seat as having gone all-in this hand (for insurance inference)
+                if final_action == ActionType.ALL_IN or (stack_after is not None and stack_after <= 5):
+                    self.tracker._went_all_in_this_hand.add(sidx)
 
                 if db is not None:
                     self.event_repo.create(db, event)

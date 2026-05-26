@@ -40,4 +40,6 @@ tests/output/
 tests/fixtures/_pending/
 # local reference snapshots (Win/VPS each maintain own copies for debugging)
 resource/
+# persistent player registry (machine-local, may contain player names; #10)
+data/
 *.log
