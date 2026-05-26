@@ -45,6 +45,9 @@ class StateTracker:
         # P1 cross-validation: per-seat last stack OCR reading.
         # Used as stack_before in per-event raw_data evidence (stack_delta = before - after).
         self._prev_stack: dict[int, float] = {}
+        # P3 Layer 2 inputs: track per-street state for action_type inference
+        self._street_to_call: float = 0.0   # max chip contribution by any seat this street
+        self._street_has_bet: bool = False  # True after first chip-contributing action this street
 
         # Per-hand seat_index → platform user-ID (OCR'd at hand-start; used as player_name for cross-hand stats)
         self.player_id_map: dict[int, str] = {}
@@ -121,6 +124,9 @@ class StateTracker:
             self._community_just_reset = (prev > 0 and count == 0)
             if count in self._CANONICAL_COUNTS:
                 self.normalizer.set_community_card_count(count)
+                # P3: street transition → reset per-street betting state
+                self._street_to_call = 0.0
+                self._street_has_bet = False
                 return True
             return False
         self._community_just_reset = False
@@ -149,6 +155,9 @@ class StateTracker:
         self._hand_pot_peak = None
         self._pot_before_tick = None
         self._prev_stack.clear()
+        # P3 state: reset street tracking on new hand
+        self._street_to_call = 0.0
+        self._street_has_bet = False
         # NB: player_id_map NOT reset — #2 cache lock so player IDs persist across
         # hands, preventing OCR drift between hands from creating multiple variants
         # of the same player. Cleared only on pipeline restart.

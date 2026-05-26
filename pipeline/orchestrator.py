@@ -10,7 +10,7 @@ from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE
 from difflib import get_close_matches
 
 from events.models import ActionType, Position
-from events.normalizer import compute_confidence
+from events.normalizer import compute_confidence, infer_action_from_delta
 
 # Allowlist for action_area OCR — restricts charset to known action keywords + amounts.
 # Filters out garbage like "疯鱼罩轩 2"(player name bleed)or random Chinese characters.
@@ -412,6 +412,25 @@ class PipelineOrchestrator:
                 pot_before = self.tracker._pot_before_tick
                 pot_after = self.tracker.latest_pot_bb
                 pot_delta = (pot_after - pot_before) if (pot_after is not None and pot_before is not None) else None
+                # P3 Layer 2: infer action from numerical evidence + poker rules
+                stack_derived = infer_action_from_delta(
+                    stack_delta,
+                    self.tracker._street_to_call,
+                    not self.tracker._street_has_bet,
+                    stack_after,  # full_stack approx (post-action stack as floor)
+                )
+                text_derived = parsed["action_type"]
+                final_action = text_derived
+                override_reason = None
+                # Override only when stack-derived is unambiguous AND disagrees with text
+                # (REQ Q4=A: stack 优先, confidence 降)
+                if stack_derived is not None and stack_derived != text_derived:
+                    final_action = stack_derived
+                    override_reason = f"stack-derived {stack_derived.value} overrode text-derived {text_derived.value}"
+                    logger.info(f"[P3 override] seat_{sidx} text={action_text!r} "
+                                f"text→{text_derived.value} stack→{stack_derived.value}")
+
+                event.action_type = final_action  # may be overridden
                 event.raw_data = {
                     "action_text": action_text,
                     "stack_before": stack_before,
@@ -420,12 +439,26 @@ class PipelineOrchestrator:
                     "pot_before": pot_before,
                     "pot_after": pot_after,
                     "pot_delta": pot_delta,
-                    "text_derived_action": parsed["action_type"].value,
+                    "text_derived_action": text_derived.value,
+                    "stack_derived_action": stack_derived.value if stack_derived else None,
+                    "current_to_call": self.tracker._street_to_call,
+                    "is_first_bet_this_street": not self.tracker._street_has_bet,
+                    "override_reason": override_reason,
                 }
                 # P2 Layer 1: physics equation check → confidence_score
                 event.confidence_score = compute_confidence(
-                    parsed["action_type"], stack_delta, pot_delta,
+                    final_action, stack_delta, pot_delta,
                 )
+                # If P3 overrode, lower confidence (REQ Q4=A 数字优先 + confidence 降)
+                if override_reason:
+                    event.confidence_score = min(event.confidence_score, 0.5)
+
+                # P3 state: update street tracking after this event
+                if stack_delta is not None and stack_delta > 2:
+                    self.tracker._street_to_call = max(
+                        self.tracker._street_to_call, stack_delta
+                    )
+                    self.tracker._street_has_bet = True
 
                 if db is not None:
                     self.event_repo.create(db, event)

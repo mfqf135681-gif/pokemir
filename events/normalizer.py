@@ -6,6 +6,50 @@ from typing import Optional
 from events.models import ActionEvent, ActionType, Hand, Position, Street
 
 
+def infer_action_from_delta(
+    stack_delta: Optional[float],
+    current_to_call: float,
+    is_first_bet_this_street: bool,
+    full_stack: Optional[float] = None,
+) -> Optional[ActionType]:
+    """P3 Layer 2: infer action_type from numerical evidence + poker rules.
+
+    Returns None when stack_delta is unknown or ambiguous;
+    caller falls back to text-derived action.
+
+    Rules (assuming single-actor tick):
+      stack_delta ≈ 0:
+        facing bet (to_call > 0) → fold; else → check
+      stack_delta ≈ full_stack:
+        → all_in
+      stack_delta ≈ current_to_call:
+        → call
+      stack_delta > 0 and first bet this street (to_call == 0):
+        → bet
+      stack_delta > current_to_call (raise above the to_call):
+        → raise
+    """
+    if stack_delta is None:
+        return None
+    sd = abs(stack_delta)
+    # Zero-contribution actions (allow 2-chip OCR tolerance)
+    if sd <= 2:
+        if current_to_call > 2:
+            return ActionType.FOLD
+        return ActionType.CHECK
+    # All-in: stack delta covers the whole stack (within tolerance)
+    if full_stack is not None and full_stack > 0 and sd >= full_stack - 2:
+        return ActionType.ALL_IN
+    # Call: matches the current required-to-call amount
+    if current_to_call > 0 and abs(sd - current_to_call) <= 2:
+        return ActionType.CALL
+    # Bet: first chip-contribution on this street (nobody else bet yet)
+    if is_first_bet_this_street and current_to_call <= 2:
+        return ActionType.BET
+    # Raise: contributed more than just calling
+    return ActionType.RAISE
+
+
 def compute_confidence(
     action_type: ActionType,
     stack_delta: Optional[float],
