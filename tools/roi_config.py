@@ -134,6 +134,14 @@ def main():
               "6 seat ROIs are prompted in sequence. Existing values for un-prompted "
               "ROIs are preserved."),
     )
+    parser.add_argument(
+        "--all-seats",
+        action="store_true",
+        help=("Batch mode: loop through ALL seats (0..num_seats-1, from existing "
+              "profile) and prompt every SEAT_ELEMENT for each. Merges with existing "
+              "ROIs (ESC each prompt to keep prior value). Use to bring a new profile "
+              "from empty seats:[] to fully configured in one go."),
+    )
     args = parser.parse_args()
 
     capturer = ScreenCapturer()
@@ -194,6 +202,76 @@ def main():
     full = capturer.capture()
     img = cv2.cvtColor(full, cv2.COLOR_BGRA2BGR)
     print(f"  Resolution: {img.shape[1]}x{img.shape[0]}\n")
+
+    # ── --all-seats batch mode ───────────────────────────
+    # Loops every seat_N in profile, prompting all SEAT_ELEMENTs for each
+    # (merge semantics same as --field seat_N: ESC keeps existing).
+    if args.all_seats:
+        if not output_path.exists():
+            print(f"ERROR: {output_path} not found. --all-seats requires an existing profile.")
+            return 1
+        with open(output_path) as f:
+            existing = json.load(f)
+        num_seats = int(existing.get("num_seats", 0))
+        if num_seats == 0:
+            print("ERROR: profile num_seats is 0 or missing.")
+            return 1
+        print(f"Batch mode: looping seat_0..seat_{num_seats - 1} for profile {args.name!r}")
+        print(f"  Tip: ESC any prompt to keep the existing value;")
+        print(f"       Ctrl+C any time to abort (already-saved seats persist).\n")
+
+        seats = existing.get("seats") or []
+
+        for idx in range(num_seats):
+            # Find pre-existing entry for this seat_index
+            prev_entry = None
+            prev_idx_in_list = None
+            for i, s in enumerate(seats):
+                if s.get("seat_index") == idx:
+                    prev_entry = s
+                    prev_idx_in_list = i
+                    break
+
+            print(f"\n{'=' * 56}")
+            print(f"  SEAT {idx} of {num_seats - 1} — framing 7 elements")
+            print(f"  (ESC any prompt to skip + keep existing)")
+            print(f"{'=' * 56}")
+
+            captured = {}
+            for elem in SEAT_ELEMENT_ORDER:
+                print(f"\n▶ NOW FRAMING:  seat_{idx} → {elem.upper()}")
+                print(f"  位置说明:    {ELEMENT_HINTS[elem]}")
+                print(f"  操作:        鼠标拖框 → 按 SPACE 确认 / 按 ESC 跳过(保留旧值)")
+                rect = select_roi(f"seat_{idx} — {elem}", img)
+                captured[elem] = rect
+
+            # Build entry: prev + captured (captured wins where non-None)
+            seat_entry = dict(prev_entry) if prev_entry else {"seat_index": idx}
+            for elem in SEAT_ELEMENT_ORDER:
+                if captured[elem] is not None:
+                    seat_entry[elem] = list(captured[elem])
+
+            # Save partial entries too (parser skips incomplete);
+            # update or append in seats list
+            if prev_idx_in_list is not None:
+                seats[prev_idx_in_list] = seat_entry
+            else:
+                seats.append(seat_entry)
+
+            # Persist after EVERY seat (so Ctrl+C mid-way doesn't lose progress)
+            seats.sort(key=lambda s: s.get("seat_index", 0))
+            existing["seats"] = seats
+            with open(output_path, "w") as f:
+                json.dump(existing, f, indent=2)
+
+            configured = [k for k in SEAT_ELEMENT_ORDER if seat_entry.get(k)]
+            missing = [e for e in REQUIRED_SEAT_ELEMENTS if not seat_entry.get(e)]
+            status = "✓ ready" if not missing else f"⚠ missing {missing}"
+            print(f"\n  seat_{idx} saved: configured={configured} [{status}]")
+
+        cv2.destroyAllWindows()
+        print(f"\n\nAll seats processed. Run --verify --name {args.name} to inspect.")
+        return 0
 
     # ── Incremental --field mode ─────────────────────────
     if args.field:
