@@ -1,8 +1,53 @@
 """Normalize raw recognition results into canonical ActionEvent objects."""
 
 from datetime import datetime, timezone
+from typing import Optional
 
 from events.models import ActionEvent, ActionType, Hand, Position, Street
+
+
+def compute_confidence(
+    action_type: ActionType,
+    stack_delta: Optional[float],
+    pot_delta: Optional[float],
+) -> float:
+    """4-layer cross-validation Layer 1: physics equation check.
+
+    For chip-contributing actions (bet/call/raise/all_in): pot_delta should
+    match stack_delta (assuming single-actor tick, the common case).
+    For zero-contribution actions (fold/check): stack_delta should be ~0.
+
+    Returns confidence in [0.3, 1.0]. Below 0.7 → review category (REQ阈值).
+
+    P2 simple version (single-actor assumption). Multi-actor ticks will
+    naturally score lower; P3 (Layer 2 poker rules) refines further.
+    """
+    # Fold / check: must have zero stack contribution
+    if action_type in (ActionType.FOLD, ActionType.CHECK):
+        if stack_delta is None:
+            return 0.85  # missing signal but action allows zero, optimistic
+        if abs(stack_delta) <= 2:  # OCR noise tolerance
+            return 1.0
+        # stack changed but action says no contribution → suspicious
+        return 0.3
+
+    # Chip-contributing actions (bet/call/raise/all_in/post_sb/post_bb/post_ante)
+    if stack_delta is None and pot_delta is None:
+        return 0.5  # no numerical verification possible
+    if stack_delta is None or pot_delta is None:
+        return 0.7  # partial signal
+
+    # Both signals present — compare
+    diff = abs(pot_delta - stack_delta)
+    if diff <= 2:  # within OCR noise floor
+        return 1.0
+    base = max(abs(stack_delta), abs(pot_delta), 1.0)
+    rel = diff / base
+    if rel <= 0.10:
+        return 0.9
+    if rel <= 0.30:
+        return 0.7
+    return 0.3
 
 
 class EventNormalizer:

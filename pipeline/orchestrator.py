@@ -8,6 +8,7 @@ from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
 from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE
 from events.models import ActionType, Position
+from events.normalizer import compute_confidence
 from pipeline.detector import StateTracker
 from recognition.actions import ActionRecognizer
 from recognition.cards import CardRecognizer
@@ -227,6 +228,11 @@ class PipelineOrchestrator:
 
         Hand-start is the only window where IDs are unobstructed: no action text
         ('CALL' / 'RAISE' / etc.) covers them and no fold-grey state degrades them.
+
+        Defensive filter: WePoker shows ID and action text at the SAME pixel zone.
+        At hand-start transition, the previous hand's action keyword may still be
+        on screen. If OCR'd text parses as an ActionType ("跟注"/"加注"/...) treat
+        it as ID OCR failure and let player_name fall back to "Player_<sidx>".
         """
         id_map: dict[int, str] = {}
         for seat in self.roi_manager.rois.seat_regions:
@@ -234,8 +240,15 @@ class PipelineOrchestrator:
                 continue
             img = self.capturer.capture_roi(seat.id_area)
             text = self.ocr.read_text(img).strip()
-            if text:
-                id_map[seat.seat_index] = text
+            if not text:
+                continue
+            # Filter: if text parses as action keyword, it's transition-frame
+            # contamination, not a real player nickname.
+            if self.action_recognizer.parse(text) is not None:
+                logger.debug(f"_capture_player_ids: seat_{seat.seat_index} got action-text "
+                             f"{text!r}, skipping (likely transition frame)")
+                continue
+            id_map[seat.seat_index] = text
         self.tracker.player_id_map = id_map
 
     def _end_current_hand(self, db):
@@ -372,7 +385,10 @@ class PipelineOrchestrator:
                     "pot_delta": pot_delta,
                     "text_derived_action": parsed["action_type"].value,
                 }
-                # P1: confidence stays 1.0 (default);  P2 will start scoring
+                # P2 Layer 1: physics equation check → confidence_score
+                event.confidence_score = compute_confidence(
+                    parsed["action_type"], stack_delta, pot_delta,
+                )
 
                 if db is not None:
                     self.event_repo.create(db, event)
