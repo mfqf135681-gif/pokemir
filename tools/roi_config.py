@@ -204,8 +204,11 @@ def main():
     print(f"  Resolution: {img.shape[1]}x{img.shape[0]}\n")
 
     # ── --all-seats batch mode ───────────────────────────
-    # Loops every seat_N in profile, prompting all SEAT_ELEMENTs for each
-    # (merge semantics same as --field seat_N: ESC keeps existing).
+    # Two sub-modes (driven by presence of --element):
+    #   (a) --all-seats              → loop seats × all 7 elements (seat-major, 56 prompts)
+    #   (b) --all-seats --element X  → loop seats × ONE element X  (element-major, 8 prompts)
+    # Mode (b) is preferred when the user wants to focus on one element type at a time
+    # (e.g. "this round I frame all stacks");7 such commands = full table setup.
     if args.all_seats:
         if not output_path.exists():
             print(f"ERROR: {output_path} not found. --all-seats requires an existing profile.")
@@ -216,8 +219,15 @@ def main():
         if num_seats == 0:
             print("ERROR: profile num_seats is 0 or missing.")
             return 1
-        print(f"Batch mode: looping seat_0..seat_{num_seats - 1} for profile {args.name!r}")
-        print(f"  Tip: ESC any prompt to keep the existing value;")
+
+        # Pick element subset: single (if --element) or all (default)
+        if args.element:
+            elements_to_prompt = [args.element]
+            print(f"Element-major batch: ROUND = {args.element.upper()}  |  seats 0..{num_seats - 1}")
+        else:
+            elements_to_prompt = SEAT_ELEMENT_ORDER
+            print(f"Full batch: seats 0..{num_seats - 1}  |  7 elements each")
+        print(f"  Tip: ESC any prompt to skip + keep existing value;")
         print(f"       Ctrl+C any time to abort (already-saved seats persist).\n")
 
         seats = existing.get("seats") or []
@@ -233,12 +243,15 @@ def main():
                     break
 
             print(f"\n{'=' * 56}")
-            print(f"  SEAT {idx} of {num_seats - 1} — framing 7 elements")
-            print(f"  (ESC any prompt to skip + keep existing)")
+            if len(elements_to_prompt) == 1:
+                print(f"  SEAT {idx} of {num_seats - 1} — framing {elements_to_prompt[0]}")
+            else:
+                print(f"  SEAT {idx} of {num_seats - 1} — framing {len(elements_to_prompt)} elements")
+            print(f"  (ESC to skip + keep existing)")
             print(f"{'=' * 56}")
 
             captured = {}
-            for elem in SEAT_ELEMENT_ORDER:
+            for elem in elements_to_prompt:
                 print(f"\n▶ NOW FRAMING:  seat_{idx} → {elem.upper()}")
                 print(f"  位置说明:    {ELEMENT_HINTS[elem]}")
                 print(f"  操作:        鼠标拖框 → 按 SPACE 确认 / 按 ESC 跳过(保留旧值)")
@@ -247,7 +260,7 @@ def main():
 
             # Build entry: prev + captured (captured wins where non-None)
             seat_entry = dict(prev_entry) if prev_entry else {"seat_index": idx}
-            for elem in SEAT_ELEMENT_ORDER:
+            for elem in elements_to_prompt:
                 if captured[elem] is not None:
                     seat_entry[elem] = list(captured[elem])
 
