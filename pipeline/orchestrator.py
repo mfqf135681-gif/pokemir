@@ -245,6 +245,11 @@ class PipelineOrchestrator:
         # Capture each seat's platform user-ID before any in-hand action obscures it
         self._capture_player_ids()
 
+        # 12a-pre: snapshot per-seat stack at hand start (before any betting).
+        # Stored on hand.raw_data so insurance / rake / stack-delta validation can
+        # back-compute on a hand basis later.
+        initial_stacks = self._capture_seat_stacks()
+
         seats_map = {}
         for k, v in self.tracker._position_map.items():
             try:
@@ -254,12 +259,17 @@ class PipelineOrchestrator:
                 # skip this seat from hand.seats — pipeline still tracks via tracker
                 logger.debug(f"Skipping seat {k}: position '{v}' not in Position enum")
         hand.seats = seats_map
-        if db is not None and seats_map:
-            # Update DB hand with seats metadata (best-effort; no FK risk now)
+
+        if hand.raw_data is None:
+            hand.raw_data = {}
+        hand.raw_data["player_stacks_initial"] = initial_stacks
+
+        if db is not None and (seats_map or initial_stacks):
+            # Update DB hand with seats metadata + initial stacks (best-effort)
             try:
                 self.hand_repo.update(db, hand)
             except Exception:
-                logger.warning(f"Hand {hand.id} seats-metadata update failed", exc_info=True)
+                logger.warning(f"Hand {hand.id} hand-start metadata update failed", exc_info=True)
         logger.info(f"Hand {hand.id} — hero: {hand.hero_cards} — ids: {self.tracker.player_id_map}")
 
     def _capture_player_ids(self):
@@ -337,9 +347,38 @@ class PipelineOrchestrator:
                 self.tracker._avatar_fingerprints[avatar_hash] = text
 
     def _end_current_hand(self, db):
+        # 12a-pre: snapshot per-seat stack BEFORE finalize, while tracker.current_hand
+        # is still valid. Stored on hand.raw_data for insurance / rake validation.
+        final_stacks = self._capture_seat_stacks()
+        cur = self.tracker.current_hand
+        if cur is not None:
+            if cur.raw_data is None:
+                cur.raw_data = {}
+            cur.raw_data["player_stacks_final"] = final_stacks
+
         hand = self.tracker.finalize_hand()
         if hand and db is not None:
             self.hand_repo.update(db, hand)
+
+    def _capture_seat_stacks(self) -> dict[int, float]:
+        """Snapshot per-seat stack via OCR (digit-only allowlist).
+
+        Used at hand-start (initial_stacks) and hand-end (final_stacks) to feed
+        downstream hand-level validation: rake reverse-compute, insurance
+        inference (round-rebuy vs random-payout), per-hand stack conservation.
+
+        Cost ≈ 10-30ms × N seats; called twice per hand (~once per ~30s), light load.
+        """
+        stacks: dict[int, float] = {}
+        for seat in self.roi_manager.rois.seat_regions:
+            if seat.stack_area is None or seat.stack_area.width == 0:
+                continue
+            img = self.capturer.capture_roi(seat.stack_area)
+            text = self.ocr.read_text(img, allowlist="0123456789.")
+            amount = ActionRecognizer._extract_amount(text)
+            if amount is not None:
+                stacks[seat.seat_index] = amount
+        return stacks
 
     # ── Community cards ───────────────────────────────────
 
