@@ -32,10 +32,12 @@ class ActionRecognizer:
 
         amount = self._extract_amount(text)
 
-        # ALL-IN must be checked before CALL ("CALL" contains "ALL"; same trap)
-        if "ALL-IN" in text or "ALLIN" in text or "全下" in text or "全押" in text or "全压" in text:
+        # ALL-IN must be checked before CALL ("CALL" contains "ALL"; same trap).
+        # WePoker 实测显示 "All in"(无横杠,首字母大写) — .upper() 转 "ALL IN"
+        if ("ALL-IN" in text or "ALLIN" in text or "ALL IN" in text
+                or "全下" in text or "全押" in text or "全压" in text):
             return {"action_type": ActionType.ALL_IN, "amount": amount}
-        # ALL as a standalone word (but not inside CALL)
+        # ALL as a standalone word (but not inside CALL) — 兜底 "ALL XXX" 变体
         if re.search(r"\bALL\b", text) and "CALL" not in text:
             return {"action_type": ActionType.ALL_IN, "amount": amount}
         if "RAISE" in text or "加注" in text:

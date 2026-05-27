@@ -674,6 +674,10 @@ class PipelineOrchestrator:
     # 没这个门 fold_area diverged 会在河牌下注阶段(timer 数字 / 弃牌文字 / All in)
     # 大量误触发 → cards_area 内还没有真牌就被抓走 dump.
     _SHOWDOWN_CARDS_BRIGHTNESS_MIN = 120
+    # cards_area 纹理细节门:真牌正面有 rank / suit / 角标等丰富细节 → std > 60;
+    # 卡背是均匀重复花纹 → std 25-45.阈值 50 区分清晰.
+    # 这是治本卡背"高 conf 误报"(罕见但污染统计)+ 副产物 GPU 降 50%+
+    _SHOWDOWN_CARDS_TEXTURE_MIN = 50
 
     def _try_capture_showdown_live(self, rois) -> None:
         """Per-tick (called from main loop) — capture showdown cards WHILE the
@@ -752,7 +756,17 @@ class PipelineOrchestrator:
                           hand_id=hand.id)
                 # Don't mark throttle — let next tick re-check (overlay may still be transient)
                 continue
-            # Mark throttle only after passing brightness — real CNN attempt about to happen
+            # Texture gate (2026-05-27):亮但均匀 = 卡背(均匀花纹)而非卡正面.
+            # 卡背 std 25-45,卡正面 std 60-90,阈值 50 安全区分.
+            std_val = float(img.std())
+            if std_val < self._SHOWDOWN_CARDS_TEXTURE_MIN:
+                diag.emit("showdown.uniform_back",
+                          {"seat": sidx, "mean_brightness": round(mean_brightness, 1),
+                           "std": round(std_val, 1),
+                           "threshold": self._SHOWDOWN_CARDS_TEXTURE_MIN},
+                          hand_id=hand.id)
+                continue
+            # Mark throttle only after passing brightness + texture — real CNN attempt about to happen
             self.tracker._showdown_last_cnn_at[sidx] = now
 
             card_zone = img[: int(h * 0.8), :]
@@ -981,8 +995,12 @@ class PipelineOrchestrator:
                 stack_now = ActionRecognizer._extract_amount(stack_text)
                 # Digit-miss sanity: reject sudden ≥10x jump (OCR misread digits like
                 # 3001001 should-be-300100, or 2841 vs 28410). Keep prior reading.
+                # 2026-05-27 EXCEPTION:stack=0 是合法 all-in 状态,不视为 OCR jump → 不拒收.
+                # 之前这条 sanity 误把 all-in 当成 OCR 错误,导致 stack_after=0 永远不出现 →
+                # all_in.detected 永远 = 0(根因 D).
                 prev_stack = self.tracker._prev_stack.get(sidx)
-                if (stack_now is not None and prev_stack is not None and prev_stack > 0
+                if (stack_now is not None and stack_now > 0  # ← 关键加 stack_now > 0
+                        and prev_stack is not None and prev_stack > 0
                         and (stack_now > prev_stack * 9 or stack_now * 9 < prev_stack)):
                     logger.debug(f"seat_{sidx} stack OCR jump {prev_stack}→{stack_now}, "
                                  f"likely digit miss, keeping prev")
@@ -1109,6 +1127,13 @@ class PipelineOrchestrator:
                 # P4 review) can reason about them without re-OCR.
                 stack_before = self.tracker._prev_stack.get(sidx)
                 stack_after = stack_now
+                # 2026-05-27 root-cause C:OCR 在 all-in 瞬间常因 "All in" 大字覆盖 stack
+                # → stack OCR 返 None → stack_after=None → P3 stack-derived 走错路径,
+                # text-derived ALL_IN 反而被覆盖.解决:文字侧已识别为 ALL_IN 时,假定
+                # stack_after = 0(物理意义:all-in = stack 清零).
+                if stack_after is None and parsed["action_type"] == ActionType.ALL_IN:
+                    stack_after = 0
+                    logger.debug(f"seat_{sidx} all-in text + stack OCR None → 假定 stack_after=0")
                 stack_delta = (stack_before - stack_after) if (stack_before is not None and stack_after is not None) else None
                 pot_before = self.tracker._pot_before_tick
                 pot_after = self.tracker.latest_pot_bb
