@@ -74,16 +74,19 @@ def _read_img(png_path: Path):
         return None
 
 
-def _split_pieces(img, no_split: bool) -> list[tuple[str, "object"]]:
+def _split_pieces(img, no_split: bool, force_split: bool = False) -> list[tuple[str, "object"]]:
     """Return list of (piece_id, image_np) to label.
 
-    Wide images (w / h > SPLIT_ASPECT_RATIO) → [('L', left), ('R', right)]
-    Otherwise (or --no-split) → [('whole', img)]
+    force_split=True       → always split L/R regardless of aspect ratio
+    Wide(w/h>RATIO)        → [('L', left), ('R', right)]
+    no_split=True or narrow → [('whole', img)]
     """
     if img is None:
         return []
     h, w = img.shape[:2]
-    if not no_split and h > 0 and w / h > SPLIT_ASPECT_RATIO:
+    if no_split or h <= 0:
+        return [('whole', img)]
+    if force_split or (w / h > SPLIT_ASPECT_RATIO):
         mid = w // 2
         return [('L', img[:, :mid]), ('R', img[:, mid:])]
     return [('whole', img)]
@@ -105,7 +108,7 @@ def _is_piece_done(source: Path, piece_id: str) -> bool:
     return _piece_marker(source, piece_id).exists()
 
 
-def _iter_unlabeled(roots: list[Path], no_split: bool):
+def _iter_unlabeled(roots: list[Path], no_split: bool, force_split: bool = False):
     """Yield (source_png, piece_id, piece_img_np, meta_dict) for unlabeled pieces."""
     for root in roots:
         if not root.exists():
@@ -116,7 +119,7 @@ def _iter_unlabeled(roots: list[Path], no_split: bool):
                 continue
             json_path = source.with_suffix(".json")
             meta = json.loads(json_path.read_text(encoding="utf-8")) if json_path.exists() else {}
-            for piece_id, piece_img in _split_pieces(img, no_split):
+            for piece_id, piece_img in _split_pieces(img, no_split, force_split):
                 if _is_piece_done(source, piece_id):
                     continue
                 yield source, piece_id, piece_img, meta
@@ -182,6 +185,9 @@ def main() -> int:
                          f"and {DEFAULT_MANUAL.relative_to(PROJECT_ROOT)})")
     ap.add_argument("--no-split", action="store_true",
                     help=f"Disable aspect-ratio auto-split (default: w/h > {SPLIT_ASPECT_RATIO} → L/R)")
+    ap.add_argument("--force-split", action="store_true",
+                    help="Force L/R split on every image regardless of aspect ratio. "
+                         "Use when you know all crops are 2-card pairs.")
     ap.add_argument("--no-display", action="store_true",
                     help="Skip cv2 window (blind labeling — only metadata shown)")
     args = ap.parse_args()
@@ -198,7 +204,10 @@ def main() -> int:
               f"or run the pipeline to populate {DEFAULT_DUMPS.relative_to(PROJECT_ROOT)}/.")
         return 1
 
-    todo = list(_iter_unlabeled(existing, args.no_split))
+    if args.no_split and args.force_split:
+        print("✗ --no-split and --force-split are mutually exclusive", file=sys.stderr)
+        return 1
+    todo = list(_iter_unlabeled(existing, args.no_split, args.force_split))
     if not todo:
         print(f"Nothing to label in {[str(r.relative_to(PROJECT_ROOT)) for r in existing]} "
               f"(all pieces have .labeled markers).")
