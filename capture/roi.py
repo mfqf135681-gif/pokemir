@@ -26,6 +26,13 @@ class TableROIs:
     # Pot size area
     pot_size: ROIRegion = field(default_factory=lambda: ROIRegion("pot_size", 0, 0, 120, 30))
 
+    # Hero action panel ROIs (2026-05-26 added — bottom of WePoker shows these only for hero):
+    #   give_pot_button = "让池" 小圆按钮(让池给小盲)— signal for special concede
+    #   free_action_button = "免费" 按钮(免费 check / 跳过显示)
+    # Both optional;pipeline detection wiring is TBD.
+    give_pot_button: ROIRegion | None = None
+    free_action_button: ROIRegion | None = None
+
     # Per-seat regions (configured count may be less than num_seats during partial setup)
     seat_regions: list["SeatROI"] = field(default_factory=list)
 
@@ -49,6 +56,12 @@ class TableROIs:
             "community_cards": [],
             "seats": [],
         }
+        if self.give_pot_button:
+            result["give_pot_button"] = (self.give_pot_button.left, self.give_pot_button.top,
+                                         self.give_pot_button.width, self.give_pot_button.height)
+        if self.free_action_button:
+            result["free_action_button"] = (self.free_action_button.left, self.free_action_button.top,
+                                            self.free_action_button.width, self.free_action_button.height)
         for cc in self.community_cards:
             result["community_cards"].append((cc.left, cc.top, cc.width, cc.height))
         for seat in self.seat_regions:
@@ -70,6 +83,9 @@ class TableROIs:
                 entry["cards"] = (seat.cards_area.left, seat.cards_area.top, seat.cards_area.width, seat.cards_area.height)
             if seat.id_area:
                 entry["id"] = (seat.id_area.left, seat.id_area.top, seat.id_area.width, seat.id_area.height)
+            if seat.hand_type_area:
+                entry["hand_type"] = (seat.hand_type_area.left, seat.hand_type_area.top,
+                                      seat.hand_type_area.width, seat.hand_type_area.height)
             result["seats"].append(entry)
         return result
 
@@ -86,6 +102,10 @@ class TableROIs:
             rois.hero_card_2 = _tuple_to_roi(data["hero_card_2"], "hero_card_2")
         if data.get("pot_size"):
             rois.pot_size = _tuple_to_roi(data["pot_size"], "pot_size")
+        if data.get("give_pot_button"):
+            rois.give_pot_button = _tuple_to_roi(data["give_pot_button"], "give_pot_button")
+        if data.get("free_action_button"):
+            rois.free_action_button = _tuple_to_roi(data["free_action_button"], "free_action_button")
         for tup in data.get("community_cards", []) or []:
             if tup:
                 rois.add_community_card_roi(*tup)
@@ -104,6 +124,7 @@ class TableROIs:
                 button_indicator=_tuple_to_roi(s["button_indicator"], "seat_btn") if s.get("button_indicator") else None,
                 cards_area=_tuple_to_roi(s["cards"], "seat_cards") if s.get("cards") else None,
                 id_area=_tuple_to_roi(s["id"], "seat_id") if s.get("id") else None,
+                hand_type_area=_tuple_to_roi(s["hand_type"], "seat_hand_type") if s.get("hand_type") else None,
             )
             rois.seat_regions.append(seat)
         return rois
@@ -133,6 +154,8 @@ class SeatROI:
     button_indicator: ROIRegion | None = None  # small area showing dealer button (D icon)
     cards_area: ROIRegion | None = None  # opponent hole cards (usually not visible)
     id_area: ROIRegion | None = None   # pixel-same-as-action; OCR'd once at hand-start for player ID
+    hand_type_area: ROIRegion | None = None  # 摊牌时 seat 下方显示的牌型中文文本(对子/顺子/同花/葫芦/...);
+                                              # 用于和 CNN 识别的 hole + community 推导出的牌型做交叉验证
 
 
 class ROIManager:

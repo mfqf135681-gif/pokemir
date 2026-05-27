@@ -90,7 +90,10 @@ def select_roi(window_name: str, img: np.ndarray) -> tuple | None:
     return (x, y, w, h)
 
 
-VALID_FIELDS = {"hero_card_1", "hero_card_2", "pot_size"} | {
+VALID_FIELDS = {
+    "hero_card_1", "hero_card_2", "pot_size",
+    "give_pot_button", "free_action_button",  # 2026-05-26 added (hero action panel)
+} | {
     f"community_{i}" for i in range(1, 6)
 } | {
     f"seat_{i}" for i in range(9)
@@ -98,7 +101,7 @@ VALID_FIELDS = {"hero_card_1", "hero_card_2", "pot_size"} | {
 
 # Per-seat sub-element names for --element flag. Order matches the full-seat prompt order.
 # REQUIRED_SEAT_ELEMENTS = {action, stack} — final-save validation refuses entries lacking these.
-SEAT_ELEMENT_ORDER = ["action", "amount", "fold_area", "stack", "button_indicator", "cards", "id"]
+SEAT_ELEMENT_ORDER = ["action", "amount", "fold_area", "stack", "button_indicator", "cards", "id", "hand_type"]
 REQUIRED_SEAT_ELEMENTS = {"action", "stack"}
 ELEMENT_HINTS = {
     "action": "头像上方,玩家行动时**只显示动作汉字**(「跟注/加注/下注/过牌」);WePoker 中**金额不在此**;空闲时此位置显示玩家昵称",
@@ -106,8 +109,9 @@ ELEMENT_HINTS = {
     "fold_area": "头像正中,玩家弃牌时显示「弃牌」两字 + 头像变灰(独立于上方动作区)",
     "stack": "头像下方的筹码量数字(玩家总筹码,与 amount 不同)",
     "button_indicator": "玩家筹码量数字**左侧紧贴**的小 D 标记(轮换 dealer 标志,~10-20 像素);本次默认走 OCR 识别「D」字符;ESC 可跳过",
-    "cards": "**摊牌底牌显示区**(showdown 时该 seat 玩家的 2 张底牌)— 范围比 fold_area 大,需覆盖完整 2 卡 + 下方手牌评估 badge(如「对子」「两对」等);可用 --from-image 配合 resource/showdown.png 离线框选;ESC 可跳过",
+    "cards": "**摊牌底牌显示区**(showdown 时该 seat 玩家的 2 张底牌)— 紧贴牌外缘,**不能含桌面色**(上沿离牌顶白边 1-2 px 内,绝不要高);只框 2 卡本身,**不要把下方「对子」之类的牌型 badge 框进来**(那是 hand_type 独立 ROI)",
     "id": "玩家昵称区域 — WePoker 显示中文/英文/数字混排昵称(如「白鸢飞ix」「湖南闷高」),与 action 同像素;直接框跟 action 一模一样的区域即可;ESC 可跳过(将来 hand-start 缓存昵称用)",
+    "hand_type": "**摊牌时**该 seat 在底牌下方显示的**牌型中文文字**(「对子」「顺子」「同花」「葫芦」「四条」「同花顺」「皇家同花顺」「三条」「两对」「高牌」);独立 ROI,**比 cards 紧得多**,只框那一行牌型文字;ESC 可跳过(若用户暂不需要交叉验证),将来用于 hole+community 推导验证",
 }
 
 
