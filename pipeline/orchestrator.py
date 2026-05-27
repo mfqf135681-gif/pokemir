@@ -1210,6 +1210,33 @@ class PipelineOrchestrator:
         pot_text = self.ocr.read_text(pot_img)
         amount = ActionRecognizer._extract_amount(pot_text)
 
+        # Hand-start signal via 总底池 label (observer-mode fallback when hero ROI
+        # is unchanged + community-reset window is too narrow for 250 ms tick).
+        # User-confirmed:"总底池" 文本只在新手开始时短暂出现.
+        # Triple-guard against false positive:
+        #   (1) label present in OCR text
+        #   (2) there is an active hand to end
+        #   (3) new amount < 50% of hand_pot_peak (real new-hand pot is much smaller)
+        # All three must hold;mid-hand stray "总底池" misread alone won't trigger.
+        if (pot_text and "总底池" in pot_text
+                and self.tracker.has_active_hand
+                and amount is not None
+                and self.tracker._hand_pot_peak is not None
+                and amount < self.tracker._hand_pot_peak * 0.5):
+            old_peak = self.tracker._hand_pot_peak
+            old_hand_id = self.tracker.current_hand.id if self.tracker.current_hand else None
+            logger.info(f"[hand-start] 总底池 label + pot drop {old_peak}→{amount}, "
+                        f"ending previous hand")
+            diag.emit("hand_start.via_pot_label",
+                      {"old_pot_peak": old_peak, "new_pot": amount, "pot_text": pot_text},
+                      hand_id=old_hand_id)
+            hero_1 = self.capturer.capture_roi(rois.hero_card_1) if rois.hero_card_1 else None
+            hero_2 = self.capturer.capture_roi(rois.hero_card_2) if rois.hero_card_2 else None
+            self._end_current_hand(db)
+            self._start_new_hand(db, hero_1, hero_2)
+            # start_new_hand reset latest_pot_bb=None and _hand_pot_peak=None;
+            # the guard below will pass and amount becomes the new hand's first pot reading.
+
         # T2 pot monotonicity sanity: pot can only INCREASE within a hand (or stay
         # same). A drop > 10% is almost certainly OCR misread (e.g. lost a digit:
         # 1234 → 234). Ignore the bad reading; keep latest_pot_bb stable.
