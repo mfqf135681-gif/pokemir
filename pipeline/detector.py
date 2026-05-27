@@ -81,6 +81,18 @@ class StateTracker:
         # 头像的稳定幻觉 (如 seat_X 永远 3s,3s) → 抑制。
         # 持久跨手,不在 start_new_hand 重置。
         self._seat_pred_history: dict[int, deque] = {}
+        # 摊牌实时抓帧 (2026-05-26 root-cause fix):
+        # 旧架构 _capture_showdown_cards 在 _end_current_hand 一次性触发,但此时
+        # community 已清零 + 摊牌 UI 已消失 → cards_area 抓的是 idle 头像 → 模型
+        # 域外推理 → 全部 conf 崩塌.诊断:fixtures mean_R=205 vs dumps mean_R=40,
+        # luminance chi-square=1.21 远超 0.2 阈值.
+        # 新架构:每 tick river 期 (community=5),orchestrator._try_capture_showdown_live
+        # 扫非弃 seat,fold_area hash diverged → 立即抓 + CNN.结果存这里,
+        # _end_current_hand 改为读这里 (而非现场再抓).每手清零.
+        self._showdown_captured_this_hand: dict[int, list[str]] = {}
+        # 每 seat 上次 CNN 推理时间戳 (wall-clock seconds).Throttle 同 seat
+        # CNN ≤ 1 次/秒,防止 4Hz tick × 8 seat × CNN 推理饱和.每手清零.
+        self._showdown_last_cnn_at: dict[int, float] = {}
 
         # Per-hand seat_index → platform user-ID (OCR'd at hand-start; used as player_name for cross-hand stats)
         self.player_id_map: dict[int, str] = {}
@@ -199,6 +211,9 @@ class StateTracker:
         self._used_timebank = {}
         self._folded_seats = set()
         self._seats_with_events_this_hand = set()
+        # 摊牌实时抓帧:每手清零(seat_pred_history 持久跨手,不清)
+        self._showdown_captured_this_hand = {}
+        self._showdown_last_cnn_at = {}
         # NB: player_id_map NOT reset — #2 cache lock so player IDs persist across
         # hands, preventing OCR drift between hands from creating multiple variants
         # of the same player. Cleared only on pipeline restart.

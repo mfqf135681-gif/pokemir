@@ -266,6 +266,12 @@ class PipelineOrchestrator:
             if self.tracker.has_active_hand:
                 self._process_seat_actions(db, rois)
 
+            # 6. Live showdown capture — must happen DURING river phase while overlay
+            # is visible.  Old architecture grabbed at hand-end (after community reset)
+            # → overlay gone → caught only avatar pixels.  See 2026-05-26 diff diagnosis.
+            if self.tracker.has_active_hand:
+                self._try_capture_showdown_live(rois)
+
             if db is not None:
                 db.commit()
         except Exception:
@@ -659,95 +665,66 @@ class PipelineOrchestrator:
         decision_time_ms = int((time.time() - started_at) * 1000)
         self.tracker._pending_decision_time[sidx] = decision_time_ms
 
-    def _capture_showdown_cards(self) -> dict[int, list[str]]:
-        """At hand-end, for each NON-folded seat try CNN on cards_area to read
-        the 2 revealed hole cards (showdown).
+    # Gate constants shared by live-capture + hand-end aggregator
+    _SHOWDOWN_BASELINE_DIVERGE_THRESHOLD = 6  # hamming > 6 of 64 bits = overlay visible
+    _SHOWDOWN_CONF_THRESHOLD = 0.9            # per-card CNN conf gate
+    _SHOWDOWN_CNN_THROTTLE_SEC = 1.0          # min seconds between CNN runs per seat
 
-        Bug 1 fix:
-        - GATE 1: only run if community has 5 cards (river / showdown stage).
-          Pre-river fold-arounds have no showdown possible.
-        - GATE 2: per-card CNN confidence threshold (rank_conf > 0.7 AND
-          suit_conf > 0.7). Filters out hallucinations from non-card pixels.
+    def _try_capture_showdown_live(self, rois) -> None:
+        """Per-tick (called from main loop) — capture showdown cards WHILE the
+        overlay is visible, not at hand-end (when UI has already closed).
 
-        Saved to hand.raw_data['showdown_cards']. Best-effort: silently skip
-        on missing ROI / low confidence / single-card detection.
+        Architecture (2026-05-26 root-cause fix):
+          Old: _capture_showdown_cards called once from _end_current_hand →
+               community already reset, overlay gone, captured avatar pixels.
+               Diagnostic proof: fixtures mean_R=205 vs dumps mean_R=40,
+               luminance chi-square=1.21 (>6× the "significant gap" threshold).
+          New: this method runs EVERY tick during river phase. Detects overlay
+               via fold_area hash divergence from idle baseline. Per-seat
+               throttle prevents CNN spam.  Multiple captures per hand allowed
+               (training-data harvest); first CNN-passing result wins the
+               authoritative `tracker._showdown_captured_this_hand[sidx]`.
+
+        Cheap-fast path early returns ensure non-river ticks cost ~µs.
         """
-        # Gate 1: only at river / showdown stage
         hand = self.tracker.current_hand
         if hand is None:
-            return {}
+            return
+        # River-only gate (no point trying earlier streets)
         from events.models import Street
         community = hand.community_cards.get(Street.RIVER) if hand.community_cards else None
         if not community or len(community) < 5:
-            diag.emit("showdown.gate1_skip",
-                      {"reason": "community_lt_5", "river_count": len(community) if community else 0},
-                      hand_id=hand.id)
-            return {}
-
-        # Gate 2: real showdown requires ≥ 2 non-folded ACTIVE seats.
-        # Fold-around-on-river (single winner takes pot) = NO showdown.
+            return
+        # ≥ 2 non-folded active sanity (skip fold-around hands)
         active = self.tracker._seats_with_events_this_hand - self.tracker._folded_seats
         if len(active) < 2:
-            logger.debug(f"[showdown] skip: only {len(active)} non-folded active seat(s)")
-            diag.emit("showdown.gate2_skip",
-                      {"reason": "active_lt_2", "active_count": len(active),
-                       "active": sorted(active), "folded": sorted(self.tracker._folded_seats)},
-                      hand_id=hand.id)
-            return {}
-        diag.emit("showdown.enter",
-                  {"active_seats": sorted(active), "river_count": len(community)},
-                  hand_id=hand.id)
+            return
 
-        # Gate 3: PRE-FILTER candidate seats by avatar baseline divergence.
-        # User insight: 头像区平时稳定;showdown 时 cards overlay 上去 → hash 显著变化.
-        # 若当前 fold_area hash ≈ idle_baseline_hash, 头像没真变化 → 没真摊牌 → skip CNN.
-        # 这是 root-cause fix for seat_X CNN 幻觉(如 seat_6 头像永久被识别 3s 3s).
-        BASELINE_DIVERGE_THRESHOLD = 6  # hamming > 6 of 64 bits;松紧权衡:
-        # 10 太严漏真摊牌(实测 50 min 中 0/30 hands 捕获),
-        # 6 仍能 catch seat_X 头像稳态 (hamming 0-3) 假阳
-        candidates = []  # [(seat, current_hash, hamming_diff)]
-        for seat in self.roi_manager.rois.seat_regions:
+        from collections import deque
+        now = time.time()
+
+        for seat in rois.seat_regions:
             sidx = seat.seat_index
             if sidx in self.tracker._folded_seats:
                 continue
+            # Throttle: limit per-seat CNN to 1 Hz
+            last_at = self.tracker._showdown_last_cnn_at.get(sidx, 0.0)
+            if now - last_at < self._SHOWDOWN_CNN_THROTTLE_SEC:
+                continue
             if seat.fold_area is None or seat.fold_area.width == 0:
                 continue
+            # Hash check on fold_area — diverged = overlay visible (cards / "弃牌" / timer / etc.)
             fold_img_now = self.capturer.capture_roi(seat.fold_area)
             if fold_img_now is None or fold_img_now.size == 0:
                 continue
             current_hash = _avg_hash_64(fold_img_now)
             baseline = self.tracker._idle_avatar_hash.get(sidx)
             if baseline is None:
-                # 没建过 baseline — 保守跳过(宁可漏不假阳)
-                logger.debug(f"[showdown] seat_{sidx} skipped: no idle baseline yet")
-                diag.emit("showdown.gate3_no_baseline", {"seat": sidx}, hand_id=hand.id)
                 continue
             diff = _hamming(current_hash, baseline)
-            if diff < BASELINE_DIVERGE_THRESHOLD:
-                # 头像跟基线一样 — 没 overlay,跳过
-                logger.debug(f"[showdown] seat_{sidx} baseline matches "
-                             f"(hamming={diff}<{BASELINE_DIVERGE_THRESHOLD}), no overlay")
-                diag.emit("showdown.gate3_reject",
-                          {"seat": sidx, "hamming": diff, "threshold": BASELINE_DIVERGE_THRESHOLD},
-                          hand_id=hand.id)
-                continue
-            candidates.append((seat, diff))
-        diag.emit("showdown.candidates",
-                  {"count": len(candidates), "seats": [s.seat_index for s, _ in candidates]},
-                  hand_id=hand.id)
-
-        # Gate 4 (移除): 多 seat 同步性 — 改由"规则主动触发"逻辑取代。
-        # 因 Gate 1+2 已断言 community=5 且 ≥2 非弃 active = 摊牌确定发生,
-        # 每个 seat 只需独立判定"我是否真显示牌"(baseline diverge)即可。
-        # 之前 Gate 4 强求多 seat 同时 diverge → 漏单 seat 摊牌(mucker
-        # 不展示)且对 seat_X 频繁假阳无效。改用防幻觉 history 处理后者。
-
-        # Gate 5: per-card CNN confidence threshold
-        CONF_THRESHOLD = 0.9
-        from collections import deque
-        cards_by_seat = {}
-        for seat, diff in candidates:
-            sidx = seat.seat_index
+            if diff < self._SHOWDOWN_BASELINE_DIVERGE_THRESHOLD:
+                continue  # no overlay — quiet tick for this seat
+            # Diverged → likely showdown cards visible right now.  Capture cards_area.
             if seat.cards_area is None or seat.cards_area.width == 0:
                 continue
             img = self.capturer.capture_roi(seat.cards_area)
@@ -756,67 +733,99 @@ class PipelineOrchestrator:
             h, w = img.shape[:2]
             if w < 40 or h < 40:
                 continue
+            # Mark throttle even if CNN fails downstream — avoid hammering
+            self.tracker._showdown_last_cnn_at[sidx] = now
+
             card_zone = img[: int(h * 0.8), :]
             left_img = card_zone[:, : w // 2]
             right_img = card_zone[:, w // 2 :]
             left_card = self.card_recognizer.recognize_single(left_img)
             right_card = self.card_recognizer.recognize_single(right_img)
-            # Training-data harvest: dump both halves regardless of conf.  Pairs with
-            # tools/label_showdown.py for the human labeling step → CNN retraining.
+            # Training-data harvest: dump every capture regardless of CNN outcome
             self._dump_showdown_crop(hand.id, sidx, "L", left_img, left_card, diff)
             self._dump_showdown_crop(hand.id, sidx, "R", right_img, right_card, diff)
+
+            # If already accepted earlier this hand, keep harvesting dumps but skip re-decision
+            if sidx in self.tracker._showdown_captured_this_hand:
+                continue
+
+            # Run through conf + physical + history gates
             cards = []
             for c in (left_card, right_card):
                 if not c:
                     continue
                 rc = c.get("rank_conf", 1.0)
                 sc = c.get("suit_conf", 1.0)
-                if rc < CONF_THRESHOLD or sc < CONF_THRESHOLD:
-                    logger.debug(f"seat_{sidx} skipped low-conf card "
-                                 f"{c['rank']}{c['suit']} (rc={rc:.2f}, sc={sc:.2f})")
+                if rc < self._SHOWDOWN_CONF_THRESHOLD or sc < self._SHOWDOWN_CONF_THRESHOLD:
                     diag.emit("showdown.gate5_low_conf",
                               {"seat": sidx, "card": f"{c['rank']}{c['suit']}",
                                "rank_conf": round(rc, 3), "suit_conf": round(sc, 3),
-                               "threshold": CONF_THRESHOLD},
+                               "threshold": self._SHOWDOWN_CONF_THRESHOLD},
                               hand_id=hand.id)
                     continue
                 cards.append(f"{c['rank']}{c['suit']}")
+
             if len(cards) == 2:
-                # Gate 6a: 牌堆物理约束 — 每张牌全牌堆只有 1 张,card1 == card2
-                # (例 3s,3s = 两张黑桃 3) 必为 CNN 幻觉,第 1 次即 reject。
-                # 早于 history append,避免污染历史。
                 if cards[0] == cards[1]:
-                    logger.info(f"[showdown] seat_{sidx} REJECTED: {cards} 牌堆物理约束违反")
                     diag.emit("showdown.gate6a_physical_violation",
                               {"seat": sidx, "cards": cards}, hand_id=hand.id, level="WARN")
                     continue
-                # Gate 6b: 防幻觉 history check
-                # 若该 seat 最近 5 次 showdown 预测中,本次 (card1,card2) 已出现 ≥ 3 次,
-                # 视为 CNN 对该头像的稳定幻觉 → 抑制。
                 pred_tuple = (cards[0], cards[1])
                 hist = self.tracker._seat_pred_history.setdefault(sidx, deque(maxlen=5))
                 hist.append(pred_tuple)
-                # 至少 3 次历史 + 本次预测在历史中出现 ≥ 3 次 → 幻觉
                 if len(hist) >= 3 and hist.count(pred_tuple) >= 3:
-                    logger.info(f"[showdown] seat_{sidx} suppressed: prediction {pred_tuple} "
-                                f"appeared {hist.count(pred_tuple)}/{len(hist)} (hallucination)")
                     diag.emit("showdown.gate6b_hallucination",
                               {"seat": sidx, "cards": list(pred_tuple),
                                "occurrences": hist.count(pred_tuple), "window": len(hist)},
                               hand_id=hand.id, level="WARN")
                     continue
-                cards_by_seat[sidx] = cards
-                logger.info(f"[showdown] seat_{sidx} cards: {cards} "
-                            f"(avatar hamming={diff})")
+                # Accepted — store and emit
+                self.tracker._showdown_captured_this_hand[sidx] = cards
+                logger.info(f"[showdown live] seat_{sidx} cards: {cards} (avatar hamming={diff})")
                 diag.emit("showdown.accepted",
                           {"seat": sidx, "cards": cards, "avatar_hamming": diff},
                           hand_id=hand.id)
-            else:
-                # 0 or 1 card detected after low-conf filter — neither rejected as
-                # hallucination nor accepted; record for completeness.
+            elif cards:  # 0 or 1 card passed conf
                 diag.emit("showdown.incomplete",
                           {"seat": sidx, "cards_passed_conf": cards}, hand_id=hand.id)
-        return cards_by_seat
+
+    def _capture_showdown_cards(self) -> dict[int, list[str]]:
+        """Hand-end aggregator: returns what live-capture accumulated this hand.
+
+        Architecture (2026-05-26): the real work happens in
+        _try_capture_showdown_live (per-tick during river).  This method only:
+          1. Reads tracker._showdown_captured_this_hand
+          2. Emits one hand-level diag summary (gate1_skip / gate2_skip / enter)
+
+        Returns empty dict if hand was fold-around-pre-river or had no
+        non-folded active seats.  Otherwise returns the accepted cards by seat.
+        """
+        hand = self.tracker.current_hand
+        if hand is None:
+            return {}
+        from events.models import Street
+        community = hand.community_cards.get(Street.RIVER) if hand.community_cards else None
+        river_count = len(community) if community else 0
+        active = self.tracker._seats_with_events_this_hand - self.tracker._folded_seats
+        captured = dict(self.tracker._showdown_captured_this_hand)
+
+        if river_count < 5:
+            diag.emit("showdown.gate1_skip",
+                      {"reason": "community_lt_5", "river_count": river_count},
+                      hand_id=hand.id)
+            return {}
+        if len(active) < 2:
+            diag.emit("showdown.gate2_skip",
+                      {"reason": "active_lt_2", "active_count": len(active),
+                       "active": sorted(active), "folded": sorted(self.tracker._folded_seats)},
+                      hand_id=hand.id)
+            return {}
+        diag.emit("showdown.enter",
+                  {"active_seats": sorted(active), "river_count": river_count,
+                   "captured_count": len(captured),
+                   "captured_seats": sorted(captured.keys())},
+                  hand_id=hand.id)
+        return captured
 
     def _dump_showdown_crop(self, hand_id, sidx: int, side: str,
                             img: np.ndarray, pred: dict | None, hamming: int) -> None:
