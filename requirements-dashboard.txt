@@ -1,0 +1,20 @@
+# Pokemir dashboard — 仅 frontend / DB-reader 依赖
+# 适用:家里电脑 / 低配机器 / 不需要装 PyTorch / EasyOCR / GPU 栈
+# 安装:pip install -r requirements-dashboard.txt
+#
+# 完整 pipeline 依赖见 requirements.txt(Win 桌面需要)
+
+# UI
+streamlit>=1.30,<2.0
+plotly>=5.18
+
+# Data
+pandas>=2.0
+numpy>=2.0.0          # plotly / pandas 间接依赖,显式锁版本一致
+
+# Database(同 requirements.txt 一致版本)
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+
+# Utilities
+python-dotenv>=1.0.0

@@ -1,0 +1,21 @@
+# Pokemir dashboard 配置
+# 两端(Win 桌面 / 家里电脑)共享,git 跟踪.
+
+[server]
+# 默认仅 localhost,不公开
+address = "127.0.0.1"
+port = 8501
+headless = false           # 启动时自动开浏览器
+runOnSave = true           # 改 .py 自动 reload(开发友好)
+
+[browser]
+gatherUsageStats = false   # 禁用 Streamlit 遥测
+
+[theme]
+# 暗色 dashboard,扑克氛围
+base = "dark"
+primaryColor = "#FFD700"   # 金黄(WePoker "+xx" 同色)
+backgroundColor = "#0F2A1E" # 深桌面绿
+secondaryBackgroundColor = "#1A3D2E"
+textColor = "#FAFAFA"
+font = "monospace"
