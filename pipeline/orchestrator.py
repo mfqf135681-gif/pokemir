@@ -448,12 +448,37 @@ class PipelineOrchestrator:
                 logger.debug(f"_capture_player_ids: seat_{seat.seat_index} consensus "
                              f"{text1!r}/{text2!r} → {text!r}")
             if not text:
+                # OCR 失败 fallback (2026-05-27):用 avatar hash 派生跨手稳定身份.
+                # 让 Path B 统计能把"同一物理玩家"跨手聚合(即使我们不知道他叫啥).
+                # 用户可通过 dashboard / player_registry.json 手动改名为真实昵称.
+                # 命中条件:avatar_hash 非空 AND 此 hash 未在 _avatar_fingerprints 注册过
+                # (若已注册,line 423-435 avatar 匹配路径会先消化掉,根本走不到这里).
+                if avatar_hash:
+                    temp_name = f"TempUser_{avatar_hash[:8]}"
+                    self.tracker.player_id_map[seat.seat_index] = temp_name
+                    self.tracker._avatar_fingerprints[avatar_hash] = temp_name
+                    logger.info(f"_capture_player_ids: seat_{seat.seat_index} OCR 失败,"
+                                f"派生 {temp_name}(avatar hash)")
+                    diag.emit("player.tempuser_assigned",
+                              {"seat": seat.seat_index, "hash_prefix": avatar_hash[:8],
+                               "temp_name": temp_name},
+                              hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
                 continue
             # Filter: if text parses as action keyword, it's transition-frame
             # contamination, not a real player nickname.
             if self.action_recognizer.parse(text) is not None:
                 logger.debug(f"_capture_player_ids: seat_{seat.seat_index} got action-text "
                              f"{text!r}, skipping (likely transition frame)")
+                # 同样:文字噪声不可信 → 走 avatar hash fallback
+                if avatar_hash and avatar_hash not in self.tracker._avatar_fingerprints:
+                    temp_name = f"TempUser_{avatar_hash[:8]}"
+                    self.tracker.player_id_map[seat.seat_index] = temp_name
+                    self.tracker._avatar_fingerprints[avatar_hash] = temp_name
+                    diag.emit("player.tempuser_assigned",
+                              {"seat": seat.seat_index, "hash_prefix": avatar_hash[:8],
+                               "temp_name": temp_name, "reason": "action_text_contamination",
+                               "raw_text": text},
+                              hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
                 continue
             # #3 Fuzzy match against names already in the registry (any seat).
             # cutoff=0.75 chosen so 4-char names with 1-char OCR drift match (ratio
