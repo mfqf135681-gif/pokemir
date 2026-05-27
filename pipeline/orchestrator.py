@@ -1175,11 +1175,38 @@ class PipelineOrchestrator:
                 override_reason = None
                 # Override only when stack-derived is unambiguous AND disagrees with text
                 # (REQ Q4=A: stack 优先, confidence 降)
-                if stack_derived is not None and stack_derived != text_derived:
+                #
+                # T3 fix (2026-05-27): text-derived FOLD/CHECK 是强 UI 信号(WePoker
+                # 按钮文字明确显示),而 stack-derived 在 stack_delta=0 时无法区分
+                # FOLD vs CHECK(二者 stack 签名相同,只能靠 current_to_call 猜)。
+                # → 当 (text, stack) 同处 {FOLD, CHECK} 内部时,text 优先,不覆盖。
+                # 此前 92 个 text="弃牌" 事件被误覆盖为 CHECK 的根因即此。
+                fold_check_ambiguous = (
+                    text_derived in (ActionType.FOLD, ActionType.CHECK) and
+                    stack_derived in (ActionType.FOLD, ActionType.CHECK)
+                )
+                if (
+                    stack_derived is not None
+                    and stack_derived != text_derived
+                    and not fold_check_ambiguous
+                ):
                     final_action = stack_derived
                     override_reason = f"stack-derived {stack_derived.value} overrode text-derived {text_derived.value}"
                     logger.info(f"[P3 override] seat_{sidx} text={action_text!r} "
                                 f"text→{text_derived.value} stack→{stack_derived.value}")
+                elif fold_check_ambiguous and stack_derived != text_derived:
+                    # T3:歧义保留 text-derived,但落 diagnostic 便于回溯
+                    diag.emit(
+                        "p3.fold_check_ambiguity_preserved_text",
+                        {
+                            "seat": sidx,
+                            "text_action": text_derived.value,
+                            "stack_action": stack_derived.value,
+                            "stack_delta": stack_delta,
+                            "current_to_call": self.tracker._street_to_call,
+                        },
+                        hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
+                    )
 
                 event.action_type = final_action  # may be overridden
                 event.raw_data = {

@@ -170,6 +170,47 @@ HAVING COUNT(*) FILTER (WHERE ae.raw_data->>'decision_time_ms' IS NOT NULL) >= 3
 ORDER BY n_timed DESC;
 
 
+-- ── T3 Player action corrected (P3 fold/check bug fix view) ────
+-- 2026-05-27: 修复历史 92 个 text="弃牌" 被 stack-derived 误覆盖为 check 的事件。
+-- 原因:stack_delta=0 时 FOLD 和 CHECK 的 stack 签名相同,P3 当时无条件让
+--      stack-derived 覆盖 text-derived,导致用户明确弃牌却落库为 check。
+-- 修复(orchestrator.py 2026-05-27 T3): 新事件已修复;此 view 兜底历史数据。
+-- 用法: SELECT * FROM v_player_action_corrected WHERE was_corrected = true;
+--      dashboard / stats 查询应优先用此 view 替代 action_events 直查 action_type。
+CREATE OR REPLACE VIEW v_player_action_corrected AS
+SELECT
+  ae.id AS event_id,
+  ae.hand_id,
+  ae.player_name,
+  ae.position,
+  ae.street,
+  ae.sequence_number,
+  -- 修正后的 action_type:text-derived FOLD/CHECK 强信号优先
+  CASE
+    WHEN ae.raw_data->>'text_derived_action' = 'fold'
+         AND ae.action_type = 'check' THEN 'fold'
+    WHEN ae.raw_data->>'text_derived_action' = 'check'
+         AND ae.action_type = 'fold' THEN 'check'
+    ELSE ae.action_type
+  END AS action_type_corrected,
+  ae.action_type AS action_type_raw,
+  -- 标记是否经过修正(dashboard 可标 "T3 corrected")
+  (
+    (ae.raw_data->>'text_derived_action' = 'fold' AND ae.action_type = 'check')
+    OR
+    (ae.raw_data->>'text_derived_action' = 'check' AND ae.action_type = 'fold')
+  ) AS was_corrected,
+  ae.amount,
+  ae.facing_action,
+  ae.effective_stack_bb,
+  ae.pot_size_bb,
+  ae.confidence_score,
+  ae.raw_data,
+  ae.timestamp,
+  ae.created_at
+FROM action_events ae;
+
+
 -- ── T4 Hand duration sanity ─────────────────────────────────────
 -- Typical hand: 20-180 seconds (median 30-120 with showdown).
 --   < 10s  → likely finalize misfire (community blink, not a real hand end)
