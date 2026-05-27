@@ -997,6 +997,23 @@ class PipelineOrchestrator:
             #   - empty → idle
             action_text = None
             action_img = None  # T1: track for later artifact saving
+
+            # Branch 0 (2026-05-26): dedicated timer_area takes priority when configured.
+            # Smaller ROI = focused digit OCR, more accurate + faster.
+            # Falls through to fold_area path if timer not detected (or timer_area unconfigured).
+            timer_handled = False
+            if seat_roi.timer_area is not None and seat_roi.timer_area.width > 0:
+                timer_img = self.capturer.capture_roi(seat_roi.timer_area)
+                timer_text = self.ocr.read_text(timer_img, allowlist="0123456789s ")
+                tm = re.search(r"\b(\d{1,2})\b", timer_text or "") if timer_text else None
+                if tm and 0 <= int(tm.group(1)) <= 60:
+                    self._process_timer(sidx, int(tm.group(1)))
+                    if stack_now is not None:
+                        self.tracker._prev_stack[sidx] = stack_now
+                    timer_handled = True
+            if timer_handled:
+                continue
+
             if seat_roi.fold_area is not None:
                 fold_img = self.capturer.capture_roi(seat_roi.fold_area)
                 fold_text = self.ocr.read_text(fold_img)
@@ -1006,6 +1023,7 @@ class PipelineOrchestrator:
                 # 0-60 (reasonable timer range).
                 timer_match = re.search(r"\b(\d{1,2})\b", ft) if ft else None
                 # Branch 1: digit found and looks like timer → countdown
+                # Skip if dedicated timer_area already handled (logic above).
                 if timer_match and 0 <= int(timer_match.group(1)) <= 60:
                     # Also gate: text shouldn't contain action keywords (avoids
                     # "跟注 100" being parsed as timer "100").

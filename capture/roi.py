@@ -86,6 +86,9 @@ class TableROIs:
             if seat.hand_type_area:
                 entry["hand_type"] = (seat.hand_type_area.left, seat.hand_type_area.top,
                                       seat.hand_type_area.width, seat.hand_type_area.height)
+            if seat.timer_area:
+                entry["timer"] = (seat.timer_area.left, seat.timer_area.top,
+                                  seat.timer_area.width, seat.timer_area.height)
             result["seats"].append(entry)
         return result
 
@@ -125,6 +128,7 @@ class TableROIs:
                 cards_area=_tuple_to_roi(s["cards"], "seat_cards") if s.get("cards") else None,
                 id_area=_tuple_to_roi(s["id"], "seat_id") if s.get("id") else None,
                 hand_type_area=_tuple_to_roi(s["hand_type"], "seat_hand_type") if s.get("hand_type") else None,
+                timer_area=_tuple_to_roi(s["timer"], "seat_timer") if s.get("timer") else None,
             )
             rois.seat_regions.append(seat)
         return rois
@@ -156,6 +160,10 @@ class SeatROI:
     id_area: ROIRegion | None = None   # pixel-same-as-action; OCR'd once at hand-start for player ID
     hand_type_area: ROIRegion | None = None  # 摊牌时 seat 下方显示的牌型中文文本(对子/顺子/同花/葫芦/...);
                                               # 用于和 CNN 识别的 hole + community 推导出的牌型做交叉验证
+    timer_area: ROIRegion | None = None  # 决策倒计时数字专用 ROI(独立于 fold_area);
+                                          # 位置固定,只显示 1-2 位数字 + "s" 或纯数字;OCR 更准确,
+                                          # 跟"弃牌"/"All In"/showdown 状态不冲突.向后兼容:若 None,
+                                          # pipeline fall back 到现有 fold_area regex 检测.
 
 
 class ROIManager:
