@@ -92,22 +92,26 @@ def select_roi(window_name: str, img: np.ndarray) -> tuple | None:
 
 def place_roi_by_click(img: np.ndarray, ref_w: int, ref_h: int,
                        seat_idx: int, hint: str = "") -> tuple | None:
-    """Click-to-place ROI: rectangle of fixed (ref_w × ref_h) follows mouse,
-    LEFT CLICK to anchor, SPACE to confirm, ESC to skip this seat, Q to quit batch.
+    """Click-to-save ROI placement:
+    - Mouse MOVE: rectangle of fixed (ref_w × ref_h) follows cursor in real-time.
+    - Mouse LEFT CLICK: **immediately save** at the clicked position + advance.
+    - ESC: skip this seat (preserve old value).
+    - Q: quit entire batch (preserve seats already saved).
 
     Returns (x, y, w, h) for the placed rectangle, or None if skipped/quit.
+    "__QUIT__" sentinel if user hit Q.
     """
-    win = f"Place ROI for seat_{seat_idx}  |  size {ref_w}×{ref_h}  |  SPACE=save  ESC=skip  Q=quit"
-    state = {"cx": None, "cy": None, "quit": False}
+    win = f"seat_{seat_idx}  |  size {ref_w}×{ref_h}  |  CLICK = SAVE  |  ESC=skip  Q=quit"
+    state = {"cx": img.shape[1] // 2, "cy": img.shape[0] // 2,
+             "clicked": False, "quit": False}
 
     def mouse_cb(event, x, y, flags, param):
-        # LEFT_DOWN: anchor center; MOUSEMOVE: preview if anchored
-        if event == cv2.EVENT_LBUTTONDOWN:
+        if event == cv2.EVENT_MOUSEMOVE:
             state["cx"], state["cy"] = x, y
-        elif event == cv2.EVENT_MOUSEMOVE:
-            # Always update preview position (anchored or not — drag-like feel).
-            # The "click" simply locks-in for SPACE confirm.
+        elif event == cv2.EVENT_LBUTTONDOWN:
+            # Lock in click position + signal save
             state["cx"], state["cy"] = x, y
+            state["clicked"] = True
 
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(win, mouse_cb)
@@ -115,36 +119,35 @@ def place_roi_by_click(img: np.ndarray, ref_w: int, ref_h: int,
     half_w, half_h = ref_w // 2, ref_h // 2
     while True:
         disp = img.copy()
-        if state["cx"] is not None:
-            x0, y0 = state["cx"] - half_w, state["cy"] - half_h
-            x1, y1 = state["cx"] + half_w, state["cy"] + half_h
-            cv2.rectangle(disp, (x0, y0), (x1, y1), (0, 255, 0), 2)
-            # Center crosshair
-            cv2.drawMarker(disp, (state["cx"], state["cy"]),
-                           (0, 0, 255), cv2.MARKER_CROSS, 12, 1)
-        # Hint banner at top
-        banner = f"seat_{seat_idx}: 鼠标移到该 seat id 文字中心 → SPACE 保存 / ESC 跳过 / Q 退出"
-        cv2.putText(disp, banner, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7, (0, 255, 255), 2)
+        x0, y0 = state["cx"] - half_w, state["cy"] - half_h
+        x1, y1 = state["cx"] + half_w, state["cy"] + half_h
+        cv2.rectangle(disp, (x0, y0), (x1, y1), (0, 255, 0), 2)
+        cv2.drawMarker(disp, (state["cx"], state["cy"]),
+                       (0, 0, 255), cv2.MARKER_CROSS, 14, 2)
+        cv2.putText(disp, f"seat_{seat_idx}: 左键点击该 seat id 文字中心 = 立即保存",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(disp, "ESC=跳过本 seat  /  Q=退出批量",
+                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 2)
         if hint:
-            cv2.putText(disp, hint[:80], (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
+            cv2.putText(disp, hint[:80], (10, 90), cv2.FONT_HERSHEY_SIMPLEX,
                         0.5, (200, 200, 255), 1)
         cv2.imshow(win, disp)
+
+        if state["clicked"]:
+            # Flash yellow briefly for visual confirmation, then close
+            cv2.rectangle(disp, (x0, y0), (x1, y1), (0, 255, 255), 4)
+            cv2.imshow(win, disp)
+            cv2.waitKey(150)
+            cv2.destroyWindow(win)
+            return (state["cx"] - half_w, state["cy"] - half_h, ref_w, ref_h)
+
         key = cv2.waitKey(20) & 0xFF
-        if key == 32 and state["cx"] is not None:  # SPACE
-            break
         if key == 27:  # ESC
             cv2.destroyWindow(win)
             return None
         if key in (ord('q'), ord('Q')):
-            state["quit"] = True
             cv2.destroyWindow(win)
-            return ("__QUIT__",)  # sentinel
-
-    cv2.destroyWindow(win)
-    if state["cx"] is None:
-        return None
-    return (state["cx"] - half_w, state["cy"] - half_h, ref_w, ref_h)
+            return ("__QUIT__",)
 
 
 VALID_FIELDS = {
