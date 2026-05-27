@@ -180,6 +180,8 @@ class CardDataset(Dataset):
         self.virtual = self.samples * augmentations if train else self.samples
 
         # Normal augmentation (for well-represented community classes)
+        # RandomErasing post-Normalize — forces model to use multiple features (防止 suit
+        # 头死磕一个色块,亚像素差就崩的过拟合模式).
         self.tf_normal = transforms.Compose([
             transforms.Resize((INPUT_H + 16, INPUT_W + 12)),
             transforms.RandomCrop((INPUT_H, INPUT_W)),
@@ -189,6 +191,7 @@ class CardDataset(Dataset):
             _RandomJpegNoise(p=0.4),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.RandomErasing(p=0.25, scale=(0.02, 0.08), ratio=(0.3, 3.3)),
         ])
         # Strong augmentation for rare classes
         self.tf_strong = transforms.Compose([
@@ -201,6 +204,7 @@ class CardDataset(Dataset):
             _RandomJpegNoise(p=0.5),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.RandomErasing(p=0.35, scale=(0.02, 0.10), ratio=(0.3, 3.3)),
         ])
         # Showdown augmentation: same noise budget + perspective (real reveals have slight tilt)
         self.tf_showdown = transforms.Compose([
@@ -213,6 +217,7 @@ class CardDataset(Dataset):
             _RandomJpegNoise(p=0.5),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.RandomErasing(p=0.3, scale=(0.02, 0.10), ratio=(0.3, 3.3)),
         ])
         # Val/test: no augmentation
         self.tf_val = transforms.Compose([
@@ -269,7 +274,7 @@ class CardCNN(nn.Module):
         self.shared = nn.Sequential(
             nn.Linear(128, 96),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
+            nn.Dropout(0.4),  # was 0.2 — bumped 2026-05-26 to combat overfit on showdown extension
         )
         self.rank_head = nn.Linear(96, len(RANKS))
         self.suit_head = nn.Linear(96, len(SUITS))
@@ -467,6 +472,12 @@ def main() -> int:
     parser.add_argument("--amp", choices=("auto", "on", "off"), default="auto",
                         help="Mixed-precision training (bf16 on GPU). "
                              "'auto' enables on CUDA, disables on CPU. Speeds GPU 1.5-2×.")
+    parser.add_argument("--weight-decay", type=float, default=1e-3,
+                        help="AdamW weight_decay (L2 regularization). Helps combat overfit "
+                             "when training distribution differs subtly from inference.")
+    parser.add_argument("--early-stop-patience", type=int, default=15,
+                        help="Stop training if best val score hasn't improved for this many epochs. "
+                             "0 = disabled (always run --epochs). 15 = recommended default.")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -554,13 +565,15 @@ def main() -> int:
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {n_params:,}")
 
-    opt = optim.Adam(model.parameters(), lr=args.lr)
+    # AdamW with weight_decay — better generalization than plain Adam (2026-05-26)
+    opt = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     # reduction='none' so we can multiply per-sample by rare-weight before averaging.
     criterion = nn.CrossEntropyLoss(reduction='none')
 
     best_score = 0.0
     best_domain_acc: dict = {}
+    no_improve = 0  # epochs since best_score last updated (for early stop)
     for epoch in range(1, args.epochs + 1):
         model.train()
         loss_acc = 0.0
@@ -599,6 +612,7 @@ def main() -> int:
         if score > best_score:
             best_score = score
             best_domain_acc = domain_acc
+            no_improve = 0
             MODEL_OUT.parent.mkdir(parents=True, exist_ok=True)
             torch.save({
                 "state_dict": model.state_dict(),
@@ -625,6 +639,12 @@ def main() -> int:
             line += f"nc_rec={domain_acc['noncard_recall']:.2%} "
         line += f"score={score:.4f}{marker}"
         print(line)
+
+        if not marker:  # score didn't improve this epoch
+            no_improve += 1
+            if args.early_stop_patience > 0 and no_improve >= args.early_stop_patience:
+                print(f"\nEarly stop: no improvement for {no_improve} epochs (patience={args.early_stop_patience})")
+                break
 
     print(f"\nBest combined val score (harmonic mean of community+showdown both_acc): {best_score:.4f}")
     if best_domain_acc.get("community"):
