@@ -89,6 +89,9 @@ class TableROIs:
             if seat.timer_area:
                 entry["timer"] = (seat.timer_area.left, seat.timer_area.top,
                                   seat.timer_area.width, seat.timer_area.height)
+            if seat.win_amount_area:
+                entry["win_amount"] = (seat.win_amount_area.left, seat.win_amount_area.top,
+                                       seat.win_amount_area.width, seat.win_amount_area.height)
             result["seats"].append(entry)
         return result
 
@@ -129,6 +132,7 @@ class TableROIs:
                 id_area=_tuple_to_roi(s["id"], "seat_id") if s.get("id") else None,
                 hand_type_area=_tuple_to_roi(s["hand_type"], "seat_hand_type") if s.get("hand_type") else None,
                 timer_area=_tuple_to_roi(s["timer"], "seat_timer") if s.get("timer") else None,
+                win_amount_area=_tuple_to_roi(s["win_amount"], "seat_win_amount") if s.get("win_amount") else None,
             )
             rois.seat_regions.append(seat)
         return rois
@@ -164,6 +168,10 @@ class SeatROI:
                                           # 位置固定,只显示 1-2 位数字 + "s" 或纯数字;OCR 更准确,
                                           # 跟"弃牌"/"All In"/showdown 状态不冲突.向后兼容:若 None,
                                           # pipeline fall back 到现有 fold_area regex 检测.
+    win_amount_area: ROIRegion | None = None  # 获胜玩家头上短暂显示的赢取金额(+45 / +1000 等);
+                                                # 只在 hand 结算 1-2 秒短暂显示;为 Path B 净胜负
+                                                # 统计提供直接信号(无需 stack delta 推算).
+                                                # 紧框 "+" 号 + 数字本身.
 
 
 class ROIManager:

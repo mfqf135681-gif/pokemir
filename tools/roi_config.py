@@ -79,9 +79,29 @@ def _get_seat_labels(num_seats: int) -> list[str]:
         return [f"Seat {i} ({'you' if i == 0 else f'{i} clockwise from you'})" for i in range(num_seats)]
 
 
+def _fit_window(win_name: str, img: np.ndarray,
+                max_w: int = 1280, max_h: int = 720) -> None:
+    """Pre-create cv2 window and auto-fit to max_w × max_h while preserving aspect.
+
+    Solves the "screenshot is 1920×1080 but my screen is 1366×768, cv2 window
+    blows past screen edge" zoom issue.  cv2.WINDOW_NORMAL lets user further
+    resize if needed.
+
+    IMPORTANT: cv2 mouse callback returns coordinates in ORIGINAL image space
+    regardless of window display size — so this resize doesn't affect mouse
+    coordinate math downstream.
+    """
+    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+    h, w = img.shape[:2]
+    if w > max_w or h > max_h:
+        scale = min(max_w / w, max_h / h)
+        cv2.resizeWindow(win_name, int(w * scale), int(h * scale))
+
+
 def select_roi(window_name: str, img: np.ndarray) -> tuple | None:
     """Open cv2.selectROI window. Returns (x, y, w, h) or None if skipped."""
     print(f"  {window_name}...")
+    _fit_window(window_name, img)
     r = cv2.selectROI(window_name, img, showCrosshair=True)
     cv2.destroyWindow(window_name)
     x, y, w, h = r
@@ -113,7 +133,7 @@ def place_roi_by_click(img: np.ndarray, ref_w: int, ref_h: int,
             state["cx"], state["cy"] = x, y
             state["clicked"] = True
 
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    _fit_window(win, img)
     cv2.setMouseCallback(win, mouse_cb)
 
     half_w, half_h = ref_w // 2, ref_h // 2
@@ -161,7 +181,7 @@ VALID_FIELDS = {
 
 # Per-seat sub-element names for --element flag. Order matches the full-seat prompt order.
 # REQUIRED_SEAT_ELEMENTS = {action, stack} — final-save validation refuses entries lacking these.
-SEAT_ELEMENT_ORDER = ["action", "amount", "fold_area", "timer", "stack", "button_indicator", "cards", "id", "hand_type"]
+SEAT_ELEMENT_ORDER = ["action", "amount", "fold_area", "timer", "stack", "button_indicator", "cards", "id", "hand_type", "win_amount"]
 REQUIRED_SEAT_ELEMENTS = {"action", "stack"}
 ELEMENT_HINTS = {
     "action": "头像上方,玩家行动时**只显示动作汉字**(「跟注/加注/下注/过牌」);WePoker 中**金额不在此**;空闲时此位置显示玩家昵称",
@@ -173,6 +193,7 @@ ELEMENT_HINTS = {
     "cards": "**摊牌底牌显示区**(showdown 时该 seat 玩家的 2 张底牌)— 紧贴牌外缘,**不能含桌面色**(上沿离牌顶白边 1-2 px 内,绝不要高);只框 2 卡本身,**不要把下方「对子」之类的牌型 badge 框进来**(那是 hand_type 独立 ROI)",
     "id": "玩家昵称区域 — WePoker 显示中文/英文/数字混排昵称(如「白鸢飞ix」「湖南闷高」),与 action 同像素;直接框跟 action 一模一样的区域即可;ESC 可跳过(将来 hand-start 缓存昵称用)",
     "hand_type": "**摊牌时**该 seat 在底牌下方显示的**牌型中文文字**(「对子」「顺子」「同花」「葫芦」「四条」「同花顺」「皇家同花顺」「三条」「两对」「高牌」);独立 ROI,**比 cards 紧得多**,只框那一行牌型文字;ESC 可跳过(若用户暂不需要交叉验证),将来用于 hole+community 推导验证",
+    "win_amount": "**手结算时**获胜玩家头上短暂显示的赢取金额(「+45」「+1000」「+12500」等),只显示 1-2 秒;紧框「+」号 + 数字本身,**不带其他文字 / 头像**;为 Path B 净胜负 stat 提供直接信号(免去 stack-delta 推算的误差);全 8 seat 同样大小,适合 --copy-size 批量框",
 }
 
 
