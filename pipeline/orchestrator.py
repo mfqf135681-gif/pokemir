@@ -2,10 +2,16 @@
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Training-data harvest: when ON, _capture_showdown_cards saves each candidate
+# seat's L/R card half to data/showdown_dumps/<hand_id>/seat_X_<L|R>_HHMMSS.png
+# with sibling .json metadata (CNN guess + conf + hamming). Off by env override.
+SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
@@ -751,8 +757,14 @@ class PipelineOrchestrator:
             if w < 40 or h < 40:
                 continue
             card_zone = img[: int(h * 0.8), :]
-            left_card = self.card_recognizer.recognize_single(card_zone[:, : w // 2])
-            right_card = self.card_recognizer.recognize_single(card_zone[:, w // 2 :])
+            left_img = card_zone[:, : w // 2]
+            right_img = card_zone[:, w // 2 :]
+            left_card = self.card_recognizer.recognize_single(left_img)
+            right_card = self.card_recognizer.recognize_single(right_img)
+            # Training-data harvest: dump both halves regardless of conf.  Pairs with
+            # tools/label_showdown.py for the human labeling step → CNN retraining.
+            self._dump_showdown_crop(hand.id, sidx, "L", left_img, left_card, diff)
+            self._dump_showdown_crop(hand.id, sidx, "R", right_img, right_card, diff)
             cards = []
             for c in (left_card, right_card):
                 if not c:
@@ -805,6 +817,40 @@ class PipelineOrchestrator:
                 diag.emit("showdown.incomplete",
                           {"seat": sidx, "cards_passed_conf": cards}, hand_id=hand.id)
         return cards_by_seat
+
+    def _dump_showdown_crop(self, hand_id, sidx: int, side: str,
+                            img: np.ndarray, pred: dict | None, hamming: int) -> None:
+        """Save one card crop + metadata sibling for training-data harvest.
+
+        Always writes when SHOWDOWN_DUMP_ENABLED — covers CNN-rejected cases too,
+        so the labeling tool can show "CNN was wrong here (conf X) → real card is Y".
+        data/ is gitignored;disk cost ≈ 5KB per crop, ~10 crops/showdown.
+        """
+        if not SHOWDOWN_DUMP_ENABLED or img is None or img.size == 0:
+            return
+        try:
+            dump_dir = Path("data/showdown_dumps") / str(hand_id)
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%H%M%S%f")[:-3]  # ms precision
+            stem = f"seat_{sidx}_{side}_{ts}"
+            cv2.imwrite(str(dump_dir / f"{stem}.png"), img)
+            meta = {
+                "hand_id": str(hand_id),
+                "seat": sidx,
+                "side": side,
+                "avatar_hamming": hamming,
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+                "cnn_prediction": (
+                    {"rank": pred["rank"], "suit": pred["suit"],
+                     "rank_conf": round(pred.get("rank_conf", 1.0), 4),
+                     "suit_conf": round(pred.get("suit_conf", 1.0), 4)}
+                    if pred else None
+                ),
+            }
+            with open(dump_dir / f"{stem}.json", "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+        except Exception:
+            logger.debug(f"showdown dump failed seat_{sidx} side={side}", exc_info=True)
 
     def _initialize_avatar_baselines(self) -> None:
         """Ensure every seat with fold_area has an avatar baseline at hand-start.
