@@ -211,6 +211,58 @@ SELECT
 FROM action_events ae;
 
 
+-- ── T4 Showdown physical integrity audit ───────────────────────
+-- 2026-05-27: 标识 hands.raw_data->showdown_cards 中的物理违反:
+--   1. cards[0] == cards[1]      (Gate 6a 漏网,同张手牌)
+--   2. hole 牌出现在 community   (Gate 6c.A,跨手牌-公共牌冲突)
+--   3. hole 牌跨座位重复          (Gate 6c.B,跨座位同张牌)
+-- 旧数据约 12-15% accepted 摊牌违反此约束;新事件已由 orchestrator.py Gate 6c 拦截.
+-- 用法: SELECT * FROM v_showdown_physical_check WHERE violation_count > 0;
+--      dashboard 摊牌列表应过滤 violation_count = 0 的"干净"数据.
+CREATE OR REPLACE VIEW v_showdown_physical_check AS
+WITH showdown_seats AS (
+  SELECT
+    h.id AS hand_id,
+    h.raw_data->'community_cards_final' AS community_final,
+    seat.key AS seat_idx,
+    ARRAY(SELECT jsonb_array_elements_text(seat.value)) AS cards
+  FROM hands h, jsonb_each(h.raw_data->'showdown_cards') AS seat
+  WHERE h.raw_data ? 'showdown_cards'
+),
+all_seats_per_hand AS (
+  SELECT hand_id, ARRAY_AGG(seat_idx::int ORDER BY seat_idx::int) AS seat_indices,
+         ARRAY_AGG(cards) AS cards_per_seat
+  FROM showdown_seats
+  GROUP BY hand_id
+)
+SELECT
+  ss.hand_id,
+  ss.seat_idx,
+  ss.cards,
+  -- Gate 6a: cards[0] == cards[1] (rebuilt from raw, defensive)
+  (ss.cards[1] = ss.cards[2]) AS gate6a_same_pair,
+  -- Gate 6c.A: hole in community (if community_final exists in raw_data)
+  ss.community_final,
+  -- Gate 6c.B: hole duplicates with OTHER seats in same hand
+  (
+    SELECT COUNT(*) FROM showdown_seats other
+    WHERE other.hand_id = ss.hand_id
+      AND other.seat_idx != ss.seat_idx
+      AND (other.cards && ss.cards)  -- array overlap
+  ) AS cross_seat_dup_count,
+  -- Aggregate violation count
+  (
+    CASE WHEN ss.cards[1] = ss.cards[2] THEN 1 ELSE 0 END
+    +
+    (SELECT COUNT(*) FROM showdown_seats other
+      WHERE other.hand_id = ss.hand_id
+        AND other.seat_idx != ss.seat_idx
+        AND (other.cards && ss.cards))
+  ) AS violation_count
+FROM showdown_seats ss
+ORDER BY ss.hand_id, ss.seat_idx::int;
+
+
 -- ── T4 Hand duration sanity ─────────────────────────────────────
 -- Typical hand: 20-180 seconds (median 30-120 with showdown).
 --   < 10s  → likely finalize misfire (community blink, not a real hand end)

@@ -837,6 +837,34 @@ class PipelineOrchestrator:
                                "occurrences": hist.count(pred_tuple), "window": len(hist)},
                               hand_id=hand.id, level="WARN")
                     continue
+                # T4 Gate 6c (2026-05-27):hole vs community + cross-seat uniqueness.
+                # 单牌堆扑克物理约束:同一张牌不能既在公共牌又在手牌,也不能跨座位重复.
+                # 此前 12-15% accepted 摊牌违反此约束 → 显式拒绝并落 diagnostic.
+                community_now = hand.community_cards.get(Street.RIVER) or []
+                existing_seats_cards = [
+                    c for other_cards in self.tracker._showdown_captured_this_hand.values()
+                    for c in other_cards
+                ]
+                gate6c_violations: list[str] = []
+                for card in cards:
+                    if card in community_now:
+                        gate6c_violations.append(f"{card} in community")
+                    if card in existing_seats_cards:
+                        gate6c_violations.append(f"{card} duplicate across seats")
+                if gate6c_violations:
+                    diag.emit(
+                        "showdown.gate6c_physical_violation",
+                        {
+                            "seat": sidx,
+                            "cards": cards,
+                            "violations": gate6c_violations,
+                            "community": list(community_now),
+                            "existing_seats": dict(self.tracker._showdown_captured_this_hand),
+                        },
+                        hand_id=hand.id,
+                        level="WARN",
+                    )
+                    continue
                 # Accepted — store and emit
                 self.tracker._showdown_captured_this_hand[sidx] = cards
                 logger.info(f"[showdown live] seat_{sidx} cards: {cards} (avatar hamming={diff})")
