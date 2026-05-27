@@ -90,6 +90,63 @@ def select_roi(window_name: str, img: np.ndarray) -> tuple | None:
     return (x, y, w, h)
 
 
+def place_roi_by_click(img: np.ndarray, ref_w: int, ref_h: int,
+                       seat_idx: int, hint: str = "") -> tuple | None:
+    """Click-to-place ROI: rectangle of fixed (ref_w × ref_h) follows mouse,
+    LEFT CLICK to anchor, SPACE to confirm, ESC to skip this seat, Q to quit batch.
+
+    Returns (x, y, w, h) for the placed rectangle, or None if skipped/quit.
+    """
+    win = f"Place ROI for seat_{seat_idx}  |  size {ref_w}×{ref_h}  |  SPACE=save  ESC=skip  Q=quit"
+    state = {"cx": None, "cy": None, "quit": False}
+
+    def mouse_cb(event, x, y, flags, param):
+        # LEFT_DOWN: anchor center; MOUSEMOVE: preview if anchored
+        if event == cv2.EVENT_LBUTTONDOWN:
+            state["cx"], state["cy"] = x, y
+        elif event == cv2.EVENT_MOUSEMOVE:
+            # Always update preview position (anchored or not — drag-like feel).
+            # The "click" simply locks-in for SPACE confirm.
+            state["cx"], state["cy"] = x, y
+
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback(win, mouse_cb)
+
+    half_w, half_h = ref_w // 2, ref_h // 2
+    while True:
+        disp = img.copy()
+        if state["cx"] is not None:
+            x0, y0 = state["cx"] - half_w, state["cy"] - half_h
+            x1, y1 = state["cx"] + half_w, state["cy"] + half_h
+            cv2.rectangle(disp, (x0, y0), (x1, y1), (0, 255, 0), 2)
+            # Center crosshair
+            cv2.drawMarker(disp, (state["cx"], state["cy"]),
+                           (0, 0, 255), cv2.MARKER_CROSS, 12, 1)
+        # Hint banner at top
+        banner = f"seat_{seat_idx}: 鼠标移到该 seat id 文字中心 → SPACE 保存 / ESC 跳过 / Q 退出"
+        cv2.putText(disp, banner, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (0, 255, 255), 2)
+        if hint:
+            cv2.putText(disp, hint[:80], (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (200, 200, 255), 1)
+        cv2.imshow(win, disp)
+        key = cv2.waitKey(20) & 0xFF
+        if key == 32 and state["cx"] is not None:  # SPACE
+            break
+        if key == 27:  # ESC
+            cv2.destroyWindow(win)
+            return None
+        if key in (ord('q'), ord('Q')):
+            state["quit"] = True
+            cv2.destroyWindow(win)
+            return ("__QUIT__",)  # sentinel
+
+    cv2.destroyWindow(win)
+    if state["cx"] is None:
+        return None
+    return (state["cx"] - half_w, state["cy"] - half_h, ref_w, ref_h)
+
+
 VALID_FIELDS = {
     "hero_card_1", "hero_card_2", "pot_size",
     "give_pot_button", "free_action_button",  # 2026-05-26 added (hero action panel)
@@ -146,6 +203,15 @@ def main():
               "profile) and prompt every SEAT_ELEMENT for each. Merges with existing "
               "ROIs (ESC each prompt to keep prior value). Use to bring a new profile "
               "from empty seats:[] to fully configured in one go."),
+    )
+    parser.add_argument(
+        "--copy-size",
+        action="store_true",
+        help=("Click-to-place batch mode: drag reference rect ONCE (any seat) to "
+              "set size, then loop seat_0..seat_N-1 with a rectangle of that fixed "
+              "size following your mouse — left-click center, SPACE to save, ESC "
+              "to skip, Q to quit batch. Requires --element <name>. Use when all "
+              "seats need same-size ROI (e.g. wider id_area for long usernames)."),
     )
     parser.add_argument(
         "--from-image",
@@ -317,6 +383,73 @@ def main():
 
         cv2.destroyAllWindows()
         print(f"\n\nAll seats processed. Run --verify --name {args.name} to inspect.")
+        return 0
+
+    # ── --copy-size batch mode ───────────────────────────
+    # 1 drag (any seat, size only) + N clicks (one per seat) instead of N drags.
+    # Requires --element to specify which seat sub-ROI to batch.
+    if args.copy_size:
+        if not args.element:
+            print("ERROR: --copy-size requires --element <name>")
+            return 1
+        if not output_path.exists():
+            print(f"ERROR: {output_path} not found. --copy-size requires existing profile.")
+            return 1
+        with open(output_path) as f:
+            existing = json.load(f)
+        num_seats = int(existing.get("num_seats", args.seats))
+        print(f"Loaded {output_path.name}; num_seats={num_seats}")
+        print(f"Batching '{args.element}' across {num_seats} seats with click-to-place.\n")
+        print(f"  Hint: {ELEMENT_HINTS.get(args.element, '')}\n")
+
+        # Phase 1: drag reference rectangle (any seat) — we only keep size
+        print("STEP 1 / 2 — drag a reference rect on ANY seat to set size:")
+        ref_rect = select_roi(
+            f"Reference '{args.element}': drag rect (size matters, position ignored) — SPACE confirm",
+            img,
+        )
+        if ref_rect is None:
+            print("Skipped — no reference size selected.")
+            cv2.destroyAllWindows()
+            return 0
+        _, _, ref_w, ref_h = ref_rect
+        print(f"  Reference size locked: {ref_w}×{ref_h}\n")
+
+        # Phase 2: click-to-place for each seat
+        print(f"STEP 2 / 2 — for each seat 0..{num_seats - 1}:")
+        print(f"  鼠标移动 = 矩形预览(中心=鼠标);SPACE 保存;ESC 跳过此 seat;Q 退出 batch\n")
+
+        seats = existing.get("seats") or []
+        seats_by_idx = {s.get("seat_index"): s for s in seats}
+        n_saved, n_skipped, n_quit = 0, 0, 0
+
+        for sidx in range(num_seats):
+            placed = place_roi_by_click(img, ref_w, ref_h, sidx,
+                                         hint=ELEMENT_HINTS.get(args.element, ""))
+            if placed is None:
+                print(f"  seat_{sidx}: ESC → 跳过(保留旧值)")
+                n_skipped += 1
+                continue
+            if isinstance(placed, tuple) and len(placed) == 1 and placed[0] == "__QUIT__":
+                print(f"  seat_{sidx}: Q → 退出 batch(seat_{sidx} 及后续未保存)")
+                n_quit = num_seats - sidx
+                break
+
+            # Merge into seats list (preserve other elements; update only --element key)
+            entry = seats_by_idx.get(sidx) or {"seat_index": sidx}
+            entry[args.element] = list(placed)
+            seats_by_idx[sidx] = entry
+            n_saved += 1
+            print(f"  seat_{sidx}: ✓ saved ({placed[0]},{placed[1]}) size {ref_w}×{ref_h}")
+
+        # Save back
+        new_seats = sorted(seats_by_idx.values(), key=lambda s: s.get("seat_index", 0))
+        existing["seats"] = new_seats
+        with open(output_path, "w") as f:
+            json.dump(existing, f, indent=2)
+        cv2.destroyAllWindows()
+        print(f"\n✓ Batch saved: {n_saved} placed, {n_skipped} skipped, {n_quit} unprocessed")
+        print(f"Verify: python tools/roi_config.py --verify --name {args.name}")
         return 0
 
     # ── Incremental --field mode ─────────────────────────
