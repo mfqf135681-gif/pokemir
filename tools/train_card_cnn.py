@@ -45,9 +45,14 @@ from PIL import Image
 
 # Multi-domain fixture roots (#4 multi-domain val + #6 NONCARD):
 #   cards/                       — community / hero cards (clean, frontal); domain="community"
+#   cards_shrunk/                — community fixtures resampled down-and-up (size-degraded
+#                                  synthetic; simulates showdown card size loss);
+#                                  domain="community" but train-only — excluded from val
+#                                  to keep community val_acc reflecting REAL signal
 #   showdown/<rank><suit>/       — opponent showdown reveal (smaller, slight angle); domain="showdown"
 #   showdown_noncard/            — avatar/garbage that CNN was tempted to misread; domain="noncard"
 FIXTURE_DIR = PROJ / "tests" / "fixtures" / "cards"
+SHRUNK_DIR = PROJ / "tests" / "fixtures" / "cards_shrunk"
 SHOWDOWN_DIR = PROJ / "tests" / "fixtures" / "showdown"
 NONCARD_DIR = PROJ / "tests" / "fixtures" / "showdown_noncard"
 MODEL_OUT = PROJ / "models" / "card_cnn.pth"
@@ -107,11 +112,15 @@ class CardDataset(Dataset):
     """
 
     def __init__(self, fixture_dir: Path = FIXTURE_DIR,
+                 shrunk_dir: Path = SHRUNK_DIR,
                  showdown_dir: Path = SHOWDOWN_DIR,
                  noncard_dir: Path = NONCARD_DIR,
                  augmentations: int = 50, train: bool = True):
         self.train = train
-        self.samples: list[tuple[Path, str | None, str | None, str]] = []  # (png, rank, suit, domain)
+        # 5-tuple: (png, rank, suit, domain, is_train_only).
+        # is_train_only=True excludes the sample from val splits in main() so
+        # synthetic (shrunk) samples don't inflate val_community accuracy.
+        self.samples: list[tuple[Path, str | None, str | None, str, bool]] = []
 
         # 1) Community fixtures (legacy path)
         if fixture_dir.exists():
@@ -127,7 +136,21 @@ class CardDataset(Dataset):
                 suit = expected.get("suit")
                 if rank not in RANK_TO_IDX or suit not in SUIT_TO_IDX:
                     continue
-                self.samples.append((png, rank, suit, "community"))
+                self.samples.append((png, rank, suit, "community", False))
+
+        # 1b) Shrunk community fixtures (synthetic;train-only;simulates showdown size)
+        if shrunk_dir.exists():
+            for jp in sorted(shrunk_dir.glob("*.json")):
+                png = jp.with_suffix(".png")
+                if not png.exists():
+                    continue
+                meta = json.loads(jp.read_text(encoding="utf-8"))
+                expected = meta.get("expected") or {}
+                rank = expected.get("rank")
+                suit = expected.get("suit")
+                if rank not in RANK_TO_IDX or suit not in SUIT_TO_IDX:
+                    continue
+                self.samples.append((png, rank, suit, "community", True))  # is_train_only
 
         # 2) Showdown fixtures (from tools/label_showdown.py)
         if showdown_dir.exists():
@@ -138,16 +161,16 @@ class CardDataset(Dataset):
                 if rank not in RANK_TO_IDX or suit not in SUIT_TO_IDX:
                     continue
                 for png in sorted(card_dir.glob("*.png")):
-                    self.samples.append((png, rank, suit, "showdown"))
+                    self.samples.append((png, rank, suit, "showdown", False))
 
         # 3) Noncard fixtures (NONCARD negative class) — placeholders, masked from rank/suit loss
         if noncard_dir.exists():
             for png in sorted(noncard_dir.glob("*.png")):
-                self.samples.append((png, None, None, "noncard"))
+                self.samples.append((png, None, None, "noncard", False))
 
         # Rare detection (cards only; noncards never rare-flagged)
         counts: dict[str, int] = {}
-        for _, r, s, dom in self.samples:
+        for _, r, s, dom, _to in self.samples:
             if dom == "noncard":
                 continue
             counts[r + s] = counts.get(r + s, 0) + 1
@@ -202,7 +225,7 @@ class CardDataset(Dataset):
         return len(self.virtual)
 
     def __getitem__(self, idx):
-        png, rank, suit, domain = self.virtual[idx]
+        png, rank, suit, domain, _train_only = self.virtual[idx]
         img = Image.open(png).convert("RGB")
         is_card = 0.0 if domain == "noncard" else 1.0
         key = (rank + suit) if (rank and suit) else ""
@@ -340,7 +363,7 @@ def evaluate(model, loader, device, use_amp=False, amp_dtype=None):
             "n": n, "rare_n": s["rare_n"],
         }
     # iscard head: NONCARD recall = TP / (TP + FN); count noncards by domain tag.
-    total_noncard = sum(1 for _, _, _, dom in loader.dataset.virtual if dom == "noncard")
+    total_noncard = sum(1 for s in loader.dataset.virtual if s[3] == "noncard")
     out["noncard_recall"] = (noncard_pred_noncard / total_noncard) if total_noncard > 0 else None
     out["card_recall"] = (card_pred_card / card_pred_total) if card_pred_total > 0 else None
     return out
@@ -465,13 +488,19 @@ def main() -> int:
         print(f"✗ No fixtures under {FIXTURE_DIR} / {SHOWDOWN_DIR} / {NONCARD_DIR}", file=sys.stderr)
         return 1
     by_domain: dict[str, list] = {d: [] for d in DOMAINS}
+    train_only_samples: list = []  # synthetic (cards_shrunk); skip val entirely
     for s in base_ds.samples:
-        by_domain[s[3]].append(s)
+        if s[4]:  # is_train_only
+            train_only_samples.append(s)
+        else:
+            by_domain[s[3]].append(s)
     print(f"Base fixtures by domain:")
     for d in DOMAINS:
         print(f"  {d}: {len(by_domain[d])}")
+    if train_only_samples:
+        print(f"  community (synthetic shrunk, train-only): {len(train_only_samples)}")
 
-    train_samples: list = []
+    train_samples: list = list(train_only_samples)  # synthetic always train-only
     val_samples: list = []
     for d in DOMAINS:
         dom_samples = by_domain[d]
@@ -514,8 +543,8 @@ def main() -> int:
     )
     print(f"Train batches: {len(train_loader)} (augmented={len(train_ds)})")
     print(f"Val batches:   {len(val_loader)} (samples={len(val_ds)})")
-    rare_in_train = {k for k in train_ds.rare_set if any((r and s and r + s == k) for _, r, s, _ in train_samples)}
-    rare_in_val = {k for k in val_ds.rare_set if any((r and s and r + s == k) for _, r, s, _ in val_samples)}
+    rare_in_train = {k for k in train_ds.rare_set if any((r and s and r + s == k) for _, r, s, _, _ in train_samples)}
+    rare_in_val = {k for k in val_ds.rare_set if any((r and s and r + s == k) for _, r, s, _, _ in val_samples)}
     print(f"Rare classes (≤{RARE_THRESHOLD} base fixtures): {len(train_ds.rare_set)} total")
     print(f"  in train split: {sorted(rare_in_train)}")
     print(f"  in val split:   {sorted(rare_in_val)}")
