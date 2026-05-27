@@ -122,8 +122,13 @@ def _iter_unlabeled(roots: list[Path], no_split: bool):
                 yield source, piece_id, piece_img, meta
 
 
-def _display(window_name: str, img) -> str | None:
-    """Show img in a cv2 window (upscaled). Returns window name to destroy, or None."""
+# Single fixed window name so each piece UPDATES the same window instead of
+# spawning a new one (which caused L+R windows to stack visible at once).
+_DISPLAY_WIN = "label_showdown"
+
+
+def _display(_caption_unused: str, img) -> str | None:
+    """Show img in the single shared cv2 window (upscaled). Returns window name."""
     try:
         import cv2
     except ImportError:
@@ -132,9 +137,9 @@ def _display(window_name: str, img) -> str | None:
         return None
     h, w = img.shape[:2]
     big = cv2.resize(img, (w * 4, h * 4), interpolation=cv2.INTER_NEAREST)
-    cv2.imshow(window_name, big)
+    cv2.imshow(_DISPLAY_WIN, big)
     cv2.waitKey(1)  # force window paint
-    return window_name
+    return _DISPLAY_WIN
 
 
 def _close(win):
