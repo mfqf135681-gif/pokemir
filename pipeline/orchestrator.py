@@ -669,6 +669,11 @@ class PipelineOrchestrator:
     _SHOWDOWN_BASELINE_DIVERGE_THRESHOLD = 6  # hamming > 6 of 64 bits = overlay visible
     _SHOWDOWN_CONF_THRESHOLD = 0.9            # per-card CNN conf gate
     _SHOWDOWN_CNN_THROTTLE_SEC = 1.0          # min seconds between CNN runs per seat
+    # cards_area mean brightness threshold:真牌图白底 → ~180-210;
+    # 下注阶段桌面暗色 / 头像 → ~40-80.物理硬约束,几乎不可能误判.
+    # 没这个门 fold_area diverged 会在河牌下注阶段(timer 数字 / 弃牌文字 / All in)
+    # 大量误触发 → cards_area 内还没有真牌就被抓走 dump.
+    _SHOWDOWN_CARDS_BRIGHTNESS_MIN = 120
 
     def _try_capture_showdown_live(self, rois) -> None:
         """Per-tick (called from main loop) — capture showdown cards WHILE the
@@ -733,7 +738,21 @@ class PipelineOrchestrator:
             h, w = img.shape[:2]
             if w < 40 or h < 40:
                 continue
-            # Mark throttle even if CNN fails downstream — avoid hammering
+            # Brightness gate (2026-05-26 residual fix):cards_area must look like
+            # bright cards (white background ~180+) not dark table felt / avatar
+            # leak (~40-80).Physical hard constraint, no gray zone.
+            # Without this, fold_area diverged fires during river betting (timer text,
+            # "弃牌", "All in") → cards_area still empty → mass non-card dumps.
+            mean_brightness = float(img.mean())
+            if mean_brightness < self._SHOWDOWN_CARDS_BRIGHTNESS_MIN:
+                diag.emit("showdown.dark_cards_area",
+                          {"seat": sidx, "mean_brightness": round(mean_brightness, 1),
+                           "fold_hamming": diff,
+                           "threshold": self._SHOWDOWN_CARDS_BRIGHTNESS_MIN},
+                          hand_id=hand.id)
+                # Don't mark throttle — let next tick re-check (overlay may still be transient)
+                continue
+            # Mark throttle only after passing brightness — real CNN attempt about to happen
             self.tracker._showdown_last_cnn_at[sidx] = now
 
             card_zone = img[: int(h * 0.8), :]
