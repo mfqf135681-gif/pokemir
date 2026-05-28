@@ -163,6 +163,81 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 
 ---
 
+### 5.4 Destructive 数据 / DB / 系统操作护栏（2026-05-28 立）
+
+> 源:2026-05-28 用户 push back 三次发现 AI 对自身能力认知漂移 — 错把
+> "MCP postgres read-only" 泛化成"我没 DB 写权限",忘了 Bash 工具能力。
+> 用户原话:**"生产环境喝醉给你模糊指令真删了,原地爆炸"** —— 立此规则。
+
+#### 5.4.1 我的真实数据操作能力边界(自查表)
+
+| 类别 | 工具路径 | 读 | 写 | 删除 |
+|:---|:---|:---|:---|:---|
+| 项目内文件 | Read / Edit / Write / Bash | ✅ | ✅ | ✅ Bash `rm` / `git rm` |
+| git 本地 | Bash `git` | ✅ | ✅ commit / branch | ✅ rm / amend |
+| git 远程 | Bash `git push` | ✅ | ✅ push | ⚠️ force-push / 删分支(§5.3 已挡) |
+| 远程 DB 读 | MCP `postgres__query` | ✅ SELECT | ❌ | ❌ |
+| **远程 DB 写** | **Bash** → `docker exec psql` / Python `psycopg2` | ✅ | ✅ INSERT / UPDATE | ✅ TRUNCATE / DELETE / DROP |
+| 系统 / 进程 | Bash | n/a | ✅ start | ⚠️ kill / docker stop / `down -v` / `rm -rf` |
+| 项目外文件 | Bash 理论能动 | ⚠️ | ❌ 不应 | ❌ 不应 |
+
+⚠️ **关键校准**:**"我能不能 X" 不能凭单一工具想当然**。MCP 限制 ≠ 我没能力。**必须列全工具路径**再答。
+
+#### 5.4.2 Destructive 操作分级 + 护栏
+
+| Level | 类型 | 例子 | 护栏 |
+|:---|:---|:---|:---|
+| L1 | 本地非破坏修改 | Edit / Write 已有文件 | 允许,先 Read |
+| L2 | 本地文件删除 | `git rm` / `rm` 项目内文件 | 允许,先验证非 `.env` / `.docker-data/` / 红线配置 |
+| L3 | git push 远程 | 推送 commits | follow §5.3 半自动 6 护栏 |
+| L4 | DB 写(非删) | INSERT / UPDATE 单行 | 用户明确授权 + dry-run preview + change-log |
+| **L5** | **DB destructive** | TRUNCATE / DELETE FROM / DROP TABLE / ALTER 删字段 | **必走 4 步**:<br>(a) dry-run 列影响表 + 行数<br>(b) 用户**单 turn 明确授权 keyword**("清空 DB" / "TRUNCATE X")<br>(c) 执行 + 验证结果(贴前后行数对比)<br>(d) change-log + 备份建议 |
+| **L6** | **系统 destructive** | `docker compose down -v` / `rm -rf 数据目录` / kill 长跑进程 | 同 L5 + **可逆性评估**(数据能不能 restore?备份在哪?) |
+| **L7** | **git destructive** | force-push / 删分支 / amend published commit | §5.3 已挡 — 必须单 turn 明确授权 |
+
+#### 5.4.3 "我能不能 X" 自查 protocol
+
+回答任何"我能 / 不能动数据 / 删除 / 改 X" 类问题前,**必走 3 步**:
+
+1. **列所有工具路径**:MCP / Bash / Edit / Write / Skill / Agent
+2. **逐路径评估**:读 / 写 / 删 / 不能
+3. **综合给结论**,**禁止凭单一工具下定论**
+
+| ❌ 反例 | ✅ 正例 |
+|:---|:---|
+| "MCP postgres read-only → 我没 DB 写权限" | "MCP read-only,但 Bash 可调 docker exec psql / Python psycopg2 → **我能写 DB,需按 L5 护栏走**" |
+| "项目外文件我动不了" | "Bash `rm` 理论能动,但**我不应动**,这是 norm 不是能力限制" |
+
+#### 5.4.4 用户授权颗粒度
+
+| 授权强度 | 例子 | 能否触发 L5+ destructive |
+|:---|:---|:---|
+| **强** | "清空 DB" / "force push" / "rm -rf X" / 键入 yes 确认 | ✅ 当前 destructive 操作 OK |
+| **弱** | "继续" / "你看着办" / "OK" | ❌ **不构成** L5+ 授权 |
+| **历史** | 上一轮已授权同类操作 | ⚠️ 仅当类型完全相同 + ≤ 5 turns 内 |
+| **模糊 + 疲劳** | "搞一下" + 用户表达累 / 喝醉 / 焦躁 | 🚨 **强制 cooldown**,贴 dry-run 让用户清醒确认 |
+
+#### 5.4.5 用户主动表达"我喝醉 / 我累了 / 我焦躁"
+
+→ AI **强制**进入 cooldown 模式:
+- 暂停所有 L5+ 操作
+- 把 destructive 请求转换为"**我先列 dry-run preview,你清醒后键入 yes 我再执行**"
+- 不再"代办" destructive,主动推迟到用户清醒
+- 若用户坚持立即执行 → AI 再次明示"L5 操作 + 你显疲劳 → 我推迟,等你 5 分钟"
+
+#### 5.4.6 立此规则的源(reasoning 留痕)
+
+2026-05-28 用户 push back 三次:
+1. "DB 数据污染了吗?" — 我答错(说没污染,实际查时间戳后改口)
+2. "你能不能清?" — 我答错(说 MCP read-only 没权限,**忘了 Bash 能调 psql**)
+3. "你之前不是能清吗?" — 我重审,承认 **Bash 能直接 TRUNCATE**
+
+→ 用户洞察:**"如果你认识不清没厘清边界,生产环境喝醉给模糊指令真删了,原地爆炸"**
+
+→ 同时立 [[dev-rule-data-boundary-clarity]] 记忆,与 [[dev-rule-validate-blind-spots]] cross-link。
+
+---
+
 ## 6. 契约硬约束
 
 | 规则 | 详细说明 |
