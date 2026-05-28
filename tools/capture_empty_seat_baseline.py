@@ -32,22 +32,12 @@ try:
 except ImportError:
     pass
 
-import cv2
-import numpy as np
+import cv2  # noqa: F401 (used indirectly via pipeline imports)
+import numpy as np  # noqa: F401
 
-
-def _avg_hash_64(img: np.ndarray) -> str:
-    """64-bit average hash(跟 pipeline orchestrator 一致)。"""
-    if img is None or img.size == 0:
-        return "0" * 16
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
-    small = cv2.resize(gray, (8, 8), interpolation=cv2.INTER_AREA)
-    avg = small.mean()
-    bits = (small > avg).flatten()
-    val = 0
-    for b in bits:
-        val = (val << 1) | int(b)
-    return f"{val:016x}"
+# T30 fix(2026-05-28):复用 pipeline 内的 _avg_hash_64,确保格式一致
+# (pipeline 返回 64-char "0"/"1" string,Step 2 改 _capture_player_ids 需对比)
+from pipeline.orchestrator import _avg_hash_64  # type: ignore
 
 
 def main():

@@ -1488,19 +1488,35 @@ class PipelineOrchestrator:
     # ── Helpers ───────────────────────────────────────────
 
     def _detect_blind_levels(self) -> None:
-        """T17(2026-05-28):抓 SB(button+1)/ BB(button+2)的 amount_area 强制下注。
+        """T17(2026-05-28)+ T31 fix:抓 SB(button+1)/ BB(button+2)的 amount_area。
 
         WePoker 每手开始时 SB/BB 已被强制扣盲注,amount_area 显示金额(类似 2/4)。
-        玩家本人没有"行动文字",但 amount_area 有数字。
+        但**只在 preflop 没结束时**抓才准 — 一旦 flop 发牌,SB/BB 的 amount_area
+        被 voluntary action(call/raise/fold)的最新数字覆盖,不再是 blind。
+
+        T31 fix:check community_cards 是否已发,observer 模式 _start_new_hand
+        触发时 community 已 ≥ 3,此时跳过(blind 抓不到,数据已被覆盖)。
+
+        坐下模式正常工作(_start_new_hand 触发于 hero cards 出现 = preflop 早期)。
 
         落 hand.raw_data['blind_level'] = {'sb': X, 'bb': Y}。
-        后续 dashboard/stat 可标准化 chips → BB unit(跨桌可比)。
 
-        依赖:T13 button_seat_index 准确;T24 amount_area ROI 收窄到只含数字。
-        Fallback:button 未识别(seat_idx=0 fallback)→ blinds 大概率错,但落库不影响主链路。
+        依赖:T13 button_seat_index 准确;T24 amount_area ROI 收窄。
         """
         if self.tracker.current_hand is None:
             return
+        # T31 fix:community 已发(observer 模式)→ blind 数据已被覆盖,放弃
+        from events.models import Street
+        cc = self.tracker.current_hand.community_cards or {}
+        for street in (Street.FLOP, Street.TURN, Street.RIVER):
+            cards = cc.get(street) or []
+            if len(cards) > 0:
+                diag.emit(
+                    "blind.skip_community_already_dealt",
+                    {"street": street.value, "cards_count": len(cards)},
+                    hand_id=self.tracker.current_hand.id,
+                )
+                return
         button_seat = self.roi_manager.button_seat_index
         if button_seat is None:
             return
