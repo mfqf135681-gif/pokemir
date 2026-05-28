@@ -38,6 +38,8 @@ models/
 tests/output/
 # baseline labeling outputs — contains player_name + raw_text PII, R-3 + ToS 边界
 tools/output/
+# T26 DB 备份(VPS 本地,R-3 合规,不入 git)
+backups/
 # un-vetted fixture captures (Win side)
 tests/fixtures/_pending/
 # local reference snapshots (Win/VPS each maintain own copies for debugging)
