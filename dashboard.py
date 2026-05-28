@@ -17,6 +17,14 @@ DB 连接:.env 的 POKEMIR_DB_DSN_SYNC,默认指向 VPS Tailnet 节点.
 
 from __future__ import annotations
 
+# Load .env so POKEMIR_DB_DSN_SYNC picks up real password before streamlit imports.
+# (baseline tool 同样模式 — see config.py / tools/label_baseline.py)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import streamlit as st
 
 from dashboard.db import db_health_check
