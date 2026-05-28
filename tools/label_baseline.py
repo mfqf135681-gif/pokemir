@@ -50,8 +50,9 @@ ACTION_LABELS = {
     "1": "fold",
     "2": "check",
     "3": "call",
-    "4": "raise",
-    "5": "all_in",
+    "4": "bet",      # 首次主动下注(街开始 to_call=0)
+    "5": "raise",    # 已有下注基础上加大
+    "6": "all_in",
 }
 ACTION_NAMES = {v: k for k, v in ACTION_LABELS.items()}
 
@@ -167,24 +168,25 @@ def render_event(event: dict, idx: int, total: int):
 
 
 def get_user_input() -> str:
-    """支持 cv2 keypress (1-5/s/q) 或 stdin fallback."""
+    """支持 cv2 keypress (1-6/s/q) 或 stdin fallback."""
     print("\n你判断真实 action:")
-    print("  [1] fold    [2] check    [3] call    [4] raise    [5] all_in")
+    print("  [1] fold    [2] check   [3] call")
+    print("  [4] bet     [5] raise   [6] all_in")
     print("  [s] 跳过   [q] 提前结束")
     while True:
         try:
             import cv2
             key = cv2.waitKey(0) & 0xFF
             ch = chr(key) if 0 < key < 128 else ""
-            if ch in ("1", "2", "3", "4", "5", "s", "q"):
+            if ch in ("1", "2", "3", "4", "5", "6", "s", "q"):
                 return ch
         except Exception:
             pass
         # Fallback to stdin
         ch = input(">>> ").strip().lower()
-        if ch in ("1", "2", "3", "4", "5", "s", "q"):
+        if ch in ("1", "2", "3", "4", "5", "6", "s", "q"):
             return ch
-        print("无效输入,请输 1-5 / s / q")
+        print("无效输入,请输 1-6 / s / q")
 
 
 def save_csv(rows: list[dict], path: Path):
