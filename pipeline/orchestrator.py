@@ -1486,13 +1486,20 @@ class PipelineOrchestrator:
     # ── Helpers ───────────────────────────────────────────
 
     def _detect_button_position(self):
-        """Scan each seat's button_indicator ROI and OCR for the 'D' dealer marker.
+        """Scan each seat's button_indicator ROI to find dealer button (seat_index).
 
-        WePoker shows a small "D" tag immediately left of the dealer's chip count.
-        The earlier brightness-heuristic was too noisy for such small icons;
-        OCR with allowlist='D' gives a definitive signal even at low resolution.
+        T13 fix (2026-05-28):
+          原 L1-only OCR 在 20×22 像素单字符上一直 fail → fallback seat=0,
+          position 全错(seat-fixed,不轮转)。794+ 手数据 button_seat_index NULL。
+        新 3 层 fallback + diag emit:
+          L1: OCR "D" 直接命中(理想情况)
+          L2: brightness peak — button icon 通常高对比,亮度 outlier
+          L3: 全部 fail → fallback seat=0(同原行为)+ 落 diag WARN
         """
+        candidates = []  # (seat_index, ocr_text, brightness)
         button_seat = None
+        method = None
+
         for seat_roi in self.roi_manager.rois.seat_regions:
             if seat_roi.button_indicator is None:
                 continue
@@ -1500,16 +1507,49 @@ class PipelineOrchestrator:
             if img.size == 0:
                 continue
             text = self.ocr.read_text(img, allowlist="D")
-            if "D" in text.upper():
+            brightness = float(img.mean())
+            candidates.append((seat_roi.seat_index, text, brightness))
+            # L1: OCR D 命中
+            if "D" in text.upper() and button_seat is None:
                 button_seat = seat_roi.seat_index
-                break
+                method = "L1-ocr"
 
-        if button_seat is not None:
-            self.roi_manager.button_seat_index = button_seat
-            logger.info(f"Button detected at seat {button_seat} (OCR)")
+        # L2: brightness peak fallback(OCR 全 fail 时)
+        if button_seat is None and len(candidates) >= 2:
+            sorted_by_b = sorted(candidates, key=lambda x: x[2], reverse=True)
+            max_b = sorted_by_b[0][2]
+            second_b = sorted_by_b[1][2]
+            # ratio 1.5 = button 区域显著比其他亮(outlier 检测)
+            if second_b > 0 and max_b / second_b >= 1.5:
+                button_seat = sorted_by_b[0][0]
+                method = "L2-brightness"
+
+        if button_seat is None:
+            button_seat = 0
+            method = "L3-fallback"
+            logger.warning(f"Button detection 全 fail,fallback seat=0. Candidates: {candidates}")
         else:
-            logger.warning("No button detected via OCR, using seat 0 as default")
-            self.roi_manager.button_seat_index = 0
+            logger.info(f"Button detected at seat {button_seat} via {method}")
+
+        # T13 diag:每手记录 button 检测方法 + 候选,便于事后审视
+        diag.emit(
+            "button.detected",
+            {
+                "button_seat": button_seat,
+                "method": method,
+                "candidates": [{"seat": c[0], "ocr": c[1], "brightness": round(c[2], 1)} for c in candidates],
+            },
+            hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
+            level="INFO" if method != "L3-fallback" else "WARN",
+        )
+
+        self.roi_manager.button_seat_index = button_seat
+        # T13:把 button_seat_index 落 hand.raw_data,便于 audit / dashboard 用
+        if self.tracker.current_hand is not None:
+            if self.tracker.current_hand.raw_data is None:
+                self.tracker.current_hand.raw_data = {}
+            self.tracker.current_hand.raw_data["button_seat_index"] = button_seat
+            self.tracker.current_hand.raw_data["button_detection_method"] = method
 
         mapping = self.roi_manager.compute_positions()
         self.tracker.set_position_map(mapping)
