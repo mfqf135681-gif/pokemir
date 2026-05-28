@@ -72,30 +72,37 @@ def _connect_db():
     return create_engine(dsn, future=True)
 
 
-def sample_events(engine, n_suspect: int = 25, n_clean: int = 5, seed: int | None = None):
-    """85/15 抽样:n_suspect 高可疑 + n_clean 高 conf 抽查.
+def sample_events(engine, n_screenshot: int = 30, n_override: int = 5, n_clean: int = 5, seed: int | None = None):
+    """3 池抽样 — 优先有截图的 ground truth.
 
-    "高可疑" = confidence_score < 0.7 OR override 触发(T9 物理矛盾保留 stack)
-    "高 conf 抽查" = conf ≥ 0.7 AND override 未触发(纯 text 驱动结果)
+    池子定义:
+    1. **screenshot 池** = confidence_score < 0.7 → pipeline 必存了 data/review/ 截图
+    2. **override 池** = override 触发(conf=0.7,**无截图** — 凭 Text 字段判断)
+    3. **clean 池** = conf ≥ 0.7 且未 override(纯 text 高 conf,**无截图** — 抽查防漂移)
 
-    用户主力时间花高可疑(85%),少量高 conf 抽查(15%)防"沉默错误"漂移。
-    抽样可重现:--seed 给定时,python random.sample 在 deterministic SQL 池上做选择.
+    默认 30+5+5,看图为主,凭 Text 抽查为辅。
     """
     from sqlalchemy import text
     if seed is not None:
         random.seed(seed)
 
-    # 高可疑池:low conf 或 override 触发(数据质量真问题集中地)
-    sql_suspect = text("""
+    sql_screenshot = text("""
         SELECT ae.id::text AS event_id, ae.hand_id::text, ae.player_name,
                ae.position, ae.street, ae.action_type, ae.amount,
                ae.confidence_score, ae.raw_data, ae.timestamp
         FROM action_events ae
         WHERE ae.confidence_score < 0.7
-           OR ae.raw_data->>'override_reason' IS NOT NULL
         ORDER BY ae.id LIMIT 1000
     """)
-    # 高 conf 抽查池:纯 text 驱动,AI 自认很准
+    sql_override = text("""
+        SELECT ae.id::text AS event_id, ae.hand_id::text, ae.player_name,
+               ae.position, ae.street, ae.action_type, ae.amount,
+               ae.confidence_score, ae.raw_data, ae.timestamp
+        FROM action_events ae
+        WHERE ae.raw_data->>'override_reason' IS NOT NULL
+          AND ae.confidence_score >= 0.7
+        ORDER BY ae.id LIMIT 1000
+    """)
     sql_clean = text("""
         SELECT ae.id::text AS event_id, ae.hand_id::text, ae.player_name,
                ae.position, ae.street, ae.action_type, ae.amount,
@@ -106,14 +113,17 @@ def sample_events(engine, n_suspect: int = 25, n_clean: int = 5, seed: int | Non
         ORDER BY ae.id LIMIT 1000
     """)
     with engine.connect() as conn:
-        suspect_pool = [dict(r._mapping) for r in conn.execute(sql_suspect).all()]
+        screenshot_pool = [dict(r._mapping) for r in conn.execute(sql_screenshot).all()]
+        override_pool = [dict(r._mapping) for r in conn.execute(sql_override).all()]
         clean_pool = [dict(r._mapping) for r in conn.execute(sql_clean).all()]
 
-    suspect = random.sample(suspect_pool, min(n_suspect, len(suspect_pool)))
+    screenshot = random.sample(screenshot_pool, min(n_screenshot, len(screenshot_pool)))
+    override = random.sample(override_pool, min(n_override, len(override_pool)))
     clean = random.sample(clean_pool, min(n_clean, len(clean_pool)))
-    print(f"   高可疑池: {len(suspect_pool)} 个 → 抽 {len(suspect)} 个")
-    print(f"   高 conf 抽查池: {len(clean_pool)} 个 → 抽 {len(clean)} 个")
-    events = suspect + clean
+    print(f"   📸 有截图池(conf<0.7): {len(screenshot_pool)} 个 → 抽 {len(screenshot)} 个 ← 主力")
+    print(f"   📋 override 池(conf=0.7,无图): {len(override_pool)} 个 → 抽 {len(override)} 个")
+    print(f"   ✨ 纯 text 高 conf 抽查(无图): {len(clean_pool)} 个 → 抽 {len(clean)} 个")
+    events = screenshot + override + clean
     random.shuffle(events)
     return events
 
@@ -261,18 +271,20 @@ def report(rows: list[dict]):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Phase 0 baseline 校准工具 (85/15 高可疑+高 conf 抽查)")
-    parser.add_argument("--n-suspect", type=int, default=25, help="高可疑抽样(低 conf 或 override 触发)")
-    parser.add_argument("--n-clean", type=int, default=5, help="高 conf 抽查(防沉默错误漂)")
+    parser = argparse.ArgumentParser(description="Phase 0 baseline 校准工具 (3 池抽样 — 截图为主)")
+    parser.add_argument("--n-screenshot", type=int, default=30, help="有截图主力(conf<0.7,看图标注)")
+    parser.add_argument("--n-override", type=int, default=5, help="override 触发抽样(无截图,凭 Text 判断)")
+    parser.add_argument("--n-clean", type=int, default=5, help="高 conf 抽查(无截图,防沉默错误漂)")
     parser.add_argument("--seed", type=int, default=None, help="可重现的随机种子")
     args = parser.parse_args()
+    total = args.n_screenshot + args.n_override + args.n_clean
 
-    print("Phase 0 Baseline 校准工具 (85/15)")
+    print("Phase 0 Baseline 校准工具 (3 池抽样 — 截图为主)")
     print("═" * 70)
-    print(f"将抽 {args.n_suspect} 个高可疑 + {args.n_clean} 个高 conf 抽查事件让你标注。")
-    print(f"高可疑 = conf<0.7 或 override 触发,大概率有截图。")
-    print(f"高 conf 抽查 = 纯 text 驱动,AI 自认很准,你抽查防沉默错误。")
-    print(f"每个 1-2 分钟,总 {args.n_suspect + args.n_clean} 个约 {(args.n_suspect + args.n_clean) * 1.5:.0f} 分钟。\n")
+    print(f"📸 有截图主力 {args.n_screenshot} 个(conf<0.7,看图判断 ground truth)")
+    print(f"📋 override 抽样 {args.n_override} 个(无截图,凭 Text)")
+    print(f"✨ 高 conf 抽查 {args.n_clean} 个(无截图,凭 Text 防漂)")
+    print(f"总 {total} 个,每个 1-2 分钟,约 {total * 1.5:.0f} 分钟。\n")
 
     if not REVIEW_DIR.exists():
         print(f"⚠️ {REVIEW_DIR} 不存在!这意味着 pipeline 还没产生过低 conf 截图,或你不在 Win 桌面机。")
@@ -282,7 +294,7 @@ def main():
 
     engine = _connect_db()
     print("连接 DB,抽样...")
-    events = sample_events(engine, n_suspect=args.n_suspect, n_clean=args.n_clean, seed=args.seed)
+    events = sample_events(engine, n_screenshot=args.n_screenshot, n_override=args.n_override, n_clean=args.n_clean, seed=args.seed)
     print(f"抽到 {len(events)} 个 events。开始标注。\n")
 
     rows = []
