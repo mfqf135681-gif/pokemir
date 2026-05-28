@@ -530,7 +530,14 @@ class PipelineOrchestrator:
 
         hand = self.tracker.finalize_hand()
         if hand and db is not None:
-            self.hand_repo.update(db, hand)
+            try:
+                self.hand_repo.update(db, hand)
+            except ValueError as e:
+                # T20(2026-05-28):Ctrl+C 打在 _start_new_hand 还没 commit
+                # 的瞬间,_shutdown 调 _end_current_hand → 这里 update 抛
+                # ValueError(Hand X not found)。graceful skip 不让 shutdown crash。
+                logger.warning(f"Hand finalize skipped (likely Ctrl+C race): {e}")
+                return
         # 周期 dedupe player_id_map(catch 后 OCR 出现的变体,如小鬼微熏/徵熏)
         self._canonicalize_player_id_map()
         # #10 Persist player registry at hand end (cheap; small JSON file)
