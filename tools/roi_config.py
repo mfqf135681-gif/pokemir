@@ -310,8 +310,9 @@ def main():
             capturer.select_monitor(1)
         img = capturer.capture()
         img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-        _draw_rois(img_bgr, data)
-        cv2.imshow(f"ROI Preview — {data.get('window_title', args.name)} (press any key)", img_bgr)
+        _draw_rois(img_bgr, data, element_filter=args.element)
+        title_suffix = f" — element={args.element}" if args.element else ""
+        cv2.imshow(f"ROI Preview — {data.get('window_title', args.name)}{title_suffix} (press any key)", img_bgr)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
         return 0
@@ -628,15 +629,37 @@ def main():
     return 0
 
 
-def _draw_rois(img: np.ndarray, data: dict):
-    """Draw colored rectangles for each ROI on the image."""
+def _draw_rois(img: np.ndarray, data: dict, element_filter: str | None = None):
+    """Draw colored rectangles for each ROI on the image.
+
+    If element_filter is given (e.g. "action", "id", "hand_type"), draw
+    ONLY that element across all seats — for per-element verify.
+    Default (None) draws everything, including hand_type/timer/win_amount
+    (which the legacy version forgot).
+    """
     colors = {
-        "hero": (0, 255, 0),       # green
-        "community": (255, 0, 0),  # blue
-        "pot": (0, 255, 255),      # yellow
-        "button": (255, 0, 255),   # magenta
-        "seat": (0, 165, 255),     # orange
-        "fold": (0, 0, 255),       # red — emphasises fold_area distinct from action
+        "hero":       (0, 255, 0),     # green
+        "community":  (255, 0, 0),     # blue
+        "pot":        (0, 255, 255),   # yellow
+        "button":     (255, 0, 255),   # magenta
+        "seat":       (0, 165, 255),   # orange
+        "fold":       (0, 0, 255),     # red
+        "timer":      (255, 255, 0),   # cyan
+        "hand_type":  (180, 105, 255), # pink
+        "win_amount": (0, 255, 128),   # light-green
+    }
+    # (color_key, short_label_when_full_draw)
+    seat_elements = {
+        "action":           ("seat",       "S{}"),
+        "amount":           ("pot",        "$"),
+        "fold_area":        ("fold",       "FOLD"),
+        "stack":            ("seat",       ""),
+        "cards":            ("seat",       ""),
+        "button_indicator": ("button",     "BTN?"),
+        "id":               ("seat",       "ID"),
+        "hand_type":        ("hand_type",  "HT"),
+        "timer":            ("timer",      "TMR"),
+        "win_amount":       ("win_amount", "+WIN"),
     }
 
     def draw_rect(tup, color, label=""):
@@ -647,22 +670,27 @@ def _draw_rois(img: np.ndarray, data: dict):
         if label:
             cv2.putText(img, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
-    draw_rect(data.get("hero_card_1"), colors["hero"], "Hero 1")
-    draw_rect(data.get("hero_card_2"), colors["hero"], "Hero 2")
-    draw_rect(data.get("pot_size"), colors["pot"], "Pot")
+    # Top-level ROIs (only when no filter — they don't fit element-filter scope)
+    if element_filter is None:
+        draw_rect(data.get("hero_card_1"), colors["hero"], "Hero 1")
+        draw_rect(data.get("hero_card_2"), colors["hero"], "Hero 2")
+        draw_rect(data.get("pot_size"), colors["pot"], "Pot")
+        for cc in data.get("community_cards", []):
+            draw_rect(cc, colors["community"], "Comm")
 
-    for cc in data.get("community_cards", []):
-        draw_rect(cc, colors["community"], "Comm")
-
+    # Per-seat sub-ROIs
     for s in data.get("seats", []):
-        label = f"Seat {s.get('seat_index', '?')}"
-        draw_rect(s.get("action"), colors["seat"], label)
-        draw_rect(s.get("amount"), colors["pot"], "$" if s.get("amount") else "")
-        draw_rect(s.get("fold_area"), colors["fold"], "FOLD" if s.get("fold_area") else "")
-        draw_rect(s.get("stack"), colors["seat"])
-        draw_rect(s.get("cards"), colors["seat"])
-        draw_rect(s.get("button_indicator"), colors["button"], "BTN?" if s.get("button_indicator") else "")
-        draw_rect(s.get("id"), colors["seat"], "ID" if s.get("id") else "")
+        idx = s.get("seat_index", "?")
+        for key, (color_key, short_label) in seat_elements.items():
+            if element_filter is not None and key != element_filter:
+                continue
+            color = colors[color_key]
+            # Filter mode: rich seat-indexed label;  Full mode: legacy short label
+            if element_filter is not None:
+                label = f"S{idx}-{key}" if s.get(key) else ""
+            else:
+                label = short_label.format(idx) if s.get(key) else ""
+            draw_rect(s.get(key), color, label)
 
 
 def _find_poker_windows() -> list[dict]:
