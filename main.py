@@ -25,11 +25,17 @@ def main():
              "Defaults to POKEMIR_ROI_PROFILE env var or config.py default. "
              "Used in pipeline mode; ignored in api mode.",
     )
+    parser.add_argument(
+        "--observer",
+        action="store_true",
+        help="观战模式 — 用户未坐下。关闭 hero seat 自动检测,所有 seat 走对手摊牌捕获。"
+             "Used in pipeline mode; ignored in api mode.",
+    )
     args = parser.parse_args()
 
     if args.command == "pipeline":
         from pipeline.orchestrator import PipelineOrchestrator
-        orchestrator = PipelineOrchestrator(roi_profile=args.profile)
+        orchestrator = PipelineOrchestrator(roi_profile=args.profile, observer_mode=args.observer)
         orchestrator.start()
     else:
         import uvicorn

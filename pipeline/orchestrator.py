@@ -142,12 +142,18 @@ logger = logging.getLogger(__name__)
 class PipelineOrchestrator:
     """Main loop: capture ROIs → recognize cards/actions → persist to DB."""
 
-    def __init__(self, roi_profile: str | None = None):
+    def __init__(self, roi_profile: str | None = None, observer_mode: bool = False):
         profile = roi_profile or ROI_PROFILE
         roi_path = f"{ROI_CONFIG_DIR}/{profile}.json"
 
         self.roi_manager = ROIManager.from_json(roi_path)
         logger.info(f"Loaded ROI config: {roi_path}")
+
+        # T11 (2026-05-28):观战模式 — 用户未坐下,seat[hero_seat_idx] 实际是别人。
+        # 关闭 hero seat 自动检测,所有 seat 走对手摊牌捕获逻辑。
+        self.observer_mode = observer_mode
+        if observer_mode:
+            logger.info("[observer-mode] 启用:hero seat 自动检测关闭,所有 seat 等同处理")
 
         self.capturer = ScreenCapturer()
 
@@ -694,12 +700,16 @@ class PipelineOrchestrator:
         """检测 hero 自己的座位 index(几何上 seat.cards_area 与 hero_card_1 重叠)。
 
         坐下模式:返回 hero 所在 seat_index(通常 0)。
-        观战模式:hero_card_1 几何 0/0/0/0 或与所有 seat 都不重叠 → 返回 None。
+        观战模式:--observer flag 或 hero_card_1 与所有 seat 都不重叠 → 返回 None。
         缓存于 tracker._hero_seat_idx_cache 以避免每 tick 重算。
         """
         cached = getattr(self.tracker, "_hero_seat_idx_cache", "uninitialized")
         if cached != "uninitialized":
             return cached
+        # 观战模式 short-circuit:用户未坐下,不该跳任何 seat
+        if self.observer_mode:
+            self.tracker._hero_seat_idx_cache = None
+            return None
         hc = rois.hero_card_1
         result: int | None = None
         if hc is not None and hc.width > 0 and hc.height > 0:
