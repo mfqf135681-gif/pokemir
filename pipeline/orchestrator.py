@@ -343,6 +343,10 @@ class PipelineOrchestrator:
         # Detect button position and compute seat→position mapping
         self._detect_button_position()
 
+        # T17(2026-05-28):抓 SB/BB 强制下注金额 → blind_level
+        # 依赖 button_seat_index 准确(T13 fix 后 ✅)
+        self._detect_blind_levels()
+
         # Capture each seat's platform user-ID before any in-hand action obscures it
         self._capture_player_ids()
 
@@ -1482,6 +1486,63 @@ class PipelineOrchestrator:
                 self.tracker._hand_pot_peak = amount
 
     # ── Helpers ───────────────────────────────────────────
+
+    def _detect_blind_levels(self) -> None:
+        """T17(2026-05-28):抓 SB(button+1)/ BB(button+2)的 amount_area 强制下注。
+
+        WePoker 每手开始时 SB/BB 已被强制扣盲注,amount_area 显示金额(类似 2/4)。
+        玩家本人没有"行动文字",但 amount_area 有数字。
+
+        落 hand.raw_data['blind_level'] = {'sb': X, 'bb': Y}。
+        后续 dashboard/stat 可标准化 chips → BB unit(跨桌可比)。
+
+        依赖:T13 button_seat_index 准确;T24 amount_area ROI 收窄到只含数字。
+        Fallback:button 未识别(seat_idx=0 fallback)→ blinds 大概率错,但落库不影响主链路。
+        """
+        if self.tracker.current_hand is None:
+            return
+        button_seat = self.roi_manager.button_seat_index
+        if button_seat is None:
+            return
+        num_seats = self.roi_manager.rois.num_seats or len(self.roi_manager.rois.seat_regions)
+        if num_seats < 2:
+            return
+
+        sb_idx = (button_seat + 1) % num_seats
+        bb_idx = (button_seat + 2) % num_seats
+
+        blinds: dict[str, float] = {}
+        for label, idx in [("sb", sb_idx), ("bb", bb_idx)]:
+            seat = next((s for s in self.roi_manager.rois.seat_regions if s.seat_index == idx), None)
+            if seat is None or seat.amount_area is None or seat.amount_area.width == 0:
+                continue
+            img = self.capturer.capture_roi(seat.amount_area)
+            if img.size == 0:
+                continue
+            text = self.ocr.read_text(img, allowlist="0123456789.")
+            if not text:
+                continue
+            # 提取首个数字(可能有 OCR noise 如 "2." / " 4")
+            import re as _re
+            m = _re.search(r"(\d+\.?\d*)", text)
+            if m:
+                try:
+                    value = float(m.group(1))
+                    if 0 < value < 100000:  # sanity range
+                        blinds[label] = value
+                except ValueError:
+                    pass
+
+        if blinds:
+            if self.tracker.current_hand.raw_data is None:
+                self.tracker.current_hand.raw_data = {}
+            self.tracker.current_hand.raw_data["blind_level"] = blinds
+            logger.info(f"[T17] blind_level detected: sb_seat={sb_idx} bb_seat={bb_idx} → {blinds}")
+            diag.emit(
+                "blind.detected",
+                {"sb_seat": sb_idx, "bb_seat": bb_idx, "blinds": blinds, "button_seat": button_seat},
+                hand_id=self.tracker.current_hand.id,
+            )
 
     def _detect_button_position(self):
         """Scan each seat's button_indicator ROI to find dealer button (seat_index).
