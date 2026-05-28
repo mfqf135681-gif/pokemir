@@ -115,7 +115,7 @@ def _load_player_registry() -> dict:
     if not PLAYER_REGISTRY_PATH.exists():
         return {"fingerprints": {}}
     try:
-        with open(PLAYER_REGISTRY_PATH) as f:
+        with open(PLAYER_REGISTRY_PATH, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         logger.warning(f"Failed to load {PLAYER_REGISTRY_PATH}, starting fresh", exc_info=True)
@@ -125,7 +125,7 @@ def _load_player_registry() -> dict:
 def _save_player_registry(fingerprints: dict) -> None:
     try:
         PLAYER_REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(PLAYER_REGISTRY_PATH, "w") as f:
+        with open(PLAYER_REGISTRY_PATH, "w", encoding="utf-8") as f:
             json.dump({"fingerprints": fingerprints}, f, ensure_ascii=False, indent=2)
     except Exception:
         logger.warning(f"Failed to save {PLAYER_REGISTRY_PATH}", exc_info=True)
@@ -164,7 +164,7 @@ class PipelineOrchestrator:
         if not window_title:
             # Fallback: check the JSON data
             import json
-            with open(roi_path) as f:
+            with open(roi_path, encoding="utf-8") as f:
                 roi_data = json.load(f)
             window_title = roi_data.get("window_title", "")
 

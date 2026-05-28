@@ -184,7 +184,7 @@ class ROIManager:
     @classmethod
     def from_json(cls, path: str) -> "ROIManager":
         """Load ROI configuration from a JSON file."""
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         mgr = cls()
         mgr.rois = TableROIs.from_dict(data)
@@ -194,8 +194,8 @@ class ROIManager:
         """Save current ROI configuration to a JSON file."""
         data = self.rois.to_dict()
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
 
     def compute_positions(self) -> dict[int, str]:
         """Given button position, compute all seat positions.

@@ -299,7 +299,7 @@ def main():
         if not output_path.exists():
             print(f"ERROR: {output_path} not found. Run without --verify first.")
             return 1
-        with open(output_path) as f:
+        with open(output_path, encoding="utf-8") as f:
             data = json.load(f)
         # Find window if title saved
         if data.get("window_title"):
@@ -336,7 +336,7 @@ def main():
         if not output_path.exists():
             print(f"ERROR: {output_path} not found. --all-seats requires an existing profile.")
             return 1
-        with open(output_path) as f:
+        with open(output_path, encoding="utf-8") as f:
             existing = json.load(f)
         num_seats = int(existing.get("num_seats", 0))
         if num_seats == 0:
@@ -397,8 +397,8 @@ def main():
             # Persist after EVERY seat (so Ctrl+C mid-way doesn't lose progress)
             seats.sort(key=lambda s: s.get("seat_index", 0))
             existing["seats"] = seats
-            with open(output_path, "w") as f:
-                json.dump(existing, f, indent=2)
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=2, ensure_ascii=False)
 
             configured = [k for k in SEAT_ELEMENT_ORDER if seat_entry.get(k)]
             missing = [e for e in REQUIRED_SEAT_ELEMENTS if not seat_entry.get(e)]
@@ -419,7 +419,7 @@ def main():
         if not output_path.exists():
             print(f"ERROR: {output_path} not found. --copy-size requires existing profile.")
             return 1
-        with open(output_path) as f:
+        with open(output_path, encoding="utf-8") as f:
             existing = json.load(f)
         num_seats = int(existing.get("num_seats", args.seats))
         print(f"Loaded {output_path.name}; num_seats={num_seats}")
@@ -469,8 +469,8 @@ def main():
         # Save back
         new_seats = sorted(seats_by_idx.values(), key=lambda s: s.get("seat_index", 0))
         existing["seats"] = new_seats
-        with open(output_path, "w") as f:
-            json.dump(existing, f, indent=2)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
         cv2.destroyAllWindows()
         print(f"\n✓ Batch saved: {n_saved} placed, {n_skipped} skipped, {n_quit} unprocessed")
         print(f"Verify: python tools/roi_config.py --verify --name {args.name}")
@@ -481,7 +481,7 @@ def main():
         if not output_path.exists():
             print(f"ERROR: {output_path} not found. --field requires an existing profile.")
             return 1
-        with open(output_path) as f:
+        with open(output_path, encoding="utf-8") as f:
             existing = json.load(f)
         print(f"Loaded existing profile {output_path.name}")
         print(f"Configuring only: {args.field}")
@@ -537,8 +537,8 @@ def main():
             seats.sort(key=lambda s: s.get("seat_index", 0))
             existing["seats"] = seats
             cv2.destroyAllWindows()
-            with open(output_path, "w") as f:
-                json.dump(existing, f, indent=2)
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=2, ensure_ascii=False)
 
             configured = [k for k in SEAT_ELEMENT_ORDER if seat_entry.get(k)]
             missing = [e for e in REQUIRED_SEAT_ELEMENTS if not seat_entry.get(e)]
@@ -566,8 +566,8 @@ def main():
         else:
             existing[args.field] = list(rect)
         cv2.destroyAllWindows()
-        with open(output_path, "w") as f:
-            json.dump(existing, f, indent=2)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
         print(f"\n{args.field} updated in {output_path}")
         print(f"Verify with: python tools/roi_config.py --verify --name {args.name}")
         return 0
@@ -618,8 +618,8 @@ def main():
     # ── Save ─────────────────────────────────────────────
     cv2.destroyAllWindows()
 
-    with open(output_path, "w") as f:
-        json.dump(result, f, indent=2)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
 
     print(f"\nROI configuration saved to: {output_path}")
     print(f"  Hero cards: {bool(result['hero_card_1'])}/{bool(result['hero_card_2'])}")
