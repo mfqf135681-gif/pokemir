@@ -79,7 +79,9 @@ def _save_review_artifacts(hand_id, sidx, ts_str: str, images: dict, metadata: d
             if img is None or img.size == 0:
                 continue
             cv2.imwrite(str(hand_dir / f"{prefix}_{kind}.png"), img)
-        with open(hand_dir / f"{prefix}_meta.json", "w") as f:
+        # T23 (2026-05-28):必须显式 encoding="utf-8",否则 Windows 默认 cp936
+        # 写中文 player_name → baseline 工具 utf-8 读时 UnicodeDecodeError。
+        with open(hand_dir / f"{prefix}_meta.json", "w", encoding="utf-8") as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2, default=str)
     except Exception:
         logger.warning("Failed to save review artifacts", exc_info=True)

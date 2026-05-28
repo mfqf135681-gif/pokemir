@@ -142,7 +142,14 @@ def find_screenshot(event_id: str, hand_id: str, verbose: bool = False) -> Optio
         print(f"   [find_ss] hand_dir={hand_dir},找到 {len(meta_files)} 个 meta.json")
     for meta_file in meta_files:
         try:
-            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            # T23 (2026-05-28):历史 meta.json 是 cp936 写的(orchestrator
+            # 旧版没 encoding=),utf-8 读失败 fallback cp936
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            except UnicodeDecodeError:
+                meta = json.loads(meta_file.read_text(encoding="cp936"))
+                if verbose:
+                    print(f"   [find_ss] {meta_file.name} 用 cp936 兼容读")
             meta_eid = meta.get("event_id")
             if meta_eid == event_id:
                 prefix = meta_file.name.replace("_meta.json", "")
