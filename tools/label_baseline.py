@@ -128,24 +128,59 @@ def sample_events(engine, n_screenshot: int = 30, n_override: int = 5, n_clean: 
     return events
 
 
-def find_screenshot(event_id: str, hand_id: str) -> Optional[Path]:
-    """搜 data/review/<hand_id>/*_meta.json with matching event_id."""
+def find_screenshot(event_id: str, hand_id: str, verbose: bool = False) -> Optional[Path]:
+    """搜 data/review/<hand_id>/*_meta.json with matching event_id。
+    verbose=True 时打印诊断信息,便于定位 find 失败原因。
+    """
     hand_dir = REVIEW_DIR / hand_id
     if not hand_dir.exists():
+        if verbose:
+            print(f"   [find_ss] 目录不存在: {hand_dir}")
         return None
-    for meta_file in hand_dir.glob("*_meta.json"):
+    meta_files = list(hand_dir.glob("*_meta.json"))
+    if verbose:
+        print(f"   [find_ss] hand_dir={hand_dir},找到 {len(meta_files)} 个 meta.json")
+    for meta_file in meta_files:
         try:
             meta = json.loads(meta_file.read_text(encoding="utf-8"))
-            if meta.get("event_id") == event_id:
-                # Find sibling action.png (the most informative)
+            meta_eid = meta.get("event_id")
+            if meta_eid == event_id:
                 prefix = meta_file.name.replace("_meta.json", "")
+                if verbose:
+                    print(f"   [find_ss] 匹配到 meta:{meta_file.name},prefix={prefix}")
                 for kind in ("action", "stack", "fold", "amount"):
                     img = hand_dir / f"{prefix}_{kind}.png"
                     if img.exists():
+                        if verbose:
+                            print(f"   [find_ss] 找到截图:{img.name}")
                         return img
-        except Exception:
+                if verbose:
+                    print(f"   [find_ss] meta 匹配但找不到 .png(prefix_kind 都不在)")
+            elif verbose:
+                print(f"   [find_ss] meta event_id 不匹配:{meta_eid} != {event_id}")
+        except Exception as e:
+            if verbose:
+                print(f"   [find_ss] 读 meta 失败 {meta_file.name}: {e}")
             continue
     return None
+
+
+def open_image_native(image_path: Path) -> bool:
+    """用系统默认图片查看器打开(cv2.imshow 失败时 fallback)。
+    Windows: os.startfile;Linux: xdg-open;macOS: open。
+    """
+    try:
+        import sys, subprocess
+        if sys.platform == "win32":
+            os.startfile(str(image_path))
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(image_path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(image_path)], check=False)
+        return True
+    except Exception as e:
+        print(f"   ⚠️ 系统查看器打开失败:{e}")
+        return False
 
 
 def render_event(event: dict, idx: int, total: int):
@@ -166,9 +201,10 @@ def render_event(event: dict, idx: int, total: int):
     print(f"Text:    {raw.get('action_text')!r}")
     print(f"Override: {raw.get('override_reason') or '—'}")
 
-    screenshot = find_screenshot(event["event_id"], event["hand_id"])
+    screenshot = find_screenshot(event["event_id"], event["hand_id"], verbose=True)
     if screenshot:
         print(f"📸 截图:  {screenshot}")
+        cv2_ok = False
         try:
             import cv2
             img = cv2.imread(str(screenshot))
@@ -176,15 +212,20 @@ def render_event(event: dict, idx: int, total: int):
                 # Resize if too small (action_area crops are tiny)
                 h, w = img.shape[:2]
                 if max(h, w) < 200:
-                    scale = 200 / max(h, w)
+                    scale = 400 / max(h, w)  # 放大到 400px,看得清
                     img = cv2.resize(img, (int(w * scale), int(h * scale)),
                                      interpolation=cv2.INTER_NEAREST)
-                cv2.imshow("baseline label", img)
-                cv2.waitKey(1)  # Force window paint
+                cv2.imshow("baseline label - press any key in this window to focus", img)
+                cv2.waitKey(1)
+                cv2_ok = True
         except Exception as e:
-            print(f"⚠️ cv2.imshow 失败({e}) — 请手动打开上面的截图路径")
+            print(f"   ⚠️ cv2.imshow 失败({e})")
+        # Fallback:OS-native viewer(Windows Photos / Linux eog / macOS Preview)
+        if not cv2_ok:
+            print(f"   📂 用系统查看器打开...")
+            open_image_native(screenshot)
     else:
-        print("📸 截图:  无(high-conf 不存)— 仅凭数字判断,可能存在循环验证偏差")
+        print("📸 截图:  无 — 凭 Text 字段判断(注意:stack=null 是 OCR 漏读,≠ 玩家没投钱)")
 
 
 def get_user_input() -> str:
