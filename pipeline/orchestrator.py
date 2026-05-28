@@ -1259,56 +1259,45 @@ class PipelineOrchestrator:
                 text_derived = parsed["action_type"]
                 final_action = text_derived
                 override_reason = None
-                # T3 + T3 续集(2026-05-28):text-derived 是 WePoker UI 文字 ground
-                # truth(明确按钮文字"弃牌"/"过牌"/"跟注"/"下注"/"加注"/"All in")。
-                # Stack-derived 通过 stack_delta + current_to_call 推断,但:
-                #   - stack_delta=0 时 FOLD vs CHECK 无法区分(T3)
-                #   - first_bet_this_street 跟踪在某些 case 错 → BET ↔ RAISE ↔ CALL
-                #     三角误推(T3 续集,baseline 数据证实 bet 准确率 0%)
+                # T16(2026-05-28):text 几乎永远优先。
+                # baseline 验证:T9 fix 后仍 86.2% 准确率(9 个错全是 stack
+                # override text 类,主要 fold→call 6 次)。根因:T9 假设
+                # "text 错 stack 对",实际 chip contribution 场景反之 —
+                # text 是 WePoker UI 文字明示,stack OCR 漏读概率更高。
                 #
-                # 新策略:text 跟 stack delta 物理签名"一致"时,text 优先;
-                # 仅在物理矛盾时(text OCR 错)stack 才 override。
-                #
-                # 物理签名分组:
-                #   zero contribution: FOLD / CHECK         (stack_delta ≈ 0)
-                #   chip contribution: CALL / BET / RAISE   (stack_delta > 0)
-                #   all-in special:    ALL_IN               (stack_after ≈ 0)
+                # 新策略:**text 优先**,只在两种 sanity 失败时 stack override:
+                #   (a) text=FOLD/CHECK 但 stack_delta > 2 → text 必错(玩家
+                #       投了钱不可能 fold,可能 "跟注 XX" 被看成 "弃牌")
+                #   (b) text != ALL_IN 但 stack_after ≈ 0 → text 漏 all-in 关键词
                 text_is_zero = text_derived in (ActionType.FOLD, ActionType.CHECK)
-                text_is_chip = text_derived in (ActionType.CALL, ActionType.BET, ActionType.RAISE)
-                stack_is_zero = (stack_delta is not None and abs(stack_delta) <= 2)
                 stack_is_chip = (stack_delta is not None and abs(stack_delta) > 2)
-                text_stack_consistent = (
-                    (text_is_zero and stack_is_zero)
-                    or (text_is_chip and stack_is_chip)
-                )
+                stack_says_allin = (stack_derived == ActionType.ALL_IN)
 
-                if (
-                    stack_derived is not None
-                    and stack_derived != text_derived
-                    and not text_stack_consistent
-                ):
-                    # 物理矛盾(text OCR 可能错)→ stack 优先
+                should_override = False
+                if stack_derived is not None and stack_derived != text_derived:
+                    if text_is_zero and stack_is_chip:
+                        # 物理矛盾 (a):text=fold/check 但 stack 投了钱
+                        should_override = True
+                    elif text_derived != ActionType.ALL_IN and stack_says_allin:
+                        # 物理矛盾 (b):text 漏 all_in 关键词
+                        should_override = True
+
+                if should_override:
                     final_action = stack_derived
                     override_reason = f"stack-derived {stack_derived.value} overrode text-derived {text_derived.value}"
-                    logger.info(f"[P3 override] seat_{sidx} text={action_text!r} "
+                    logger.info(f"[P3 override T16] seat_{sidx} text={action_text!r} "
                                 f"text→{text_derived.value} stack→{stack_derived.value}")
-                elif (
-                    stack_derived is not None
-                    and stack_derived != text_derived
-                    and text_stack_consistent
-                ):
-                    # 物理签名一致但 stack-derived 内部歧义(fold/check 或 bet/raise/call 三角)
-                    # → 保留 text-derived,落 diagnostic 便于回溯
-                    ambig_type = "fold_check" if text_is_zero else "bet_raise_call"
+                elif stack_derived is not None and stack_derived != text_derived:
+                    # text 优先(包括 T9 前会被 override 的 6 个 fold→call case)
                     diag.emit(
-                        "p3.text_stack_internal_ambiguity",
+                        "p3.text_priority_preserved",
                         {
                             "seat": sidx,
                             "text_action": text_derived.value,
                             "stack_action": stack_derived.value,
                             "stack_delta": stack_delta,
+                            "stack_after": stack_after,
                             "current_to_call": self.tracker._street_to_call,
-                            "ambiguity_type": ambig_type,
                         },
                         hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
                     )
