@@ -35,6 +35,13 @@ from typing import Optional
 # Allow tool to be run from project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Load .env so POKEMIR_DB_DSN_SYNC picks up user's real password (project-wide pattern)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # graceful: env var may already be set in shell
+
 REVIEW_DIR = Path("data/review")
 OUTPUT_DIR = Path("tools/output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
