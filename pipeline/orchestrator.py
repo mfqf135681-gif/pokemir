@@ -690,6 +690,44 @@ class PipelineOrchestrator:
         decision_time_ms = int((time.time() - started_at) * 1000)
         self.tracker._pending_decision_time[sidx] = decision_time_ms
 
+    def _detect_hero_seat_index(self, rois) -> int | None:
+        """检测 hero 自己的座位 index(几何上 seat.cards_area 与 hero_card_1 重叠)。
+
+        坐下模式:返回 hero 所在 seat_index(通常 0)。
+        观战模式:hero_card_1 几何 0/0/0/0 或与所有 seat 都不重叠 → 返回 None。
+        缓存于 tracker._hero_seat_idx_cache 以避免每 tick 重算。
+        """
+        cached = getattr(self.tracker, "_hero_seat_idx_cache", "uninitialized")
+        if cached != "uninitialized":
+            return cached
+        hc = rois.hero_card_1
+        result: int | None = None
+        if hc is not None and hc.width > 0 and hc.height > 0:
+            hx1, hy1 = hc.left, hc.top
+            hx2, hy2 = hx1 + hc.width, hy1 + hc.height
+            for seat in rois.seat_regions:
+                ca = seat.cards_area
+                if ca is None or ca.width == 0:
+                    continue
+                sx1, sy1 = ca.left, ca.top
+                sx2, sy2 = sx1 + ca.width, sy1 + ca.height
+                # bbox 重叠判定
+                if not (sx2 < hx1 or sx1 > hx2 or sy2 < hy1 or sy1 > hy2):
+                    result = seat.seat_index
+                    break
+        self.tracker._hero_seat_idx_cache = result
+        if result is not None:
+            logger.info(f"[hero-seat] 检测到 hero 座位 seat_{result},摊牌捕获将跳过该 seat")
+            diag.emit("showdown.hero_seat_detected",
+                      {"hero_seat_index": result, "mode": "sitting"},
+                      hand_id=None)
+        else:
+            logger.info("[hero-seat] 未检测到 hero 座位(可能观战模式或 hero_card_1 未配置)")
+            diag.emit("showdown.hero_seat_detected",
+                      {"hero_seat_index": None, "mode": "observer"},
+                      hand_id=None)
+        return result
+
     # Gate constants shared by live-capture + hand-end aggregator
     _SHOWDOWN_BASELINE_DIVERGE_THRESHOLD = 6  # hamming > 6 of 64 bits = overlay visible
     _SHOWDOWN_CONF_THRESHOLD = 0.9            # per-card CNN conf gate
@@ -737,8 +775,18 @@ class PipelineOrchestrator:
         from collections import deque
         now = time.time()
 
+        # T-seat0-fix(2026-05-28):自动检测 hero seat 并跳过摊牌捕获。
+        # 根因:seat[0].cards_area 几何上与 hero_card_1 重合 = hero 自己的座位。
+        # Hero 牌正面朝上无"翻牌瞬间",且摊牌阶段 UI 被 amount / 庆祝动画覆盖,
+        # brightness gate 100% 拦截 → 49 次摊牌触发 0 accepted,数据假阳性污染统计。
+        # 修复:摊牌捕获跳过与 hero_card_1 几何重叠的 seat。
+        hero_seat_idx = self._detect_hero_seat_index(rois)
+
         for seat in rois.seat_regions:
             sidx = seat.seat_index
+            if sidx == hero_seat_idx:
+                # Hero 自己的牌走 rois.hero_card_1/2 独立捕获,摊牌主链路不重复处理
+                continue
             if sidx in self.tracker._folded_seats:
                 continue
             # Throttle: limit per-seat CNN to 1 Hz
