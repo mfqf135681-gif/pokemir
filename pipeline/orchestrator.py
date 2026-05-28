@@ -1504,12 +1504,16 @@ class PipelineOrchestrator:
                 method = "L1-ocr"
 
         # L2: brightness peak fallback(OCR 全 fail 时)
+        # T13-tune(2026-05-28):实测数据 button seat 亮度 163-188,非 button
+        # seat 102-119,outlier 极强但 ratio 1.5 太严(实际 1.37-1.58)。
+        # 放宽 ratio 1.3 + 加绝对阈值 150 双重 OR,任一命中即 button。
         if button_seat is None and len(candidates) >= 2:
             sorted_by_b = sorted(candidates, key=lambda x: x[2], reverse=True)
             max_b = sorted_by_b[0][2]
             second_b = sorted_by_b[1][2]
-            # ratio 1.5 = button 区域显著比其他亮(outlier 检测)
-            if second_b > 0 and max_b / second_b >= 1.5:
+            ratio_ok = (second_b > 0 and max_b / second_b >= 1.3)
+            absolute_ok = (max_b >= 150)
+            if ratio_ok or absolute_ok:
                 button_seat = sorted_by_b[0][0]
                 method = "L2-brightness"
 
