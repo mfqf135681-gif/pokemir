@@ -40,6 +40,7 @@ st.set_page_config(
 PAGES = {
     "📊 复盘": replay.render,
     "👁 实时": live.render,
+    "👤 对手画像": profile.render,
     "📝 事件标注": labeling.render,
     "🤖 AI 教练": coach.render,
     "⚙ 设置": settings.render,

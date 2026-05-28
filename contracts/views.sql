@@ -340,6 +340,37 @@ GROUP BY player_name
 ORDER BY net_excl_rebuy DESC NULLS LAST;
 
 
+-- ── T19 Player × Position 维度画像矩阵(2026-05-28)──────────────
+-- 每玩家在每个 position(SB/BB/UTG/UTG+1/MP/HJ/CO/BTN)的 VPIP / PFR。
+-- dashboard 用 — 找位置纪律好的(职业 TAG)vs 位置无感的(鱼)。
+-- 样本量小时数字噪声大,dashboard 应过滤 hands >= 3。
+CREATE OR REPLACE VIEW v_player_position_matrix AS
+WITH ph AS (
+  SELECT DISTINCT player_name, hand_id, position FROM action_events
+  WHERE position IS NOT NULL
+),
+vpip AS (
+  SELECT DISTINCT player_name, hand_id, position FROM action_events
+  WHERE street='preflop' AND action_type IN ('call','bet','raise','all_in')
+    AND position IS NOT NULL
+),
+pfr AS (
+  SELECT DISTINCT player_name, hand_id, position FROM action_events
+  WHERE street='preflop' AND action_type IN ('bet','raise','all_in')
+    AND position IS NOT NULL
+)
+SELECT
+  ph.player_name,
+  ph.position,
+  COUNT(DISTINCT ph.hand_id) AS hands,
+  ROUND(100.0 * COUNT(DISTINCT vpip.hand_id) / NULLIF(COUNT(DISTINCT ph.hand_id),0), 0)::int AS vpip_pct,
+  ROUND(100.0 * COUNT(DISTINCT pfr.hand_id) / NULLIF(COUNT(DISTINCT ph.hand_id),0), 0)::int AS pfr_pct
+FROM ph
+LEFT JOIN vpip ON vpip.player_name=ph.player_name AND vpip.hand_id=ph.hand_id AND vpip.position=ph.position
+LEFT JOIN pfr ON pfr.player_name=ph.player_name AND pfr.hand_id=ph.hand_id AND pfr.position=ph.position
+GROUP BY ph.player_name, ph.position;
+
+
 -- ── T4 Hand duration sanity ─────────────────────────────────────
 -- Typical hand: 20-180 seconds (median 30-120 with showdown).
 --   < 10s  → likely finalize misfire (community blink, not a real hand end)
