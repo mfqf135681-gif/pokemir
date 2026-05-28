@@ -263,6 +263,83 @@ FROM showdown_seats ss
 ORDER BY ss.hand_id, ss.seat_idx::int;
 
 
+-- ── T27 Player net winnings(2026-05-28,排除 rebuy 突跳)──────
+-- 按玩家算每手净胜负,识别 rebuy 突跳并排除,得到真实输赢趋势。
+-- 用于 dashboard / 画像分析里"谁赢谁亏",修正之前 stack 突跳被误认为输赢的 bug。
+--
+-- 算法:
+--   1. 每玩家每手取最后一个 stack_after(action_events DISTINCT ON)
+--   2. 时序排列 + LAG 拿上一手 stack
+--   3. delta = 本手 stack - 上手 stack
+--   4. 分类:
+--      - delta > 50 + 整数模板(100/200/300/.../10000) → REBUY
+--      - |delta| <= 10                                 → OK(轻微 OCR 噪声)
+--      - 其他                                          → NORMAL(真输赢)
+--   5. 聚合:net_excl_rebuy = SUM(NORMAL/OK 的 delta)
+--
+-- ⚠️ 这是近似算法,**不精确,trend only**:
+--   - 整桌 SUM(net) ≠ 0(应零和;实测偏 +5-10%,因为下面 3 个未补)
+--   - 不含 rake(每手平台抽 5-10% / cap 30 chips,跨整桌才能算 → #LR4)
+--   - 跨 session OCR 漂移可能把同一玩家拆成两个(豺狼I vs 豺狼I1)→ #T29
+--   - 玩家中途下桌再坐回时 LAG 跨断层连续算
+-- ✅ 仍有用:
+--   - **相对排序**(谁赢谁亏 + 大小关系)方向正确
+--   - dashboard 显示 trend / 找最大赢家亏家 OK
+--   - 不能用作精确净胜负 / 商业财务级数字
+CREATE OR REPLACE VIEW v_player_net_winnings AS
+WITH player_last_event AS (
+  SELECT DISTINCT ON (player_name, hand_id)
+    player_name,
+    hand_id,
+    timestamp,
+    (raw_data->>'stack_after')::float AS stack_after
+  FROM action_events
+  WHERE raw_data->>'stack_after' IS NOT NULL
+  ORDER BY player_name, hand_id, sequence_number DESC
+),
+sequenced AS (
+  SELECT
+    player_name, hand_id, timestamp, stack_after,
+    LAG(stack_after) OVER (PARTITION BY player_name ORDER BY timestamp) AS prev_hand_stack
+  FROM player_last_event
+),
+deltas AS (
+  SELECT
+    player_name,
+    hand_id,
+    stack_after,
+    prev_hand_stack,
+    stack_after - prev_hand_stack AS delta_chips,
+    CASE
+      -- REBUY 检测:stack 突跳 > 50 且(50 倍数 OR 标准 buy-in 模板)
+      -- (跟 v_cross_hand_stack_continuity 一致)
+      WHEN (stack_after - prev_hand_stack) > 50
+           AND (
+             (stack_after - prev_hand_stack)::int % 50 = 0
+             OR (stack_after - prev_hand_stack)::int IN
+                (100, 200, 300, 500, 800, 1000, 1500, 2000, 3000, 5000, 10000)
+           )
+        THEN 'REBUY'
+      WHEN abs(stack_after - prev_hand_stack) <= 10 THEN 'OK'
+      ELSE 'NORMAL'
+    END AS classification
+  FROM sequenced
+  WHERE prev_hand_stack IS NOT NULL
+)
+SELECT
+  player_name AS 玩家,
+  COUNT(*) AS hands_traced,
+  COUNT(*) FILTER (WHERE classification = 'REBUY') AS rebuy_count,
+  ROUND(COALESCE(SUM(delta_chips) FILTER (WHERE classification = 'REBUY'), 0)::numeric, 0) AS rebuy_total,
+  ROUND(SUM(delta_chips) FILTER (WHERE classification != 'REBUY')::numeric, 0) AS net_excl_rebuy,
+  ROUND(SUM(delta_chips)::numeric, 0) AS net_naive,
+  ROUND(MIN(stack_after)::numeric, 0) AS min_stack,
+  ROUND(MAX(stack_after)::numeric, 0) AS max_stack
+FROM deltas
+GROUP BY player_name
+ORDER BY net_excl_rebuy DESC NULLS LAST;
+
+
 -- ── T4 Hand duration sanity ─────────────────────────────────────
 -- Typical hand: 20-180 seconds (median 30-120 with showdown).
 --   < 10s  → likely finalize misfire (community blink, not a real hand end)
