@@ -1,3 +1,3 @@
 """Dashboard pages — each module exports `render()` for Streamlit."""
 
-from . import coach, live, replay, settings  # noqa: F401
+from . import coach, labeling, live, replay, settings  # noqa: F401

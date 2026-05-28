@@ -20,7 +20,7 @@ from __future__ import annotations
 import streamlit as st
 
 from dashboard.db import db_health_check
-from dashboard.pages import coach, live, replay, settings
+from dashboard.pages import coach, labeling, live, replay, settings
 
 st.set_page_config(
     page_title="Pokemir",
@@ -32,6 +32,7 @@ st.set_page_config(
 PAGES = {
     "📊 复盘": replay.render,
     "👁 实时": live.render,
+    "📝 事件标注": labeling.render,
     "🤖 AI 教练": coach.render,
     "⚙ 设置": settings.render,
 }

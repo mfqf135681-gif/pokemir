@@ -1,7 +1,7 @@
 """DB connection + health check for dashboard.
 
-仅 read-only — dashboard 不写库.读 hands / action_events / diagnostic_events
-+ 各 v_* views.
+默认读 hands / action_events / diagnostic_events + 各 v_* views.
+事件标注与 Pipeline 设置页只写独立辅助表,不改 action_events.raw_data.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy.sql import func
@@ -60,6 +60,10 @@ class ActionEventModel(Base):
     created_at = Column(DateTime(timezone=True), server_default="now()")
 
     hand = relationship("HandModel", back_populates="action_events")
+    corrections = relationship(
+        "EventCorrectionModel", back_populates="event",
+        cascade="all, delete-orphan",
+    )
 
 
 class PlayerStatsCacheModel(Base):
@@ -126,3 +130,28 @@ class DiagnosticEventModel(Base):
     level = Column(Text, nullable=False, server_default="INFO")
     payload = Column(JSONB, nullable=False)
     occurred_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class EventCorrectionModel(Base):
+    __tablename__ = "event_corrections"
+    __table_args__ = (
+        Index("idx_event_corrections_event", "event_id"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=text("gen_random_uuid()"))
+    event_id = Column(UUID(as_uuid=True), ForeignKey("action_events.id", ondelete="CASCADE"), nullable=False)
+    original_action = Column(Text, nullable=False)
+    corrected_action = Column(Text, nullable=False)
+    corrected_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    notes = Column(Text)
+
+    event = relationship("ActionEventModel", back_populates="corrections")
+
+
+class PipelineSettingModel(Base):
+    __tablename__ = "pipeline_settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    active_profile = Column(Text, nullable=False, server_default="party_poker_8")
+    observer_mode = Column(Boolean, nullable=False, server_default="false")
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

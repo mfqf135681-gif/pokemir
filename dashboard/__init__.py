@@ -3,6 +3,7 @@
 入口在仓库根目录的 dashboard.py.各模块按 page 划分:
     pages/replay.py    复盘:对手画像 / Hand 历史 / 图表
     pages/live.py      实时:当前桌动态画像
+    pages/labeling.py  事件标注:action_events 滚动查看 / 人工纠偏
     pages/coach.py     AI 教练(#LR7-A 占位)
     pages/settings.py  设置:Pipeline / ROI / DB
 

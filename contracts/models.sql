@@ -147,3 +147,22 @@ CREATE TABLE IF NOT EXISTS diagnostic_events (
 
 CREATE INDEX IF NOT EXISTS idx_diag_hand_tag ON diagnostic_events(hand_id, tag, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_diag_tag_time ON diagnostic_events(tag, occurred_at DESC);
+
+-- ── Event Corrections ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS event_corrections (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id        UUID NOT NULL REFERENCES action_events(id) ON DELETE CASCADE,
+    original_action TEXT NOT NULL,
+    corrected_action TEXT NOT NULL,
+    corrected_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    notes           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_event_corrections_event ON event_corrections(event_id);
+
+-- ── Pipeline Settings ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS pipeline_settings (
+    id              SERIAL PRIMARY KEY,
+    active_profile  TEXT NOT NULL DEFAULT 'party_poker_8',
+    observer_mode   BOOLEAN NOT NULL DEFAULT false,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
