@@ -33,7 +33,8 @@ from pathlib import Path
 from typing import Optional
 
 # Allow tool to be run from project root
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 # Load .env so POKEMIR_DB_DSN_SYNC picks up user's real password (project-wide pattern)
 try:
@@ -42,8 +43,8 @@ try:
 except ImportError:
     pass  # graceful: env var may already be set in shell
 
-REVIEW_DIR = Path("data/review")
-OUTPUT_DIR = Path("tools/output")
+REVIEW_DIR = PROJECT_ROOT / "data" / "review"   # 绝对路径,不依赖 CWD
+OUTPUT_DIR = PROJECT_ROOT / "tools" / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 ACTION_LABELS = {
@@ -71,39 +72,48 @@ def _connect_db():
     return create_engine(dsn, future=True)
 
 
-def sample_events(engine, n_low: int = 20, n_high: int = 10, seed: int | None = None):
-    """Stratified sample: low-conf (有截图) + high-conf (无截图).
+def sample_events(engine, n_suspect: int = 25, n_clean: int = 5, seed: int | None = None):
+    """85/15 抽样:n_suspect 高可疑 + n_clean 高 conf 抽查.
 
+    "高可疑" = confidence_score < 0.7 OR override 触发(T9 物理矛盾保留 stack)
+    "高 conf 抽查" = conf ≥ 0.7 AND override 未触发(纯 text 驱动结果)
+
+    用户主力时间花高可疑(85%),少量高 conf 抽查(15%)防"沉默错误"漂移。
     抽样可重现:--seed 给定时,python random.sample 在 deterministic SQL 池上做选择.
     """
     from sqlalchemy import text
     if seed is not None:
         random.seed(seed)
 
-    # 拉 deterministic 池(ORDER BY id 稳定,UUID 排序),python 再 random.sample
-    sql_low = text("""
+    # 高可疑池:low conf 或 override 触发(数据质量真问题集中地)
+    sql_suspect = text("""
         SELECT ae.id::text AS event_id, ae.hand_id::text, ae.player_name,
                ae.position, ae.street, ae.action_type, ae.amount,
                ae.confidence_score, ae.raw_data, ae.timestamp
         FROM action_events ae
         WHERE ae.confidence_score < 0.7
-        ORDER BY ae.id LIMIT 500
+           OR ae.raw_data->>'override_reason' IS NOT NULL
+        ORDER BY ae.id LIMIT 1000
     """)
-    sql_high = text("""
+    # 高 conf 抽查池:纯 text 驱动,AI 自认很准
+    sql_clean = text("""
         SELECT ae.id::text AS event_id, ae.hand_id::text, ae.player_name,
                ae.position, ae.street, ae.action_type, ae.amount,
                ae.confidence_score, ae.raw_data, ae.timestamp
         FROM action_events ae
         WHERE ae.confidence_score >= 0.7
-        ORDER BY ae.id LIMIT 500
+          AND ae.raw_data->>'override_reason' IS NULL
+        ORDER BY ae.id LIMIT 1000
     """)
     with engine.connect() as conn:
-        low_pool = [dict(r._mapping) for r in conn.execute(sql_low).all()]
-        high_pool = [dict(r._mapping) for r in conn.execute(sql_high).all()]
+        suspect_pool = [dict(r._mapping) for r in conn.execute(sql_suspect).all()]
+        clean_pool = [dict(r._mapping) for r in conn.execute(sql_clean).all()]
 
-    low = random.sample(low_pool, min(n_low, len(low_pool)))
-    high = random.sample(high_pool, min(n_high, len(high_pool)))
-    events = low + high
+    suspect = random.sample(suspect_pool, min(n_suspect, len(suspect_pool)))
+    clean = random.sample(clean_pool, min(n_clean, len(clean_pool)))
+    print(f"   高可疑池: {len(suspect_pool)} 个 → 抽 {len(suspect)} 个")
+    print(f"   高 conf 抽查池: {len(clean_pool)} 个 → 抽 {len(clean)} 个")
+    events = suspect + clean
     random.shuffle(events)
     return events
 
@@ -225,10 +235,10 @@ def report(rows: list[dict]):
     without_ss = [r for r in judged if not r["has_screenshot"]]
     if with_ss:
         a = sum(1 for r in with_ss if r["agree"])
-        print(f"\n   有截图(低 conf): {a}/{len(with_ss)} = {100 * a / len(with_ss):.1f}%  ← 高质量 baseline")
+        print(f"\n   有截图: {a}/{len(with_ss)} = {100 * a / len(with_ss):.1f}%  ← 高质量(看图判断)")
     if without_ss:
         a = sum(1 for r in without_ss if r["agree"])
-        print(f"   无截图(高 conf): {a}/{len(without_ss)} = {100 * a / len(without_ss):.1f}%  ⚠️ 循环验证嫌疑")
+        print(f"   无截图: {a}/{len(without_ss)} = {100 * a / len(without_ss):.1f}%  ⚠️ 凭 Text 字段判断")
 
     # By action_type
     print("\n📋 分 action_type:")
@@ -251,17 +261,18 @@ def report(rows: list[dict]):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Phase 0 baseline 校准工具")
-    parser.add_argument("--n", type=int, default=30, help="总样本数(默认 30)")
-    parser.add_argument("--n-low", type=int, default=20, help="低 conf 抽样(有截图)")
-    parser.add_argument("--n-high", type=int, default=10, help="高 conf 抽样(无截图)")
+    parser = argparse.ArgumentParser(description="Phase 0 baseline 校准工具 (85/15 高可疑+高 conf 抽查)")
+    parser.add_argument("--n-suspect", type=int, default=25, help="高可疑抽样(低 conf 或 override 触发)")
+    parser.add_argument("--n-clean", type=int, default=5, help="高 conf 抽查(防沉默错误漂)")
     parser.add_argument("--seed", type=int, default=None, help="可重现的随机种子")
     args = parser.parse_args()
 
-    print("Phase 0 Baseline 校准工具")
+    print("Phase 0 Baseline 校准工具 (85/15)")
     print("═" * 70)
-    print(f"将抽 {args.n_low} 个低 conf + {args.n_high} 个高 conf 事件让你标注。")
-    print(f"低 conf 有截图;高 conf 仅数字。每个 1-2 分钟,总 {args.n_low + args.n_high} 个约 {(args.n_low + args.n_high) * 1.5:.0f} 分钟。\n")
+    print(f"将抽 {args.n_suspect} 个高可疑 + {args.n_clean} 个高 conf 抽查事件让你标注。")
+    print(f"高可疑 = conf<0.7 或 override 触发,大概率有截图。")
+    print(f"高 conf 抽查 = 纯 text 驱动,AI 自认很准,你抽查防沉默错误。")
+    print(f"每个 1-2 分钟,总 {args.n_suspect + args.n_clean} 个约 {(args.n_suspect + args.n_clean) * 1.5:.0f} 分钟。\n")
 
     if not REVIEW_DIR.exists():
         print(f"⚠️ {REVIEW_DIR} 不存在!这意味着 pipeline 还没产生过低 conf 截图,或你不在 Win 桌面机。")
@@ -271,7 +282,7 @@ def main():
 
     engine = _connect_db()
     print("连接 DB,抽样...")
-    events = sample_events(engine, n_low=args.n_low, n_high=args.n_high, seed=args.seed)
+    events = sample_events(engine, n_suspect=args.n_suspect, n_clean=args.n_clean, seed=args.seed)
     print(f"抽到 {len(events)} 个 events。开始标注。\n")
 
     rows = []
