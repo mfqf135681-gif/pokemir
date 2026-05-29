@@ -1508,6 +1508,34 @@ class PipelineOrchestrator:
                 if self.tracker._used_timebank.pop(sidx, False):
                     event.raw_data["used_timebank"] = True
 
+                # T47-V(2026-05-29):trust ladder — 低桩(conf < 0.7,纯 P3 stack-
+                # derived,无 text/amount 高桩信号)不进 action_events 主表,只 emit
+                # action.low_tier_skip diag 作 raw_data 证据保留可追溯。
+                # 实践真知:数据看到 0.5 conf 假入库造成"同 player 同 street raise→
+                # raise→call"逻辑非法 dup(33b198ae / 167371fe / a02db5b1 等 7 个
+                # hand)。架构改正:低桩证据走 diag,高桩(text OCR 直采 / P3
+                # 与 text aligned)才进主表。
+                if event.confidence_score < 0.7:
+                    diag.emit(
+                        "action.low_tier_skip",
+                        {
+                            "player": event.player_name,
+                            "position": event.position.value if event.position else "",
+                            "street": _street_str,
+                            "action": _action_str,
+                            "amount": event.amount,
+                            "confidence": event.confidence_score,
+                            "stack_before": event.raw_data.get("stack_before"),
+                            "stack_after": event.raw_data.get("stack_after"),
+                            "stack_delta": event.raw_data.get("stack_delta"),
+                            "pot_delta": event.raw_data.get("pot_delta"),
+                            "action_text": event.raw_data.get("action_text"),
+                            "override_reason": event.raw_data.get("override_reason"),
+                        },
+                        hand_id=self.tracker.current_hand.id,
+                    )
+                    continue
+
                 if db is not None:
                     self.event_repo.create(db, event)
 
