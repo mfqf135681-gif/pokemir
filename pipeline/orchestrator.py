@@ -236,9 +236,14 @@ class PipelineOrchestrator:
 
     # T56(2026-05-29):全 phase 列表,每 tick 末按此 fill 0,
     # 保证 _phase_durations 各 list 同步长度.
+    # T57(2026-05-29):新增 seat_* 子 phase(seat_actions 内拆出).
     _TICK_PHASES = (
         "hero_capture", "hand_detect", "community", "community_reset",
         "pot", "shadow_pointer", "seat_actions", "showdown", "capture_ids",
+        # T57 seat 子 phase
+        "seat_stack_ocr", "seat_timer_ocr", "seat_fold_ocr",
+        "seat_action_ocr", "seat_amount_ocr", "seat_avatar_hash",
+        "seat_parse_persist",
     )
 
     def _tick(self):
@@ -310,6 +315,9 @@ class PipelineOrchestrator:
                 t_p = time.perf_counter()
                 self._process_seat_actions(db, rois)
                 phase_ms["seat_actions"] = (time.perf_counter() - t_p) * 1000.0
+                # T57(2026-05-29):seat 内子 phase merge 入 phase_ms.
+                for sub_name, sub_val in self.tracker._seat_subphase_ms.items():
+                    phase_ms[sub_name] = sub_val
 
             # 6. Live showdown capture — must happen DURING river phase while overlay
             # is visible.  Old architecture grabbed at hand-end (after community reset)
@@ -1485,6 +1493,16 @@ class PipelineOrchestrator:
         # NB: iterate using seat_roi.seat_index (NOT enumerate's i) for all
         # tracker state lookups — list-position differs from physical seat_index
         # when only some seats are configured (e.g. partial stage-B setup).
+        # T57(2026-05-29):seat 内子 phase 累计,跨 8 seat sum.
+        sub_ms = {
+            "seat_stack_ocr": 0.0,
+            "seat_timer_ocr": 0.0,
+            "seat_fold_ocr": 0.0,
+            "seat_action_ocr": 0.0,
+            "seat_amount_ocr": 0.0,
+            "seat_avatar_hash": 0.0,
+            "seat_parse_persist": 0.0,
+        }
         for seat_roi in rois.seat_regions:
             sidx = seat_roi.seat_index
 
@@ -1499,8 +1517,10 @@ class PipelineOrchestrator:
             # so we have stack_before/stack_after on the action that DOES change.
             stack_now = None
             if seat_roi.stack_area is not None and seat_roi.stack_area.width > 0:
+                _t = time.perf_counter()
                 stack_img = self.capturer.capture_roi(seat_roi.stack_area)
                 stack_text = self.ocr.read_text(stack_img, allowlist="0123456789.")
+                sub_ms["seat_stack_ocr"] += (time.perf_counter() - _t) * 1000.0
                 stack_now = ActionRecognizer._extract_amount(stack_text)
                 # Digit-miss sanity: reject sudden ≥10x jump (OCR misread digits like
                 # 3001001 should-be-300100, or 2841 vs 28410). Keep prior reading.
@@ -1530,8 +1550,10 @@ class PipelineOrchestrator:
             # Falls through to fold_area path if timer not detected (or timer_area unconfigured).
             timer_handled = False
             if seat_roi.timer_area is not None and seat_roi.timer_area.width > 0:
+                _t = time.perf_counter()
                 timer_img = self.capturer.capture_roi(seat_roi.timer_area)
                 timer_text = self.ocr.read_text(timer_img, allowlist="0123456789s ")
+                sub_ms["seat_timer_ocr"] += (time.perf_counter() - _t) * 1000.0
                 tm = re.search(r"\b(\d{1,2})\b", timer_text or "") if timer_text else None
                 if tm and 0 <= int(tm.group(1)) <= 60:
                     self._process_timer(sidx, int(tm.group(1)))
@@ -1542,8 +1564,10 @@ class PipelineOrchestrator:
                 continue
 
             if seat_roi.fold_area is not None:
+                _t = time.perf_counter()
                 fold_img = self.capturer.capture_roi(seat_roi.fold_area)
                 fold_text = self.ocr.read_text(fold_img)
+                sub_ms["seat_fold_ocr"] += (time.perf_counter() - _t) * 1000.0
                 ft = fold_text.strip() if fold_text else ""
                 # Bug 3 fix: regex extracts digits even with surrounding noise
                 # (e.g. "15 sec" / "15." / " 15"). Permissive but bounded to
@@ -1571,28 +1595,34 @@ class PipelineOrchestrator:
                 else:
                     self._finalize_timer(sidx)
                     if sidx not in self.tracker._folded_seats and fold_img.size > 0:
+                        _t = time.perf_counter()
                         self.tracker._idle_avatar_hash[sidx] = _avg_hash_64(fold_img)
+                        sub_ms["seat_avatar_hash"] += (time.perf_counter() - _t) * 1000.0
 
             if action_text is None:
                 # T52(2026-05-29):pixel diff trigger 包装 — Phase 0 实测 9.17x
                 # speedup,大部分 tick action overlay 无变化 → reuse cache 省 OCR.
                 # #8 ensemble 同时启用(diff 命中时 cache 命中 ensemble 结果也省).
+                _t = time.perf_counter()
                 action_text, action_img = self._capture_with_diff_trigger(
                     roi_key=f"seat_{sidx}_action",
                     roi=seat_roi.action_area,
                     allowlist=ACTION_OCR_ALLOWLIST,
                     ensemble=True,
                 )
+                sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
 
                 # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
                 # parser regex (\d+\.?\d*) will pull the number from the combined text
                 if action_text and seat_roi.amount_area is not None:
+                    _t = time.perf_counter()
                     amount_text, _ = self._capture_with_diff_trigger(
                         roi_key=f"seat_{sidx}_amount",
                         roi=seat_roi.amount_area,
                         allowlist="0123456789.",
                         ensemble=False,
                     )
+                    sub_ms["seat_amount_ocr"] += (time.perf_counter() - _t) * 1000.0
                     if amount_text:
                         action_text = f"{action_text} {amount_text}"
 
@@ -1866,6 +1896,9 @@ class PipelineOrchestrator:
             # not an event fired this tick — keep the latest reading current).
             if stack_now is not None:
                 self.tracker._prev_stack[sidx] = stack_now
+
+        # T57(2026-05-29):传 sub_ms 给 _tick 用,merge 进 phase_ms.
+        self.tracker._seat_subphase_ms = sub_ms
 
     def _process_pot(self, db, rois):
         """Read pot size from ROI and update tracker state.

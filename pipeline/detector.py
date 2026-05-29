@@ -97,6 +97,9 @@ class StateTracker:
         # 一个 list,长度跟 _tick_durations 同步,未执行的 phase 补 0.
         # batch 时按 phase 算 avg/max/pct,定位真正慢的 phase.
         self._phase_durations: dict = {}
+        # T57(2026-05-29):seat_actions 内 sub_ms,_process_seat_actions
+        # 末尾写,_tick 读后 merge 进 _phase_durations.
+        self._seat_subphase_ms: dict = {}
         # T48 v3(2026-05-29):指针架构 Stage 1 — shadow 模式状态机.
         # 用户观察:timer 几乎每次主动决策都出现(call/raise 86%),
         # 没 timer 的是 auto-fold(70% fold 无 timer);timer 是 UI 给的
