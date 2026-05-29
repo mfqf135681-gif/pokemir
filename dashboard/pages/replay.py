@@ -49,6 +49,7 @@ def render():
                        SUM(CASE WHEN action_type='fold' THEN 1 ELSE 0 END) AS n_fold,
                        SUM(CASE WHEN action_type IN ('bet','raise','all_in') THEN 1 ELSE 0 END) AS n_aggressive
                 FROM action_events
+                WHERE player_name NOT LIKE 'TempUser_%'
                 GROUP BY player_name
                 HAVING COUNT(*) >= 5
                 ORDER BY n_events DESC

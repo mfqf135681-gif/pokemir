@@ -847,6 +847,12 @@ class PipelineOrchestrator:
             for n_j in names[i + 1:]:
                 if len(n_j) < 3:
                     continue
+                # T64a(2026-05-29):TempUser_<phash> 是空座背景 placeholder,
+                # 不是"真玩家不同写法".跨 TempUser 合并会把 15+ 个空座事件
+                # 黏成 1 个鬼玩家.让 T18 / T63 空座 detection 路径处理 placeholder,
+                # canonicalize 只处理真名 alias.
+                if n_i.startswith('TempUser_') or n_j.startswith('TempUser_'):
+                    continue
                 # Case-insensitive fuzzy compare
                 matches = get_close_matches(n_i.lower(), [n_j.lower()], n=1, cutoff=0.75)
                 if not matches:

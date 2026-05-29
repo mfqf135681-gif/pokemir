@@ -32,7 +32,11 @@ def get_total_events() -> int:
 
 
 def get_unique_players() -> int:
-    rows = safe_query("SELECT COUNT(DISTINCT player_name) AS n FROM action_events")
+    # T64b(2026-05-29):排除 TempUser_<phash> 空座 placeholder.
+    rows = safe_query(
+        "SELECT COUNT(DISTINCT player_name) AS n FROM action_events "
+        "WHERE player_name NOT LIKE 'TempUser_%'"
+    )
     return rows[0]["n"] if rows else 0
 
 
@@ -108,10 +112,13 @@ def get_player_net_winnings() -> Optional[list[dict]]:
         player_name, n_hands, sum_winnings, sum_buyins_inferred,
         bb_per_100, n_insurance_payouts
     """
+    # T64b(2026-05-29):过滤 TempUser_ 鬼玩家.
     rows = safe_query(
         "SELECT player_name, n_hands, sum_winnings, sum_buyins_inferred, "
         "bb_per_100, n_insurance_payouts "
-        "FROM v_player_net_winnings ORDER BY sum_winnings DESC"
+        "FROM v_player_net_winnings "
+        "WHERE player_name NOT LIKE 'TempUser_%' "
+        "ORDER BY sum_winnings DESC"
     )
     return rows or None
 

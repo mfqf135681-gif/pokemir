@@ -70,6 +70,8 @@ SELECT
     1
   ) AS insurance_buy_rate_pct
 FROM ins
+-- T64b(2026-05-29):排除 TempUser_ 空座 placeholder.
+WHERE (evt->>'player_name') NOT LIKE 'TempUser_%'
 GROUP BY player_name
 ORDER BY all_in_hands DESC;
 
@@ -165,6 +167,8 @@ SELECT
     1
   ) AS timebank_pct
 FROM action_events ae
+-- T64b(2026-05-29):排除 TempUser_ 空座 placeholder.
+WHERE ae.player_name NOT LIKE 'TempUser_%'
 GROUP BY ae.player_name
 HAVING COUNT(*) FILTER (WHERE ae.raw_data->>'decision_time_ms' IS NOT NULL) >= 3
 ORDER BY n_timed DESC;
