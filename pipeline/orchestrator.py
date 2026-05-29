@@ -1612,19 +1612,6 @@ class PipelineOrchestrator:
                     ensemble=True,
                 )
                 sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
-                # T58(2026-05-29):验证 amount 过度触发假设.
-                # 记录 action OCR 实际返回的 text(包括 cache 命中),
-                # 1-2 min 数据后 group by text,看是垃圾噪音还是真 action.
-                # 已 fold/empty/timer 路径都 continue 走不到这,所以这里 sidx
-                # 一定是"还在跑 action OCR"的 seat.
-                diag.emit(
-                    "ocr.action_text_observed",
-                    {"seat": sidx,
-                     "text": action_text or "",
-                     "len": len(action_text or "")},
-                    hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
-                    level="DEBUG",
-                )
 
                 # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
                 # parser regex (\d+\.?\d*) will pull the number from the combined text
