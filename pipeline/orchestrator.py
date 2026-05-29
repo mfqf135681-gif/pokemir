@@ -458,7 +458,10 @@ class PipelineOrchestrator:
                     if d < best_dist:
                         best_dist = d
                         best_match = name
-                if best_match and best_dist <= 6:
+                # T43(2026-05-29):匹到 TempUser_xxx 占位 → 不能 short-circuit,
+                # 必须 fall through 到 OCR retry,否则 TempUser→匹到自己→assign
+                # 同 TempUser→continue 自循环锁死,永远不触发 T41 升级
+                if best_match and best_dist <= 6 and not best_match.startswith("TempUser_"):
                     logger.debug(f"_capture_player_ids: seat_{seat.seat_index} avatar match "
                                  f"{best_match!r} (hamming={best_dist})")
                     self.tracker.player_id_map[seat.seat_index] = best_match
