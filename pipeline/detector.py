@@ -87,6 +87,9 @@ class StateTracker:
         self._last_roi_text: dict = {}
         self._roi_force_refresh_at: dict = {}
         self._global_tick_counter: int = 0
+        # T54(2026-05-29):tick 耗时 rolling list,每 20 tick 出 stats 写 diag.
+        # 用途:实测 T52 真效果 + 决定降不降 CAPTURE_INTERVAL_MS.
+        self._tick_durations: list = []
         # T48 v3(2026-05-29):指针架构 Stage 1 — shadow 模式状态机.
         # 用户观察:timer 几乎每次主动决策都出现(call/raise 86%),
         # 没 timer 的是 auto-fold(70% fold 无 timer);timer 是 UI 给的

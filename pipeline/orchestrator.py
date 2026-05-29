@@ -235,6 +235,8 @@ class PipelineOrchestrator:
     # ── Tick ──────────────────────────────────────────────
 
     def _tick(self):
+        # T54(2026-05-29):tick 计时,末尾算 elapsed
+        t_start = time.perf_counter()
         rois = self.roi_manager.rois
         db = SessionLocal() if self._db_enabled else None
 
@@ -312,6 +314,37 @@ class PipelineOrchestrator:
         finally:
             if db is not None:
                 db.close()
+
+        # T54(2026-05-29):tick 耗时统计,每 20 tick 输出 stats + emit diag.
+        # 用途:实测 T52 后真 tick 时间(我之前推估 100-900ms 全凭印象),
+        # 再决定是否降 CAPTURE_INTERVAL_MS sleep.
+        tick_ms = (time.perf_counter() - t_start) * 1000.0
+        self.tracker._tick_durations.append(tick_ms)
+        if len(self.tracker._tick_durations) >= 20:
+            durs = sorted(self.tracker._tick_durations)
+            n = len(durs)
+            stats = {
+                "n": n,
+                "min_ms": round(durs[0], 1),
+                "median_ms": round(durs[n // 2], 1),
+                "p95_ms": round(durs[int(n * 0.95)], 1),
+                "max_ms": round(durs[-1], 1),
+                "avg_ms": round(sum(durs) / n, 1),
+                "sleep_ms": CAPTURE_INTERVAL_MS,
+                "effective_hz": round(1000.0 / (sum(durs) / n + CAPTURE_INTERVAL_MS), 2),
+            }
+            logger.info(
+                f"[tick stats] n={stats['n']} min={stats['min_ms']}ms "
+                f"median={stats['median_ms']}ms p95={stats['p95_ms']}ms "
+                f"max={stats['max_ms']}ms avg={stats['avg_ms']}ms "
+                f"sleep={stats['sleep_ms']}ms → {stats['effective_hz']}Hz"
+            )
+            diag.emit(
+                "pipeline.tick_stats",
+                stats,
+                hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
+            )
+            self.tracker._tick_durations.clear()
 
     # ── Hand lifecycle ────────────────────────────────────
 
