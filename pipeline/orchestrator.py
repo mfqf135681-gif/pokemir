@@ -426,8 +426,12 @@ class PipelineOrchestrator:
                                 f"{cached_name!r}")
                     del self.tracker.player_id_map[seat.seat_index]
 
-            # #2 Cache lock: don't re-OCR a seat we already have a valid name for
-            if seat.seat_index in self.tracker.player_id_map:
+            # #2 Cache lock: don't re-OCR a seat we already have a valid name for.
+            # T41(2026-05-29):EXCEPTION — TempUser_xxx 是占位 fallback,允许 re-OCR
+            # 拿到真名再升级,而不是永久锁死(原 bug:首次遇 action_text_contamination
+            # 就 TempUser 锁,真名永远进不来)。
+            cached_name_existing = self.tracker.player_id_map.get(seat.seat_index)
+            if cached_name_existing and not cached_name_existing.startswith("TempUser_"):
                 continue
 
             # #4 Avatar image fingerprint — try BEFORE OCR. If we've seen this avatar
@@ -507,6 +511,11 @@ class PipelineOrchestrator:
                         logger.info(f"_capture_player_ids: seat_{seat.seat_index} OCR'd "
                                     f"{text!r} → canonicalized to {canonical!r} (alias)")
                     text = canonical
+            # T41(2026-05-29):TempUser → 真名升级时 DB sync,避免历史 action_events 残留旧 TempUser
+            if (cached_name_existing
+                    and cached_name_existing.startswith("TempUser_")
+                    and cached_name_existing != text):
+                self._upgrade_tempuser_to_real(seat.seat_index, cached_name_existing, text)
             self.tracker.player_id_map[seat.seat_index] = text
             # #4 Register avatar fingerprint for future lookup
             if avatar_hash:
@@ -612,6 +621,33 @@ class PipelineOrchestrator:
             })
         return results
 
+    def _upgrade_tempuser_to_real(self, sidx: int, old: str, new: str) -> None:
+        """T41(2026-05-29):TempUser 占位升级到真名 — DB sync 把旧 TempUser 行
+        改写为新真名,避免画像统计把同一玩家算成 2 个身份。
+
+        调用条件:`_capture_player_ids` 检测到 seat 之前是 TempUser_xxx
+        缓存,现在 OCR 出真名 → 调本函数补 action_events 历史。
+        """
+        if not self._db_enabled:
+            return
+        try:
+            with SessionLocal() as session:
+                result = session.execute(
+                    sql_text("UPDATE action_events SET player_name = :new "
+                             "WHERE player_name = :old"),
+                    {"new": new, "old": old},
+                )
+                session.commit()
+                rowcount = result.rowcount or 0
+            logger.info(f"_capture_player_ids: seat_{sidx} TempUser 升级 "
+                        f"{old!r} → {new!r}({rowcount} action_events 已 sync)")
+            diag.emit("player.tempuser_upgraded",
+                      {"seat": sidx, "from": old, "to": new,
+                       "rows_updated": rowcount},
+                      hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
+        except Exception:
+            logger.warning("TempUser upgrade DB UPDATE failed", exc_info=True)
+
     def _canonicalize_player_id_map(self) -> None:
         """周期性 dedupe player_id_map.
 
@@ -623,7 +659,11 @@ class PipelineOrchestrator:
           - Pick LONGEST name in cluster as canonical (more chars = more info)
           - Rewrite all seat → canonical
         """
-        names_set = set(self.tracker.player_id_map.values())
+        # T41(2026-05-29):池子扩到 _avatar_fingerprints.values(),覆盖 zii→zi
+        # 同 seat 时间错峰场景(seat X 先 cache zii,seat swap 后 cache zi;
+        # 两者从未同时在 player_id_map → 旧逻辑漏 merge,DB 里两个独立 alias)。
+        names_set = (set(self.tracker.player_id_map.values())
+                     | set(self.tracker._avatar_fingerprints.values()))
         if len(names_set) <= 1:
             return
         names = list(names_set)
