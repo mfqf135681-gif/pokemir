@@ -280,6 +280,20 @@ class PipelineOrchestrator:
             if self.tracker.has_active_hand:
                 self._try_capture_showdown_live(rois)
 
+            # 7. T42(2026-05-29):TempUser-cached seat 周期性重试 _capture_player_ids
+            # 旧逻辑只在 _start_new_hand 触发,而 hand-start 那瞬间上一手 action
+            # overlay 还没散(WePoker UI ~500ms 淡出)→ id ROI 永远抓到 "跟注"
+            # → 永远 TempUser。每 8 tick(2s)重试,T41 cache lock 让真名 seat
+            # 零开销跳过,只有 TempUser-cached seat 真重 OCR,捡 action 间隙的
+            # 干净帧。一旦干净 → T41 _upgrade_tempuser_to_real 触发 DB sync。
+            if self.tracker.has_active_hand:
+                self._capture_ids_retry_counter = getattr(
+                    self, "_capture_ids_retry_counter", 0) + 1
+                if self._capture_ids_retry_counter % 8 == 0:
+                    if any(n.startswith("TempUser_")
+                           for n in self.tracker.player_id_map.values()):
+                        self._capture_player_ids()
+
             if db is not None:
                 db.commit()
         except Exception:
