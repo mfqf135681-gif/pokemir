@@ -170,6 +170,14 @@ class EventNormalizer:
         self._sequence = 0
         self._community_card_count = 0
 
+    def reset_sequence(self, start: int = 0):
+        """T65(2026-05-29):POST 注入后调用,让 voluntary actions 从 start+1 起.
+
+        典型用法:`reset_sequence(2)` 后,next create_event() 用 seq=3
+        (POST_SB=1,POST_BB=2 已占).
+        """
+        self._sequence = start
+
     @staticmethod
     def tag_board_texture(community_cards: list[str]) -> dict:
         """Tag board texture from community cards.

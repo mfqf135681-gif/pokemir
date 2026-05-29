@@ -50,6 +50,8 @@ def render():
                        SUM(CASE WHEN action_type IN ('bet','raise','all_in') THEN 1 ELSE 0 END) AS n_aggressive
                 FROM action_events
                 WHERE player_name NOT LIKE 'TempUser_%'
+                  -- T65(2026-05-29):排除 synthetic POST events,n_events 反映真 actions
+                  AND NOT COALESCE((raw_data->>'synthetic')::bool, FALSE)
                 GROUP BY player_name
                 HAVING COUNT(*) >= 5
                 ORDER BY n_events DESC

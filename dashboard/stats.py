@@ -27,7 +27,11 @@ def get_total_hands() -> int:
 
 
 def get_total_events() -> int:
-    rows = safe_query("SELECT COUNT(*) AS n FROM action_events")
+    # T65(2026-05-29):排除 synthetic POST events,total 反映真 OCR events.
+    rows = safe_query(
+        "SELECT COUNT(*) AS n FROM action_events "
+        "WHERE NOT COALESCE((raw_data->>'synthetic')::bool, FALSE)"
+    )
     return rows[0]["n"] if rows else 0
 
 

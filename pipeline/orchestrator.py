@@ -551,6 +551,116 @@ class PipelineOrchestrator:
                 logger.warning(f"Hand {hand.id} hand-start metadata update failed", exc_info=True)
         logger.info(f"Hand {hand.id} — hero: {hand.hero_cards} — ids: {self.tracker.player_id_map}")
 
+        # T65(2026-05-29):POST_SB / POST_BB synthetic 注入.
+        # WePoker UI 不显示 POST overlay → 没事件 → SB/BB 玩家 PF voluntary 系统偏低.
+        # hand-start 在 button + blind_level + player_id 全到位后,注入 2 个 synthetic events
+        # (seq=1,2),让 SB/BB 玩家"forced 行动"在数据层显式存在.
+        # action_type=POST_*,被 stats SQL whitelist 排除,不算 VPIP.
+        # raw_data.synthetic=True marker 让 dashboard / Path B 区分 真 OCR vs 合成.
+        self._inject_post_events(db)
+
+    def _inject_post_events(self, db):
+        """T65:hand-start 注入 SB/BB POST events,seq=1,2,synthetic=True.
+
+        skip 条件(任一命中):
+          - button_seat_index None(button OCR 失败)
+          - blind_level.sb / .bb None(blind OCR 失败)
+          - SB/BB seat ∈ _empty_seats
+          - player_id_map[seat] is None
+          - num_seats < 3(heads-up 规则不同,留 backlog)
+        """
+        hand = self.tracker.current_hand
+        if hand is None:
+            return
+        raw = hand.raw_data or {}
+        button = raw.get("button_seat_index")
+        blind = raw.get("blind_level") or {}
+        sb_amount = blind.get("sb")
+        bb_amount = blind.get("bb")
+        num_seats = self.roi_manager.rois.num_seats
+
+        skip_reason = None
+        if button is None:
+            skip_reason = "button_seat_index_none"
+        elif sb_amount is None or bb_amount is None:
+            skip_reason = "blind_level_missing"
+        elif num_seats < 3:
+            skip_reason = "heads_up_unsupported"
+
+        if skip_reason:
+            diag.emit(
+                "post.injection_skipped",
+                {"reason": skip_reason,
+                 "button": button, "blind": blind, "num_seats": num_seats},
+                hand_id=hand.id,
+            )
+            return
+
+        sb_seat = (button + 1) % num_seats
+        bb_seat = (button + 2) % num_seats
+
+        # per-seat skip + inject
+        for seat_idx, action_type, amount, pos in (
+            (sb_seat, ActionType.POST_SB, sb_amount, Position.SB),
+            (bb_seat, ActionType.POST_BB, bb_amount, Position.BB),
+        ):
+            if seat_idx in self.tracker._empty_seats:
+                diag.emit(
+                    "post.injection_skipped",
+                    {"reason": "seat_empty", "seat": seat_idx,
+                     "action": action_type.value},
+                    hand_id=hand.id,
+                )
+                continue
+            player_name = self.tracker.player_id_map.get(seat_idx)
+            if not player_name:
+                diag.emit(
+                    "post.injection_skipped",
+                    {"reason": "player_unknown", "seat": seat_idx,
+                     "action": action_type.value},
+                    hand_id=hand.id,
+                )
+                continue
+
+            stack_before = self.tracker._prev_stack.get(seat_idx)
+            stack_after = (stack_before - amount) if stack_before is not None else None
+
+            event = self.tracker.normalizer.create_event(
+                hand=hand,
+                player_name=player_name,
+                position=pos,
+                action_type=action_type,
+                amount=amount,
+                facing_action=None,
+            )
+            event.confidence_score = 0.9
+            event.raw_data = {
+                "synthetic": True,
+                "source": "post_injection",
+                "stack_before": stack_before,
+                "stack_after": stack_after,
+                "stack_delta": amount,
+                "pot_before": 0 if action_type == ActionType.POST_SB else sb_amount,
+                "pot_after": (sb_amount if action_type == ActionType.POST_SB
+                              else sb_amount + bb_amount),
+                "pot_delta": amount,
+                "blind_level_source": "ocr",
+            }
+            if db is not None:
+                try:
+                    self.event_repo.create(db, event)
+                except Exception:
+                    logger.warning(
+                        f"POST injection seat_{seat_idx} {action_type.value} "
+                        f"failed", exc_info=True)
+                    continue
+            diag.emit(
+                "post.injection_done",
+                {"seat": seat_idx, "player": player_name,
+                 "action": action_type.value, "amount": amount},
+                hand_id=hand.id,
+            )
+
     def _capture_player_ids(self):
         """OCR each seat's id_area at hand-start; record into tracker.player_id_map.
 
