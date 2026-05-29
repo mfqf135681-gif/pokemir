@@ -238,6 +238,9 @@ class PipelineOrchestrator:
         rois = self.roi_manager.rois
         db = SessionLocal() if self._db_enabled else None
 
+        # T52(2026-05-29):全局 tick 计数器递增,driving force-refresh 守护机制
+        self.tracker._global_tick_counter += 1
+
         try:
             # 1. Capture hero cards
             hero_1 = self.capturer.capture_roi(rois.hero_card_1)
@@ -1220,6 +1223,61 @@ class PipelineOrchestrator:
                 )
                 logger.info(f"_detect_empty_seats: seat_{sidx} 标空座(本手跳过)")
 
+    # T52(2026-05-29):pixel diff trigger 阈值.
+    # Phase 0 实测 cv2.absdiff 单 ROI < 1μs.阈值 diff_per_pixel < 3 起步保守,
+    # 即"几乎完全没变"才 reuse cache.太严 → 命中率低,T52 几乎无收益;
+    # 太松 → real overlay 漂移被认为无变化,漏抓.
+    # Tuning thread:实测后调.
+    _DIFF_THRESHOLD = 3.0
+
+    def _capture_with_diff_trigger(self, roi_key: str, roi,
+                                    allowlist: str = "",
+                                    ensemble: bool = False,
+                                    force_every_n_ticks: int = 4) -> tuple:
+        """T52(2026-05-29):pixel diff trigger 的 OCR 包装器.
+
+        - 抓 ROI 图像 → 跟上次抓帧 cv2.absdiff
+        - diff < 阈值 → reuse 上次 OCR 结果(省一次 OCR ~10ms)
+        - diff >= 阈值 OR force_refresh tick → 真做 OCR + cache 更新
+
+        Force-refresh 守护:每 N tick(默认 4 = ~1s)force re-OCR,防 stale cache.
+
+        Returns:
+            (ocr_text, captured_img)
+        """
+        img = self.capturer.capture_roi(roi)
+        if img is None or img.size == 0:
+            return "", img
+
+        cached_img = self.tracker._last_roi_img.get(roi_key)
+        cached_text = self.tracker._last_roi_text.get(roi_key)
+        tick_now = self.tracker._global_tick_counter
+        last_force_tick = self.tracker._roi_force_refresh_at.get(roi_key, 0)
+        need_force_refresh = (tick_now - last_force_tick) >= force_every_n_ticks
+
+        if (cached_img is not None and cached_text is not None
+                and not need_force_refresh
+                and cached_img.shape == img.shape):
+            diff = cv2.absdiff(img, cached_img).sum()
+            diff_per_pixel = float(diff) / (img.size or 1)
+            if diff_per_pixel < self._DIFF_THRESHOLD:
+                # 内容几乎没变 → 复用 OCR 结果
+                diag.emit(
+                    "ocr.diff_skip",
+                    {"roi_key": roi_key,
+                     "diff_per_pixel": round(diff_per_pixel, 2)},
+                    hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
+                    level="DEBUG",
+                )
+                return cached_text, img
+
+        # 真做 OCR
+        text = self.ocr.read_text(img, allowlist=allowlist, ensemble=ensemble)
+        self.tracker._last_roi_img[roi_key] = img
+        self.tracker._last_roi_text[roi_key] = text
+        self.tracker._roi_force_refresh_at[roi_key] = tick_now
+        return text, img
+
     def _shadow_pointer_scan(self, rois) -> None:
         """T48 v3 Stage 1(2026-05-29):指针架构 shadow 扫描.
 
@@ -1399,20 +1457,25 @@ class PipelineOrchestrator:
                         self.tracker._idle_avatar_hash[sidx] = _avg_hash_64(fold_img)
 
             if action_text is None:
-                action_img = self.capturer.capture_roi(seat_roi.action_area)
-                # #1 OCR allowlist: restrict to known action chars to suppress noise
-                # like player-name bleed or random Chinese text. Allowlist is wide
-                # enough for all parser-supported keywords + amounts.
-                # #8 ensemble: dual-scale OCR (2x + 3x) for action — improves Chinese
-                # accuracy at cost of one extra OCR call per actioning seat.
-                action_text = self.ocr.read_text(action_img, allowlist=ACTION_OCR_ALLOWLIST,
-                                                 ensemble=True)
+                # T52(2026-05-29):pixel diff trigger 包装 — Phase 0 实测 9.17x
+                # speedup,大部分 tick action overlay 无变化 → reuse cache 省 OCR.
+                # #8 ensemble 同时启用(diff 命中时 cache 命中 ensemble 结果也省).
+                action_text, action_img = self._capture_with_diff_trigger(
+                    roi_key=f"seat_{sidx}_action",
+                    roi=seat_roi.action_area,
+                    allowlist=ACTION_OCR_ALLOWLIST,
+                    ensemble=True,
+                )
 
                 # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
                 # parser regex (\d+\.?\d*) will pull the number from the combined text
                 if action_text and seat_roi.amount_area is not None:
-                    amount_img = self.capturer.capture_roi(seat_roi.amount_area)
-                    amount_text = self.ocr.read_text(amount_img, allowlist="0123456789.")
+                    amount_text, _ = self._capture_with_diff_trigger(
+                        roi_key=f"seat_{sidx}_amount",
+                        roi=seat_roi.amount_area,
+                        allowlist="0123456789.",
+                        ensemble=False,
+                    )
                     if amount_text:
                         action_text = f"{action_text} {amount_text}"
 

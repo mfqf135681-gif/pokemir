@@ -76,6 +76,17 @@ class StateTracker:
         # 治 call/raise overlay 持续 1-2 秒导致 4-8 tick 反复入库的 bug。
         # 持久跨手(不重置),依靠时间窗自然衰减。
         self._last_action_at: dict[tuple[str, str, str], float] = {}
+        # T52(2026-05-29):pixel diff trigger 缓存(Phase 0 实测 9.17x speedup)
+        # 单 ROI cv2.absdiff < 1μs,40 ROI 0.21ms,远小于 OCR 10ms.
+        # 思路:每 ROI 比上 tick 像素差,< 阈值 → 复用上次 OCR 结果(避免无意义重 OCR).
+        # _last_roi_img: dict[roi_key, ndarray]  — 上次抓帧
+        # _last_roi_text: dict[roi_key, str]    — 上次 OCR 结果
+        # _roi_force_refresh_at: dict[roi_key, int] — 上次 force re-OCR 的 tick 计数
+        # _global_tick_counter: int             — 全局 tick 序号(force refresh 触发)
+        self._last_roi_img: dict = {}
+        self._last_roi_text: dict = {}
+        self._roi_force_refresh_at: dict = {}
+        self._global_tick_counter: int = 0
         # T48 v3(2026-05-29):指针架构 Stage 1 — shadow 模式状态机.
         # 用户观察:timer 几乎每次主动决策都出现(call/raise 86%),
         # 没 timer 的是 auto-fold(70% fold 无 timer);timer 是 UI 给的
