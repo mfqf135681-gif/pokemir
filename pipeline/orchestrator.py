@@ -1264,6 +1264,19 @@ class PipelineOrchestrator:
         if timer_seat is not None:
             # timer 活跃中
             if last_seat != timer_seat:
+                # T50 fix(2026-05-29):timer 直接从 A 跳到 B 时,A 行动了!
+                # 原 bug:只在 timer_seat is None 时 emit action_inferred,
+                # 漏了"timer 从 A 跳到 B"这种"快速行动 + 下家立刻 timer"场景.
+                # 数据证实:46 hands 应该 ~250 action_inferred,实际只 11.
+                if last_seat is not None:
+                    diag.emit(
+                        "pointer.action_inferred",
+                        {"seat": last_seat,
+                         "last_timer_value": state.get("last_timer_value"),
+                         "reason": "timer_moved_to_next",
+                         "next_seat": timer_seat},
+                        hand_id=self.tracker.current_hand.id,
+                    )
                 # 指针移动了(或第一次检测到)
                 diag.emit(
                     "pointer.timer_moved",
