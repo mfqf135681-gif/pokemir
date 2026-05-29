@@ -93,6 +93,10 @@ class StateTracker:
         # T55(2026-05-29):db 操作(commit/rollback/close)单独计时,
         # 验证 Tailscale 跨网延迟是否是 tick 慢的大头.
         self._db_durations: list = []
+        # T56(2026-05-29):per-phase rolling durations(ms),每 phase
+        # 一个 list,长度跟 _tick_durations 同步,未执行的 phase 补 0.
+        # batch 时按 phase 算 avg/max/pct,定位真正慢的 phase.
+        self._phase_durations: dict = {}
         # T48 v3(2026-05-29):指针架构 Stage 1 — shadow 模式状态机.
         # 用户观察:timer 几乎每次主动决策都出现(call/raise 86%),
         # 没 timer 的是 auto-fold(70% fold 无 timer);timer 是 UI 给的

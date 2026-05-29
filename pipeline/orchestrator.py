@@ -234,6 +234,13 @@ class PipelineOrchestrator:
 
     # ── Tick ──────────────────────────────────────────────
 
+    # T56(2026-05-29):全 phase 列表,每 tick 末按此 fill 0,
+    # 保证 _phase_durations 各 list 同步长度.
+    _TICK_PHASES = (
+        "hero_capture", "hand_detect", "community", "community_reset",
+        "pot", "shadow_pointer", "seat_actions", "showdown", "capture_ids",
+    )
+
     def _tick(self):
         # T54(2026-05-29):tick 计时,末尾算 elapsed
         t_start = time.perf_counter()
@@ -245,13 +252,18 @@ class PipelineOrchestrator:
 
         # T55(2026-05-29):db 累积耗时(commit + rollback + close).
         db_total_ms = 0.0
+        # T56(2026-05-29):本 tick 各 phase 累积 ms.
+        phase_ms: dict = {}
 
         try:
             # 1. Capture hero cards
+            t_p = time.perf_counter()
             hero_1 = self.capturer.capture_roi(rois.hero_card_1)
             hero_2 = self.capturer.capture_roi(rois.hero_card_2)
+            phase_ms["hero_capture"] = (time.perf_counter() - t_p) * 1000.0
 
             # 2. Detect new hand
+            t_p = time.perf_counter()
             if self.tracker.has_active_hand:
                 if self.tracker.check_hero_cards(hero_1, hero_2):
                     self._end_current_hand(db)
@@ -259,40 +271,53 @@ class PipelineOrchestrator:
             else:
                 if self._hero_cards_present(hero_1, hero_2):
                     self._start_new_hand(db, hero_1, hero_2)
+            phase_ms["hand_detect"] = (time.perf_counter() - t_p) * 1000.0
 
             # 3. Community cards
             if self.tracker.has_active_hand:
+                t_p = time.perf_counter()
                 self._process_community_cards(db, rois)
+                phase_ms["community"] = (time.perf_counter() - t_p) * 1000.0
 
             # 3b. Observer-mode hand-start fallback: if hero cards are not
             # available (default ROI = stable browser chrome, never changes),
             # use community count drop from > 0 to 0 as the new-hand signal.
             if self.tracker.has_active_hand and self.tracker.community_just_reset():
+                t_p = time.perf_counter()
                 logger.info("Community reset detected → starting new hand (observer mode)")
                 self._end_current_hand(db)
                 self._start_new_hand(db, hero_1, hero_2)
+                phase_ms["community_reset"] = (time.perf_counter() - t_p) * 1000.0
 
             # 4. Pot size — runs BEFORE seat actions so that _process_seat_actions
             # has access to both pot_before (saved on tracker._pot_before_tick)
             # and pot_after (= tracker.latest_pot_bb) for cross-validation raw_data.
             if self.tracker.has_active_hand:
+                t_p = time.perf_counter()
                 self._process_pot(db, rois)
+                phase_ms["pot"] = (time.perf_counter() - t_p) * 1000.0
 
             # T48 v3 Stage 1(2026-05-29):指针架构 shadow 扫描,纯 emit diag
             # 不动主表写入(灰度并跑),数据评估后再切主链路.
             # 放在主 seat actions 之前,先用廉价 timer 扫面定位"当前行动玩家".
             if self.tracker.has_active_hand:
+                t_p = time.perf_counter()
                 self._shadow_pointer_scan(rois)
+                phase_ms["shadow_pointer"] = (time.perf_counter() - t_p) * 1000.0
 
             # 5. Seat actions — writes raw_data with stack_delta + pot_delta evidence
             if self.tracker.has_active_hand:
+                t_p = time.perf_counter()
                 self._process_seat_actions(db, rois)
+                phase_ms["seat_actions"] = (time.perf_counter() - t_p) * 1000.0
 
             # 6. Live showdown capture — must happen DURING river phase while overlay
             # is visible.  Old architecture grabbed at hand-end (after community reset)
             # → overlay gone → caught only avatar pixels.  See 2026-05-26 diff diagnosis.
             if self.tracker.has_active_hand:
+                t_p = time.perf_counter()
                 self._try_capture_showdown_live(rois)
+                phase_ms["showdown"] = (time.perf_counter() - t_p) * 1000.0
 
             # 7. T42(2026-05-29):TempUser-cached seat 周期性重试 _capture_player_ids
             # 旧逻辑只在 _start_new_hand 触发,而 hand-start 那瞬间上一手 action
@@ -306,7 +331,9 @@ class PipelineOrchestrator:
                 if self._capture_ids_retry_counter % 8 == 0:
                     if any(n.startswith("TempUser_")
                            for n in self.tracker.player_id_map.values()):
+                        t_p = time.perf_counter()
                         self._capture_player_ids()
+                        phase_ms["capture_ids"] = (time.perf_counter() - t_p) * 1000.0
 
             if db is not None:
                 db_t = time.perf_counter()
@@ -324,6 +351,11 @@ class PipelineOrchestrator:
                 db.close()
                 db_total_ms += (time.perf_counter() - db_t) * 1000.0
 
+        # T56(2026-05-29):未执行的 phase 补 0,确保 batch 同步长度.
+        for name in self._TICK_PHASES:
+            self.tracker._phase_durations.setdefault(name, []).append(
+                phase_ms.get(name, 0.0))
+
         # T54(2026-05-29):tick 耗时统计,每 20 tick 输出 stats + emit diag.
         # 用途:实测 T52 后真 tick 时间(我之前推估 100-900ms 全凭印象),
         # 再决定是否降 CAPTURE_INTERVAL_MS sleep.
@@ -337,6 +369,22 @@ class PipelineOrchestrator:
             n = len(durs)
             tick_avg = sum(durs) / n
             db_avg = sum(db_durs) / n
+            # T56(2026-05-29):per-phase stats.
+            phases_stats = {}
+            for name in self._TICK_PHASES:
+                p_durs = self.tracker._phase_durations.get(name, [])
+                if not p_durs:
+                    continue
+                p_sorted = sorted(p_durs)
+                p_avg = sum(p_sorted) / len(p_sorted)
+                # exec_count = 非 0 次数(衡量 phase 触发率)
+                exec_count = sum(1 for v in p_durs if v > 0)
+                phases_stats[name] = {
+                    "avg_ms": round(p_avg, 1),
+                    "max_ms": round(p_sorted[-1], 1),
+                    "exec_count": exec_count,
+                    "pct_of_tick": round(100.0 * p_avg / tick_avg, 1) if tick_avg > 0 else 0.0,
+                }
             stats = {
                 "n": n,
                 "min_ms": round(durs[0], 1),
@@ -352,14 +400,26 @@ class PipelineOrchestrator:
                 "db_p95_ms": round(db_durs[int(n * 0.95)], 1),
                 "db_max_ms": round(db_durs[-1], 1),
                 "db_pct_of_tick": round(100.0 * db_avg / tick_avg, 1) if tick_avg > 0 else 0.0,
+                # T56:phase 拆分.
+                "phases": phases_stats,
             }
+            # T56:取 pct_of_tick top 3 phase 出 log,避免 log 行过长.
+            top_phases = sorted(
+                phases_stats.items(),
+                key=lambda kv: kv[1]["pct_of_tick"],
+                reverse=True,
+            )[:3]
+            top_str = " ".join(
+                f"{n_}={v['avg_ms']}ms({v['pct_of_tick']}%)" for n_, v in top_phases
+            )
             logger.info(
                 f"[tick stats] n={stats['n']} min={stats['min_ms']}ms "
                 f"median={stats['median_ms']}ms p95={stats['p95_ms']}ms "
                 f"max={stats['max_ms']}ms avg={stats['avg_ms']}ms "
                 f"sleep={stats['sleep_ms']}ms → {stats['effective_hz']}Hz | "
                 f"db_avg={stats['db_avg_ms']}ms db_p95={stats['db_p95_ms']}ms "
-                f"db_max={stats['db_max_ms']}ms ({stats['db_pct_of_tick']}% of tick)"
+                f"db_max={stats['db_max_ms']}ms ({stats['db_pct_of_tick']}% of tick) | "
+                f"top phases: {top_str}"
             )
             diag.emit(
                 "pipeline.tick_stats",
@@ -368,6 +428,7 @@ class PipelineOrchestrator:
             )
             self.tracker._tick_durations.clear()
             self.tracker._db_durations.clear()
+            self.tracker._phase_durations.clear()
 
     # ── Hand lifecycle ────────────────────────────────────
 
