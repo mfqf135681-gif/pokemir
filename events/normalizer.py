@@ -86,6 +86,14 @@ def compute_confidence(
     if stack_delta is None or pot_delta is None:
         return 0.7  # partial signal
 
+    # T60(2026-05-29):物理矛盾兜底.
+    # bet/raise/call/all_in 必须有 chip 移动(stack 减 + pot 增).
+    # 0/0 = "完全没动作" 跟 action_type 矛盾,旧公式 diff=0 误判 1.0 自洽.
+    # 24h baseline 实测 60 个假高分 events(全加注 false positive 含在内).
+    # 改成 conf=0.3 → trust ladder T47-V 自动拦,raw_data 留证据.
+    if abs(stack_delta) <= 2 and abs(pot_delta) <= 2:
+        return 0.3
+
     # #1 Multi-actor aware Layer 1:
     # In a single-actor tick (the common case) pot_delta ≈ stack_delta.
     # In a multi-actor tick (rare, e.g. multiple folds in 250ms window) pot_delta

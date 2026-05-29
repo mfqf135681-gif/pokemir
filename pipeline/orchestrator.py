@@ -28,15 +28,12 @@ from events import diag
 # Allowlist for action_area OCR — restricts charset to known action keywords + amounts.
 # Filters out garbage like "疯鱼罩轩 2"(player name bleed)or random Chinese characters.
 #
-# T59(2026-05-29):极简版 — 删 A-Z + 0-9 + 标点,只留 14 个 Chinese action keyword.
-# 数据驱动:T58 实测 40% action OCR 返回英文/数字噪音(Y34E / 25R / IIIAA1)
-# → 触发 amount OCR 浪费 ~1s/tick.parser 用 2 字符 substring 精确匹配
-# ("跟注" not "跟"),单字不会误识别.极简版:
-# (a) 噪音 → "" → amount 0 触发,救 -700ms/tick
-# (b) 救回 OCR 数字串入 case:`跟5注` → `跟注` → CALL 识别(原版漏抓)
-# (c) Amount/blind 数字本来就在独立 amount_area ROI,action_area 无需 0-9
-# (d) ALL IN 英文兜底走 fold_area 路径(全押 Chinese 仍识别)
-ACTION_OCR_ALLOWLIST = "跟加注弃牌过让看盖下全押压前小大盲"
+# T61(2026-05-29):6-char 极致版 — 用户实测确认 action_area 真实只 4 词
+# (跟注 / 让牌 / 加注 / 下注),弃牌走 fold_area / ALL IN 走 fold_area.
+# 6 chars 去重后覆盖全部 4 个真 action 词.
+# 配合 T60 compute_confidence 物理矛盾兜底:6-char 可能洗白噪音
+# (`全加注` → `加注`,`下盖注` → `下注`),conf=0.3 自动拦,raw_data 留证.
+ACTION_OCR_ALLOWLIST = "跟注让牌加下"
 
 
 def _avg_hash_64(bgr_img: np.ndarray) -> str:
