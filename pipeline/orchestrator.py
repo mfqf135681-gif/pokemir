@@ -270,6 +270,12 @@ class PipelineOrchestrator:
             if self.tracker.has_active_hand:
                 self._process_pot(db, rois)
 
+            # T48 v3 Stage 1(2026-05-29):指针架构 shadow 扫描,纯 emit diag
+            # 不动主表写入(灰度并跑),数据评估后再切主链路.
+            # 放在主 seat actions 之前,先用廉价 timer 扫面定位"当前行动玩家".
+            if self.tracker.has_active_hand:
+                self._shadow_pointer_scan(rois)
+
             # 5. Seat actions — writes raw_data with stack_delta + pot_delta evidence
             if self.tracker.has_active_hand:
                 self._process_seat_actions(db, rois)
@@ -377,6 +383,22 @@ class PipelineOrchestrator:
         # T46-A(2026-05-29):hand-start 扫描空座(全 0 phash + stack 无数字
         # 双确认)→ add to _empty_seats → action loop 顶部统一 skip,跟 fold 同治。
         self._detect_empty_seats()
+
+        # T48 v3(2026-05-29):指针状态机 hand-start init.
+        # UTG = (button + 3) % num_seats(preflop 第一个行动玩家).
+        # button 不可知时(button OCR 失败)pointer 留 None,等 timer 出现纠正.
+        button = (self.tracker.current_hand.raw_data or {}).get("button_seat_index")
+        if button is not None:
+            num_seats = self.roi_manager.rois.num_seats
+            utg = (button + 3) % num_seats
+            self.tracker._pointer_state["current_seat"] = utg
+            self.tracker._pointer_state["street"] = "preflop"
+            diag.emit(
+                "pointer.hand_init",
+                {"button_seat": button, "init_pointer_seat": utg,
+                 "street": "preflop", "num_seats": num_seats},
+                hand_id=self.tracker.current_hand.id,
+            )
 
         seats_map = {}
         for k, v in self.tracker._position_map.items():
@@ -1197,6 +1219,79 @@ class PipelineOrchestrator:
                     hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
                 )
                 logger.info(f"_detect_empty_seats: seat_{sidx} 标空座(本手跳过)")
+
+    def _shadow_pointer_scan(self, rois) -> None:
+        """T48 v3 Stage 1(2026-05-29):指针架构 shadow 扫描.
+
+        用户 insight:timer 是 UI 给的免费"当前行动玩家"指针,call/raise 86%
+        命中,fold 70% 无 timer = auto-fold(玩家离桌/preset).
+
+        Stage 1 只 emit diag,不动主表,让用户用 SQL 对比新候选 vs 主表 actions
+        来量化这套架构的准度,confident 后再切主链路(Stage 2-4).
+
+        每 tick 廉价扫 8 seats 的 timer_area:
+          - 找到 timer 活跃 seat → 这是 current_to_act
+          - 跟上 tick last_timer_seat 不同 → emit pointer.timer_moved
+          - 上 tick 有 timer 这 tick 没 → emit pointer.action_inferred
+            (玩家行动了,timer 消失)
+        """
+        if not self.tracker.has_active_hand:
+            return
+
+        # Layer 1: 廉价扫 8 seats timer(只 digit OCR,小 ROI,~10ms 每 seat)
+        timer_seat = None
+        timer_value = None
+        for seat in rois.seat_regions:
+            sidx = seat.seat_index
+            if seat.timer_area is None or seat.timer_area.width == 0:
+                continue
+            if sidx in self.tracker._folded_seats:
+                continue
+            if sidx in self.tracker._empty_seats:
+                continue
+            timer_img = self.capturer.capture_roi(seat.timer_area)
+            timer_text = self.ocr.read_text(timer_img, allowlist="0123456789s ")
+            m = re.search(r"\b(\d{1,2})\b", timer_text or "") if timer_text else None
+            if m and 0 <= int(m.group(1)) <= 60:
+                timer_seat = sidx
+                timer_value = int(m.group(1))
+                break  # 德州规则:每时刻只 1 个玩家行动 → 找到 1 个就够
+
+        state = self.tracker._pointer_state
+        last_seat = state.get("last_timer_seat")
+        now_ts = time.time()
+
+        if timer_seat is not None:
+            # timer 活跃中
+            if last_seat != timer_seat:
+                # 指针移动了(或第一次检测到)
+                diag.emit(
+                    "pointer.timer_moved",
+                    {"from_seat": last_seat, "to_seat": timer_seat,
+                     "value": timer_value,
+                     "expected_pointer": state.get("current_seat")},
+                    hand_id=self.tracker.current_hand.id,
+                )
+                state["last_timer_seat"] = timer_seat
+                state["current_seat"] = timer_seat
+            state["last_timer_value"] = timer_value
+            state["last_timer_at"] = now_ts
+        else:
+            # timer 不活跃
+            if last_seat is not None:
+                # timer 刚消失 — 大概率上 seat 行动了
+                dt = now_ts - (state.get("last_timer_at") or now_ts)
+                if dt < 5.0:  # 近期失踪
+                    diag.emit(
+                        "pointer.action_inferred",
+                        {"seat": last_seat,
+                         "last_timer_value": state.get("last_timer_value"),
+                         "time_since_timer": round(dt, 2)},
+                        hand_id=self.tracker.current_hand.id,
+                    )
+                # 清 timer 状态,等下个 seat 的 timer 出现
+                state["last_timer_seat"] = None
+                state["last_timer_value"] = None
 
     def _process_seat_actions(self, db, rois):
         # NB: iterate using seat_roi.seat_index (NOT enumerate's i) for all

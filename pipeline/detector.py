@@ -76,6 +76,20 @@ class StateTracker:
         # 治 call/raise overlay 持续 1-2 秒导致 4-8 tick 反复入库的 bug。
         # 持久跨手(不重置),依靠时间窗自然衰减。
         self._last_action_at: dict[tuple[str, str, str], float] = {}
+        # T48 v3(2026-05-29):指针架构 Stage 1 — shadow 模式状态机.
+        # 用户观察:timer 几乎每次主动决策都出现(call/raise 86%),
+        # 没 timer 的是 auto-fold(70% fold 无 timer);timer 是 UI 给的
+        # 免费"当前行动玩家"指针,用德州规则可以预判下一个行动 seat.
+        # Stage 1:只 emit diag(pointer.* tags)对比主表 actions,
+        # 不动主表写入,1-2 周后用 SQL 评估准度,再决定是否切主链路.
+        # 重置时机:start_new_hand 时跟 _folded_seats / _empty_seats 同步.
+        self._pointer_state: dict = {
+            "current_seat": None,
+            "street": "preflop",
+            "last_timer_seat": None,
+            "last_timer_value": None,
+            "last_timer_at": None,
+        }
         # Seats that fired ANY event this hand (active set). Used at showdown:
         # non_folded_active = _seats_with_events - _folded_seats;
         # if < 2 → no real showdown (single winner / fold-around) → skip CNN.
@@ -222,6 +236,14 @@ class StateTracker:
         self._folded_seats = set()
         # T46-A:_empty_seats 跟 _folded_seats 同 hand-scoped 状态,同步清零
         self._empty_seats = set()
+        # T48 v3:pointer state 跟 hand-scoped 状态同步重置
+        self._pointer_state = {
+            "current_seat": None,
+            "street": "preflop",
+            "last_timer_seat": None,
+            "last_timer_value": None,
+            "last_timer_at": None,
+        }
         self._seats_with_events_this_hand = set()
         # 摊牌实时抓帧:每手清零(seat_pred_history 持久跨手,不清)
         self._showdown_captured_this_hand = {}
