@@ -1635,11 +1635,60 @@ class PipelineOrchestrator:
                 state["last_timer_seat"] = None
                 state["last_timer_value"] = None
 
+    def _pre_batch_action_amount_ocr(self, rois):
+        """T73(2026-05-29):pre-batch action + amount OCR before sequential seat loop.
+
+        预先一次 GPU call batch 所有 active seat 的 action_area + amount_area OCR.
+        即使 timer-handled seat 也 batch(浪费的算力,batch 模式低成本).
+        结果存 self._batched_action_results / self._batched_amount_results dict.
+        Sequential 路径(OCR_BATCH=0)时此方法 noop.
+        """
+        self._batched_action_results = {}
+        self._batched_amount_results = {}
+        from config import OCR_BATCH
+        if not OCR_BATCH:
+            return
+
+        # Phase 1: 收集 action images
+        action_items = []
+        amount_items = []
+        for seat_roi in rois.seat_regions:
+            sidx = seat_roi.seat_index
+            if sidx in self.tracker._folded_seats or sidx in self.tracker._empty_seats:
+                continue
+            if seat_roi.action_area is not None and seat_roi.action_area.width > 0:
+                img = self.capturer.capture_roi(seat_roi.action_area)
+                if img is not None and img.size > 0:
+                    action_items.append((sidx, img))
+            if seat_roi.amount_area is not None and seat_roi.amount_area.width > 0:
+                img = self.capturer.capture_roi(seat_roi.amount_area)
+                if img is not None and img.size > 0:
+                    amount_items.append((sidx, img))
+
+        # Phase 2: batch action OCR
+        if action_items:
+            images = [img for (_, img) in action_items]
+            results = self.ocr.read_text_batch(
+                images, allowlist=ACTION_OCR_ALLOWLIST, scale=3
+            )
+            for (sidx, _), text in zip(action_items, results):
+                self._batched_action_results[sidx] = text
+
+        # Phase 3: batch amount OCR
+        if amount_items:
+            images = [img for (_, img) in amount_items]
+            results = self.ocr.read_text_batch(
+                images, allowlist="0123456789.", scale=3
+            )
+            for (sidx, _), text in zip(amount_items, results):
+                self._batched_amount_results[sidx] = text
+
     def _process_seat_actions(self, db, rois):
         # NB: iterate using seat_roi.seat_index (NOT enumerate's i) for all
         # tracker state lookups — list-position differs from physical seat_index
         # when only some seats are configured (e.g. partial stage-B setup).
         # T57(2026-05-29):seat 内子 phase 累计,跨 8 seat sum.
+        # T73(2026-05-29):OCR_BATCH 时先预 batch action + amount,seat 循环命中 dict.
         sub_ms = {
             "seat_stack_ocr": 0.0,
             "seat_timer_ocr": 0.0,
@@ -1649,6 +1698,11 @@ class PipelineOrchestrator:
             "seat_avatar_hash": 0.0,
             "seat_parse_persist": 0.0,
         }
+        # T73:pre-batch(OCR_BATCH=0 时 noop)
+        _t = time.perf_counter()
+        self._pre_batch_action_amount_ocr(rois)
+        sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
+
         for seat_roi in rois.seat_regions:
             sidx = seat_roi.seat_index
 
@@ -1746,29 +1800,44 @@ class PipelineOrchestrator:
                         sub_ms["seat_avatar_hash"] += (time.perf_counter() - _t) * 1000.0
 
             if action_text is None:
-                # T52(2026-05-29):pixel diff trigger 包装 — Phase 0 实测 9.17x
-                # speedup,大部分 tick action overlay 无变化 → reuse cache 省 OCR.
-                # #8 ensemble 同时启用(diff 命中时 cache 命中 ensemble 结果也省).
-                _t = time.perf_counter()
-                action_text, action_img = self._capture_with_diff_trigger(
-                    roi_key=f"seat_{sidx}_action",
-                    roi=seat_roi.action_area,
-                    allowlist=ACTION_OCR_ALLOWLIST,
-                    ensemble=True,
-                )
-                sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
+                # T73(2026-05-29):OCR_BATCH 时优先用 pre-batch 结果(跳过 _capture_with_diff_trigger).
+                from config import OCR_BATCH
+                if OCR_BATCH and sidx in self._batched_action_results:
+                    action_text = self._batched_action_results[sidx]
+                    # 抓 img 给 T1 review artifact + 后续 cache 更新
+                    action_img = self.capturer.capture_roi(seat_roi.action_area)
+                    # 维护 T52 cache 一致性(下次若 OCR_BATCH=0 仍可命中)
+                    self.tracker._last_roi_img[f"seat_{sidx}_action"] = action_img
+                    self.tracker._last_roi_text[f"seat_{sidx}_action"] = action_text
+                else:
+                    # T52(2026-05-29):pixel diff trigger 包装 — Phase 0 实测 9.17x
+                    # speedup,大部分 tick action overlay 无变化 → reuse cache 省 OCR.
+                    # #8 ensemble 同时启用(diff 命中时 cache 命中 ensemble 结果也省).
+                    _t = time.perf_counter()
+                    action_text, action_img = self._capture_with_diff_trigger(
+                        roi_key=f"seat_{sidx}_action",
+                        roi=seat_roi.action_area,
+                        allowlist=ACTION_OCR_ALLOWLIST,
+                        ensemble=True,
+                    )
+                    sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
 
                 # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
                 # parser regex (\d+\.?\d*) will pull the number from the combined text
                 if action_text and seat_roi.amount_area is not None:
-                    _t = time.perf_counter()
-                    amount_text, _ = self._capture_with_diff_trigger(
-                        roi_key=f"seat_{sidx}_amount",
-                        roi=seat_roi.amount_area,
-                        allowlist="0123456789.",
-                        ensemble=False,
-                    )
-                    sub_ms["seat_amount_ocr"] += (time.perf_counter() - _t) * 1000.0
+                    # T73:OCR_BATCH 优先用 pre-batch.
+                    if OCR_BATCH and sidx in self._batched_amount_results:
+                        amount_text = self._batched_amount_results[sidx]
+                        self.tracker._last_roi_text[f"seat_{sidx}_amount"] = amount_text
+                    else:
+                        _t = time.perf_counter()
+                        amount_text, _ = self._capture_with_diff_trigger(
+                            roi_key=f"seat_{sidx}_amount",
+                            roi=seat_roi.amount_area,
+                            allowlist="0123456789.",
+                            ensemble=False,
+                        )
+                        sub_ms["seat_amount_ocr"] += (time.perf_counter() - _t) * 1000.0
                     if amount_text:
                         action_text = f"{action_text} {amount_text}"
 

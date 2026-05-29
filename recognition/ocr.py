@@ -64,6 +64,60 @@ class OCREngine:
             return result_2x
         return result_2x if len(result_2x) >= len(result_3x) else result_3x
 
+    def read_text_batch(self, images: list, allowlist: str = "", scale: int = 3) -> list:
+        """T73(2026-05-29):batch OCR — 多张图一次 GPU call.
+
+        Args:
+            images: list of np.ndarray (BGR/BGRA) — 不同尺寸允许(用 n_width/n_height auto-resize)
+            allowlist: 全部图共用一个 allowlist
+            scale: 内部 mag_ratio,默认 3(高准度 + 仍快)
+
+        Returns:
+            list[str] — 跟输入 1-1 对应,失败位置返 "".
+
+        实施:
+        - 不做自己 CPU preprocess(交给 EasyOCR 内部 mag_ratio)
+        - 仅 BGRA → BGR 修正(EasyOCR 不支持 alpha)
+        - None 或空图返回 "" 占位
+        """
+        self._init()
+        if not images:
+            return []
+        # Step 1: BGRA fix + 收集有效图
+        valid_imgs = []
+        valid_idx = []
+        for i, img in enumerate(images):
+            if img is None or img.size == 0:
+                continue
+            if img.shape[2] == 4:
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            valid_imgs.append(img)
+            valid_idx.append(i)
+        if not valid_imgs:
+            return [""] * len(images)
+        # Step 2: n_width / n_height 用最大尺寸 × scale(EasyOCR 自动 resize)
+        max_h = max(img.shape[0] for img in valid_imgs)
+        max_w = max(img.shape[1] for img in valid_imgs)
+        n_width = max(max_w * scale, 64)
+        n_height = max(max_h * scale, 32)
+        # Step 3: 批量 OCR
+        try:
+            kwargs = {"detail": 0, "n_width": n_width, "n_height": n_height}
+            if allowlist:
+                kwargs["allowlist"] = allowlist
+            results = self._reader.readtext_batched(valid_imgs, **kwargs)
+        except Exception:
+            logger.warning("OCR batch call failed", exc_info=True)
+            return [""] * len(images)
+        # Step 4: 结果回填(readtext_batched 返回 list of list)
+        out = [""] * len(images)
+        for pos, result in zip(valid_idx, results):
+            if isinstance(result, list):
+                out[pos] = " ".join(str(r) for r in result).strip()
+            else:
+                out[pos] = str(result).strip()
+        return out
+
     def _read_one(self, image: np.ndarray, allowlist: str, scale: int) -> str:
         processed = self._preprocess(image, scale=scale)
         try:

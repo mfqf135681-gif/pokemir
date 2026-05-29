@@ -29,6 +29,10 @@ EASYOCR_MODEL_DIR = os.getenv("POKEMIR_EASYOCR_DIR", os.path.join(MODEL_DIR, "ea
 #   EasyOCR 内部 gpu=True 自动用 CUDA.
 # 启用方式:`POKEMIR_USE_GPU=1` env var(.env 或 shell).
 USE_GPU = os.getenv("POKEMIR_USE_GPU", "0").lower() in ("1", "true", "yes")
+# T73(2026-05-29):Batch OCR 开关.GPU 模式下 readtext_batched 8 seat × 5 ROI 一次 GPU launch.
+# 预期 OCR 总耗时 ~1.4s → ~200ms,tick 4.9s → 2.5-3s.
+# 启用方式:POKEMIR_OCR_BATCH=1.前提 USE_GPU=1 才有意义.
+OCR_BATCH = os.getenv("POKEMIR_OCR_BATCH", "0").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 
