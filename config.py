@@ -23,6 +23,12 @@ MODEL_DIR = os.getenv("POKEMIR_MODEL_DIR", "./models")
 ONNX_DEVICE = os.getenv("POKEMIR_ONNX_DEVICE", "DirectML")
 OCR_ENGINE = os.getenv("POKEMIR_OCR_ENGINE", "easyocr")
 EASYOCR_MODEL_DIR = os.getenv("POKEMIR_EASYOCR_DIR", os.path.join(MODEL_DIR, "easyocr"))
+# T72(2026-05-29):GPU OCR 开关.默认 False(向后兼容 CPU 模式).
+# 启用前提:torch.cuda.is_available() = True
+#   Win 5070 Ti Blackwell sm_120 需 PyTorch cu128 wheel.
+#   EasyOCR 内部 gpu=True 自动用 CUDA.
+# 启用方式:`POKEMIR_USE_GPU=1` env var(.env 或 shell).
+USE_GPU = os.getenv("POKEMIR_USE_GPU", "0").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 

@@ -180,7 +180,9 @@ class PipelineOrchestrator:
 
         self.card_recognizer = CardRecognizer()
         self.action_recognizer = ActionRecognizer()
-        self.ocr = OCREngine()
+        # T72(2026-05-29):config.USE_GPU 控制 EasyOCR GPU 模式.
+        from config import USE_GPU
+        self.ocr = OCREngine(gpu=USE_GPU)
 
         self.tracker = StateTracker()
 

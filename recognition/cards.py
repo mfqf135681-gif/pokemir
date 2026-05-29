@@ -141,7 +141,9 @@ class CardRecognizer:
         (which whole-image OCR introduced as false positives).
         """
         if self._ocr is None:
-            self._ocr = OCREngine()
+            # T72(2026-05-29):config.USE_GPU 控制 EasyOCR GPU.
+            from config import USE_GPU
+            self._ocr = OCREngine(gpu=USE_GPU)
 
         if image.shape[2] == 4:
             image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
