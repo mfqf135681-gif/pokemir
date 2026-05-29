@@ -374,6 +374,10 @@ class PipelineOrchestrator:
         # 在 hand 起始时(无 overlay 状态)强制建一次 baseline。
         self._initialize_avatar_baselines()
 
+        # T46-A(2026-05-29):hand-start 扫描空座(全 0 phash + stack 无数字
+        # 双确认)→ add to _empty_seats → action loop 顶部统一 skip,跟 fold 同治。
+        self._detect_empty_seats()
+
         seats_map = {}
         for k, v in self.tracker._position_map.items():
             try:
@@ -1160,12 +1164,53 @@ class PipelineOrchestrator:
 
     # ── Seat actions ──────────────────────────────────────
 
+    def _detect_empty_seats(self) -> None:
+        """T46-A(2026-05-29):hand-start 扫描所有 seat,双确认空座.
+
+        判定规则(两个信号同时满足):
+          (a) avatar phash 严格等于 "0" * 64(纯背景 / "+" 号 = 全 0 灰度)
+          (b) stack ROI OCR 提取 amount == None(没有数字 = 桌面背景)
+
+        命中 → add to self.tracker._empty_seats → action loop 顶部统一跳过,
+        本手剩余 ticks 不再读这个 seat 任何 ROI、不再生成 action_event。
+
+        重置时机:跟 _folded_seats 同步,start_new_hand 自动清零。
+        """
+        ZERO_HASH = "0" * 64
+        for seat in self.roi_manager.rois.seat_regions:
+            sidx = seat.seat_index
+            avatar_zero = False
+            if seat.fold_area is not None and seat.fold_area.width > 0:
+                avatar_img = self.capturer.capture_roi(seat.fold_area)
+                if avatar_img is not None and avatar_img.size > 0:
+                    avatar_zero = (_avg_hash_64(avatar_img) == ZERO_HASH)
+            stack_empty = True
+            if seat.stack_area is not None and seat.stack_area.width > 0:
+                stack_img = self.capturer.capture_roi(seat.stack_area)
+                stack_text = self.ocr.read_text(stack_img, allowlist="0123456789.")
+                stack_empty = (ActionRecognizer._extract_amount(stack_text) is None)
+            if avatar_zero and stack_empty:
+                self.tracker._empty_seats.add(sidx)
+                diag.emit(
+                    "seat.empty_detected",
+                    {"seat": sidx, "reason": "avatar_zero_hash + stack_no_digit"},
+                    hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
+                )
+                logger.info(f"_detect_empty_seats: seat_{sidx} 标空座(本手跳过)")
+
     def _process_seat_actions(self, db, rois):
         # NB: iterate using seat_roi.seat_index (NOT enumerate's i) for all
         # tracker state lookups — list-position differs from physical seat_index
         # when only some seats are configured (e.g. partial stage-B setup).
         for seat_roi in rois.seat_regions:
             sidx = seat_roi.seat_index
+
+            # T46-A(2026-05-29):inactive seat 统一 guard — 已 fold 或空座 → 本手
+            # 剩余 ticks 全跳过。fold 是用户 2026-05-29 观察"灰头像+弃牌字稳定显示"
+            # 提的 insight,empty 是空座位"+号+背景色"同样稳定。一个 guard 治死人
+            # 复活 + 空座 TempUser 噪音两个 P1 bug。
+            if sidx in self.tracker._folded_seats or sidx in self.tracker._empty_seats:
+                continue
 
             # P1 cross-validation: always read stack every tick (not just on action change)
             # so we have stack_before/stack_after on the action that DOES change.
@@ -1423,6 +1468,30 @@ class PipelineOrchestrator:
                                "stack_before": stack_before, "stack_after": stack_after,
                                "stack_delta": stack_delta, "action_text": action_text},
                               hand_id=self.tracker.current_hand.id, level="WARN")
+
+                # T46-B(2026-05-29):action debounce — call/raise overlay 持续 1-2 秒
+                # 4-8 个 tick 反复触发同一 action 入库(数据里看到 hand 6d91f66b 同
+                # 玩家同 street 多次 fold 等怪象)。5 秒窗口内同 (player,street,
+                # action_type) 视为重复,直接 skip + emit diag。
+                # 合法 second-call/raise(对手 reraise 后我再加注)间隔通常 > 5s,
+                # 不会误杀。
+                import time as _t
+                _now_ts = _t.time()
+                _action_str = (final_action.value if final_action else
+                               (event.action_type.value if event.action_type else "unknown"))
+                _street_str = event.street.value if event.street else ""
+                _dedup_key = (event.player_name, _street_str, _action_str)
+                _last_ts = self.tracker._last_action_at.get(_dedup_key, 0.0)
+                if _now_ts - _last_ts < 5.0:
+                    diag.emit(
+                        "action.dedup_skip",
+                        {"player": event.player_name, "street": _street_str,
+                         "action": _action_str,
+                         "ts_delta_sec": round(_now_ts - _last_ts, 2)},
+                        hand_id=self.tracker.current_hand.id,
+                    )
+                    continue
+                self.tracker._last_action_at[_dedup_key] = _now_ts
 
                 # Track folded seats (for showdown CNN skip + insurance defaults)
                 if final_action == ActionType.FOLD:

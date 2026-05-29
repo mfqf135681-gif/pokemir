@@ -66,6 +66,16 @@ class StateTracker:
         # Folded seats this hand (set when FOLD event fires) — used to skip them
         # during showdown card detection.
         self._folded_seats: set[int] = set()
+        # T46-A(2026-05-29):本手 hand-start 时检测出的空座(全 0 phash + stack
+        # 无数字双确认)。empty 跟 folded 同样是 hand-terminal 状态,统一在 action
+        # loop 顶部跳过(_folded_seats ∪ _empty_seats)。重置时机:跟 _folded_seats
+        # 同步,start_new_hand 清零。
+        self._empty_seats: set[int] = set()
+        # T46-B(2026-05-29):action dedup 时间戳缓存,key=(player_name,street,
+        # action_type),value=unix ts。同 key 5 秒窗口内重复触发直接 skip,
+        # 治 call/raise overlay 持续 1-2 秒导致 4-8 tick 反复入库的 bug。
+        # 持久跨手(不重置),依靠时间窗自然衰减。
+        self._last_action_at: dict[tuple[str, str, str], float] = {}
         # Seats that fired ANY event this hand (active set). Used at showdown:
         # non_folded_active = _seats_with_events - _folded_seats;
         # if < 2 → no real showdown (single winner / fold-around) → skip CNN.
@@ -210,6 +220,8 @@ class StateTracker:
         self._pending_decision_time = {}
         self._used_timebank = {}
         self._folded_seats = set()
+        # T46-A:_empty_seats 跟 _folded_seats 同 hand-scoped 状态,同步清零
+        self._empty_seats = set()
         self._seats_with_events_this_hand = set()
         # 摊牌实时抓帧:每手清零(seat_pred_history 持久跨手,不清)
         self._showdown_captured_this_hand = {}
