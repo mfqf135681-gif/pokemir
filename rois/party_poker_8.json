@@ -1,7 +1,7 @@
 {
   "name": "party_poker_8",
   "num_seats": 8,
-  "window_title": "WePoker\u7f51\u9875\u7248\uff5c\u514d\u4e0b\u8f7d\u5feb\u901f\u8fdb\u5165 - Google Chrome",
+  "window_title": "WePoker网页版｜免下载快速进入 - Google Chrome",
   "resolution": [
     1454,
     1287
@@ -51,10 +51,10 @@
     ]
   ],
   "pot_size": [
-    695,
-    399,
-    67,
-    25
+    671,
+    397,
+    113,
+    29
   ],
   "seats": [
     {
@@ -561,5 +561,11 @@
         28
       ]
     }
+  ],
+  "pot_size_previous": [
+    673,
+    432,
+    111,
+    27
   ]
 }
