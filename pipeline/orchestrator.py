@@ -1325,16 +1325,24 @@ class PipelineOrchestrator:
         命中 → add to self.tracker._empty_seats → action loop 顶部统一跳过,
         本手剩余 ticks 不再读这个 seat 任何 ROI、不再生成 action_event。
 
+        T63(2026-05-29)minimum guard 加场:同 phash 出现 ≥ 2 seat → 全标空座.
+        真活玩家 avatar 唯一,空座背景几乎相同 → 重复 64-bit hash = 强空座信号.
+        治 11100111 / 益力多加冰 类 (T44-A 全 0 guard 漏掉的 non-zero 重复 hash).
+
         重置时机:跟 _folded_seats 同步,start_new_hand 自动清零。
         """
         ZERO_HASH = "0" * 64
+        seat_phashes = {}  # T63:收集 8 seat phash 做 dup detect
         for seat in self.roi_manager.rois.seat_regions:
             sidx = seat.seat_index
             avatar_zero = False
+            phash = None
             if seat.fold_area is not None and seat.fold_area.width > 0:
                 avatar_img = self.capturer.capture_roi(seat.fold_area)
                 if avatar_img is not None and avatar_img.size > 0:
-                    avatar_zero = (_avg_hash_64(avatar_img) == ZERO_HASH)
+                    phash = _avg_hash_64(avatar_img)
+                    seat_phashes[sidx] = phash
+                    avatar_zero = (phash == ZERO_HASH)
             stack_empty = True
             if seat.stack_area is not None and seat.stack_area.width > 0:
                 stack_img = self.capturer.capture_roi(seat.stack_area)
@@ -1348,6 +1356,25 @@ class PipelineOrchestrator:
                     hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
                 )
                 logger.info(f"_detect_empty_seats: seat_{sidx} 标空座(本手跳过)")
+
+        # T63 minimum guard:同 phash >= 2 seat → 全标空座.
+        from collections import Counter
+        hash_counts = Counter(seat_phashes.values())
+        for sidx, ph in seat_phashes.items():
+            if hash_counts[ph] >= 2 and sidx not in self.tracker._empty_seats:
+                self.tracker._empty_seats.add(sidx)
+                diag.emit(
+                    "seat.empty_detected",
+                    {"seat": sidx,
+                     "reason": "duplicate_phash_minimum_guard",
+                     "phash_prefix": ph[:8],
+                     "occurrences": hash_counts[ph]},
+                    hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
+                )
+                logger.info(
+                    f"_detect_empty_seats(T63): seat_{sidx} 标空座 "
+                    f"(dup phash {ph[:8]} × {hash_counts[ph]})"
+                )
 
     # T52(2026-05-29):pixel diff trigger 阈值.
     # Phase 0 实测 cv2.absdiff 单 ROI < 1μs.阈值 diff_per_pixel < 3 起步保守,
