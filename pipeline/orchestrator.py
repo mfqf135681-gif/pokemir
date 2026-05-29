@@ -243,6 +243,9 @@ class PipelineOrchestrator:
         # T52(2026-05-29):全局 tick 计数器递增,driving force-refresh 守护机制
         self.tracker._global_tick_counter += 1
 
+        # T55(2026-05-29):db 累积耗时(commit + rollback + close).
+        db_total_ms = 0.0
+
         try:
             # 1. Capture hero cards
             hero_1 = self.capturer.capture_roi(rois.hero_card_1)
@@ -306,38 +309,57 @@ class PipelineOrchestrator:
                         self._capture_player_ids()
 
             if db is not None:
+                db_t = time.perf_counter()
                 db.commit()
+                db_total_ms += (time.perf_counter() - db_t) * 1000.0
         except Exception:
             logger.error("Tick failed", exc_info=True)
             if db is not None:
+                db_t = time.perf_counter()
                 db.rollback()
+                db_total_ms += (time.perf_counter() - db_t) * 1000.0
         finally:
             if db is not None:
+                db_t = time.perf_counter()
                 db.close()
+                db_total_ms += (time.perf_counter() - db_t) * 1000.0
 
         # T54(2026-05-29):tick 耗时统计,每 20 tick 输出 stats + emit diag.
         # 用途:实测 T52 后真 tick 时间(我之前推估 100-900ms 全凭印象),
         # 再决定是否降 CAPTURE_INTERVAL_MS sleep.
         tick_ms = (time.perf_counter() - t_start) * 1000.0
         self.tracker._tick_durations.append(tick_ms)
+        # T55(2026-05-29):db 拆分.
+        self.tracker._db_durations.append(db_total_ms)
         if len(self.tracker._tick_durations) >= 20:
             durs = sorted(self.tracker._tick_durations)
+            db_durs = sorted(self.tracker._db_durations)
             n = len(durs)
+            tick_avg = sum(durs) / n
+            db_avg = sum(db_durs) / n
             stats = {
                 "n": n,
                 "min_ms": round(durs[0], 1),
                 "median_ms": round(durs[n // 2], 1),
                 "p95_ms": round(durs[int(n * 0.95)], 1),
                 "max_ms": round(durs[-1], 1),
-                "avg_ms": round(sum(durs) / n, 1),
+                "avg_ms": round(tick_avg, 1),
                 "sleep_ms": CAPTURE_INTERVAL_MS,
-                "effective_hz": round(1000.0 / (sum(durs) / n + CAPTURE_INTERVAL_MS), 2),
+                "effective_hz": round(1000.0 / (tick_avg + CAPTURE_INTERVAL_MS), 2),
+                # T55:db 拆分.
+                "db_avg_ms": round(db_avg, 1),
+                "db_median_ms": round(db_durs[n // 2], 1),
+                "db_p95_ms": round(db_durs[int(n * 0.95)], 1),
+                "db_max_ms": round(db_durs[-1], 1),
+                "db_pct_of_tick": round(100.0 * db_avg / tick_avg, 1) if tick_avg > 0 else 0.0,
             }
             logger.info(
                 f"[tick stats] n={stats['n']} min={stats['min_ms']}ms "
                 f"median={stats['median_ms']}ms p95={stats['p95_ms']}ms "
                 f"max={stats['max_ms']}ms avg={stats['avg_ms']}ms "
-                f"sleep={stats['sleep_ms']}ms → {stats['effective_hz']}Hz"
+                f"sleep={stats['sleep_ms']}ms → {stats['effective_hz']}Hz | "
+                f"db_avg={stats['db_avg_ms']}ms db_p95={stats['db_p95_ms']}ms "
+                f"db_max={stats['db_max_ms']}ms ({stats['db_pct_of_tick']}% of tick)"
             )
             diag.emit(
                 "pipeline.tick_stats",
@@ -345,6 +367,7 @@ class PipelineOrchestrator:
                 hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
             )
             self.tracker._tick_durations.clear()
+            self.tracker._db_durations.clear()
 
     # ── Hand lifecycle ────────────────────────────────────
 
