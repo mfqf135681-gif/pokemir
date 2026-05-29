@@ -172,6 +172,7 @@ def place_roi_by_click(img: np.ndarray, ref_w: int, ref_h: int,
 
 VALID_FIELDS = {
     "hero_card_1", "hero_card_2", "pot_size",
+    "pot_size_previous",  # 2026-05-28 added: 第 2 行(上一街结束时冻结底池)
     "give_pot_button", "free_action_button",  # 2026-05-26 added (hero action panel)
 } | {
     f"community_{i}" for i in range(1, 6)
@@ -674,7 +675,8 @@ def _draw_rois(img: np.ndarray, data: dict, element_filter: str | None = None):
     if element_filter is None:
         draw_rect(data.get("hero_card_1"), colors["hero"], "Hero 1")
         draw_rect(data.get("hero_card_2"), colors["hero"], "Hero 2")
-        draw_rect(data.get("pot_size"), colors["pot"], "Pot")
+        draw_rect(data.get("pot_size"), colors["pot"], "Pot(L1)")
+        draw_rect(data.get("pot_size_previous"), colors["pot"], "Pot(L2 prev)")
         for cc in data.get("community_cards", []):
             draw_rect(cc, colors["community"], "Comm")
 
