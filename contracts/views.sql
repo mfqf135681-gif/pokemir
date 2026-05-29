@@ -758,26 +758,49 @@ SELECT
 FROM hands;
 
 
--- ── 圈梁 D10: Showdown by seat ─────────────────────────────────
+-- ── 圈梁 D10: Showdown by seat(修 T69)────────────────────────
 -- per-seat 摊牌 = 该 seat 必未 fold 全程,4 街都 active.
+-- T69 fix:用 button_seat_index 计算 physical seat_index → position → player.
+-- 旧版 cross-join 所有 position 到 showdown seat → 误归属.
 CREATE OR REPLACE VIEW v_ring_beam_showdown_by_seat AS
-WITH showdown_seats AS (
-  SELECT id AS hand_id, key AS seat_idx, value AS cards
-  FROM hands, jsonb_each(raw_data->'showdown_cards')
-  WHERE raw_data ? 'showdown_cards'
+WITH position_offsets AS (
+  -- BTN 是 offset 0,从 BTN 顺时针(seat_index 递增)
+  SELECT 0 AS pos_offset, 'BTN' AS position_name UNION ALL
+  SELECT 1, 'SB' UNION ALL
+  SELECT 2, 'BB' UNION ALL
+  SELECT 3, 'UTG' UNION ALL
+  SELECT 4, 'UTG+1' UNION ALL
+  SELECT 5, 'MP' UNION ALL
+  SELECT 6, 'MP+1' UNION ALL
+  SELECT 7, 'HJ' UNION ALL
+  SELECT 8, 'CO'
 ),
-seat_player AS (
-  SELECT h.id AS hand_id, s.key AS position, s.value AS player_name
-  FROM hands h, jsonb_each_text(h.seats) s
+showdown_with_btn AS (
+  SELECT
+    h.id AS hand_id,
+    (h.raw_data->>'button_seat_index')::int AS btn_idx,
+    COALESCE(h.raw_data->>'num_seats', '9')::int AS num_seats,
+    seat.key::int AS seat_idx,
+    seat.value AS cards,
+    h.seats AS seats_json
+  FROM hands h, jsonb_each(h.raw_data->'showdown_cards') seat
+  WHERE h.raw_data ? 'showdown_cards'
+    AND h.raw_data ? 'button_seat_index'
 )
 SELECT
-  ss.hand_id, ss.seat_idx, ss.cards,
-  sp.player_name,
+  s.hand_id,
+  s.seat_idx,
+  ((s.seat_idx - s.btn_idx + s.num_seats) % s.num_seats) AS pos_offset,
+  po.position_name AS position,
+  s.cards,
+  (s.seats_json->>po.position_name) AS player_name,
   0.9 AS joint_confidence,
   'reach_showdown_all_streets_active' AS implication
-FROM showdown_seats ss
-LEFT JOIN seat_player sp ON sp.hand_id = ss.hand_id
-WHERE sp.player_name IS NOT NULL;
+FROM showdown_with_btn s
+LEFT JOIN position_offsets po
+  ON po.pos_offset = ((s.seat_idx - s.btn_idx + s.num_seats) % s.num_seats)
+WHERE po.position_name IS NOT NULL
+  AND (s.seats_json->>po.position_name) IS NOT NULL;
 
 
 -- ── 圈梁 D15: Hand-end 无 showdown = 全 fold ───────────────────
@@ -961,3 +984,81 @@ SELECT
   0.6 AS confidence_until_d23_added
 FROM v_ring_beam_insurance_signature
 WHERE insurance_status = 'allin_lost_with_insurance';
+
+
+-- ── 圈梁 D23: Stack 跨手严格连续(±rake)── T69 新增 ──────────
+-- 规则:玩家 hand N 末 stack ≈ hand N+1 起 stack(无 rebuy).
+-- 容忍 = rake(5% pot + cap 30)+ OCR 噪音(2 BB).
+-- 负 delta(stack 增加)= rebuy 信号;大 delta = 不连续.
+CREATE OR REPLACE VIEW v_ring_beam_stack_cross_hand AS
+WITH consecutive AS (
+  SELECT
+    h.id AS hand_id,
+    h.started_at,
+    LAG(h.id) OVER (ORDER BY h.started_at) AS prev_hand_id,
+    h.raw_data->'player_stacks_initial' AS this_init,
+    LAG(h.raw_data->'player_stacks_final') OVER (ORDER BY h.started_at) AS prev_final,
+    h.pot_size_final AS this_pot
+  FROM hands h
+)
+SELECT
+  c.hand_id, c.prev_hand_id,
+  seat.key AS seat_idx,
+  (c.prev_final->>seat.key)::float AS prev_final_stack,
+  (c.this_init->>seat.key)::float AS this_init_stack,
+  ((c.this_init->>seat.key)::float - (c.prev_final->>seat.key)::float) AS delta,
+  GREATEST(2.0, 0.05 * c.this_pot + 30) AS tolerance_rake_aware,
+  CASE
+    WHEN c.prev_final->>seat.key IS NULL THEN 'no_prev_data'
+    WHEN ABS((c.this_init->>seat.key)::float - (c.prev_final->>seat.key)::float) <= 2 THEN 'continuous'
+    WHEN ((c.this_init->>seat.key)::float - (c.prev_final->>seat.key)::float) BETWEEN -GREATEST(30.0, 0.10 * c.this_pot) AND -2
+      THEN 'rake_or_noise_loss'
+    WHEN ((c.this_init->>seat.key)::float - (c.prev_final->>seat.key)::float) > 100 THEN 'rebuy_or_topup'
+    WHEN ((c.this_init->>seat.key)::float - (c.prev_final->>seat.key)::float) > 2 THEN 'small_increase_unusual'
+    ELSE 'discontinuity_check'
+  END AS status,
+  0.8 AS joint_confidence
+FROM consecutive c, jsonb_each_text(c.this_init) seat
+WHERE c.prev_final IS NOT NULL;
+
+
+-- ── 圈梁 D26 v2: 保险存在性(D23-enhanced)── T69 加强 ─────────
+-- 用 D23 跨手 stack:all-in 玩家 hand N 末 stack > 0 = 必买保险.
+CREATE OR REPLACE VIEW v_ring_beam_insurance_v2 AS
+WITH allin_hands AS (
+  -- 找出有 all-in event 的 hand + 该玩家在哪个 physical seat
+  SELECT DISTINCT
+    ae.hand_id, ae.player_name,
+    ae.sequence_number AS allin_seq
+  FROM action_events ae
+  WHERE ae.action_type = 'all_in'
+),
+seat_lookup AS (
+  -- player_name → seat_index via seats JSON + button_seat_index 位置反推
+  -- 简化版:用 player_stacks_final 检查哪个 seat 该玩家在
+  -- (实际更准的方法是 join button position rotation,后续 enhance)
+  SELECT
+    h.id AS hand_id,
+    s.key AS position,
+    s.value AS player_name,
+    h.raw_data AS hand_raw
+  FROM hands h, jsonb_each_text(h.seats) s
+  WHERE h.seats IS NOT NULL
+),
+allin_with_final_stack AS (
+  SELECT
+    a.hand_id, a.player_name, a.allin_seq,
+    sl.position,
+    -- 跨手 D23 信号:下一手起始 stack(若同玩家)
+    -- 这里简化:用 player_stacks_final 反查
+    sl.hand_raw->'player_stacks_final' AS final_stacks
+  FROM allin_hands a
+  LEFT JOIN seat_lookup sl ON sl.hand_id = a.hand_id AND sl.player_name = a.player_name
+)
+SELECT
+  a.hand_id, a.player_name, a.allin_seq, a.position,
+  -- 简化版:不依赖 button mapping,直接查 final_stacks 任意值 > 0 都标记需 D23 反查
+  0.7 AS joint_confidence_pending_d23_seat_resolution,
+  'requires_d23_seat_resolution' AS status,
+  'D26 完整版需要 D23 + button_seat_index 反推 player physical seat,本 view 仅记 candidate' AS note
+FROM allin_with_final_stack a;
