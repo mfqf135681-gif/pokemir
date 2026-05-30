@@ -299,8 +299,9 @@ v3 § 2.6 假设"DB IO 700ms / tick" → T83 真实数据 verify(254 ticks):
 | 测试 + tune + ground truth | 1 |
 | **合计** | **9.5 周** |
 
-→ 真工程量 **8.5-9.5 周**(v3 10-11 周 - 1.5 周方案 E)
+→ 真工程量 **9.5-10.5 周**(v3.1 8.5-9.5 周 + §12 摊牌专项 1 周;原 v3 10-11 周 - 方案 E 1.5 周 + §12 1 周)
 → **silent < 3% 仍可达**(主因是状态机 + 双 OCR + 13 规则,不是异步 IO)
+→ **摊牌 2+ 玩家亮牌率 12% → 80%+**(v3.2 新增 §12 治根)
 
 **前置 verify**:
 - **1 week 全状态过渡录屏**(post/check/showdown/街切换/all-in/sit-out/time bank/断网/BB auto check/side pot)
@@ -506,6 +507,78 @@ Total: 8.5-9.5 周(v3 10-11 周 - 1.5 周 Step 7)
 | `_pointer_state` 是否仅用于 timer 推断 | 删除前提 | T79 audit 已完成 — 5 sites,仅 timer 用途 ✅ |
 | 42 处 `diag.emit` 是否都 non-critical | async 前提是非顺序敏感 | T79 audit 已完成 — 全 trace ✅ |
 | `_canonicalize_player_id_map` 是否 tick-blocking | 异步化收益 ↑ | benchmark |
+
+## §12. 摊牌捕获专项(2026-05-30 T87/T88 数据驱动加入)
+
+### §12.1 真问题(T87 verify)
+
+138 摊牌 hand 全数据:
+| 指标 | 数 | 比例 |
+|---|---:|:---:|
+| ≥ 1 玩家亮牌 | 128 | 93% |
+| **≥ 2 玩家亮牌** | **17** | **🔴 12%** |
+| ≥ 3 玩家亮牌 | 1 | <1% |
+| 平均亮牌 / hand | 1.06 | — |
+
+**真理论值**:摊牌通常 2-4 玩家亮牌,**真捕获率 ≈ 1.06 / 2.5 = 42%**
+**失 ~58% 摊牌信息**
+
+### §12.2 摊牌信息密度(为啥必修)
+
+| 信息源 | bits | 画像影响 |
+|---|:---:|:---:|
+| Raw action(check/fold)| ~2 | 中 |
+| Raw action(raise/bet)| ~3 | 大 |
+| **摊牌一张亮牌** | **6-8** | **极大** |
+| **整 hand 反推 range** | **20+** | **巅峰** |
+
+→ 摊牌 1 张 ≈ 4 个 raw action 价值
+→ 58% 摊牌损失 = 玩家画像最致命 bias 源
+
+### §12.3 真治根方向(非 OCR-1 接管 — 错位过)
+
+摊牌是 **CNN 卡识别任务**(不是 OCR — EasyOCR 不识卡片)。
+真问题:**CNN 摊牌路径自身不够 aggressive**
+
+| 当前 | 改为 |
+|---|---|
+| CNN throttle 1/s/seat | **4/s/seat**(0.25s) |
+| river 街被动 trigger | **state machine 主动驱动**(reach showdown seat 锁定)|
+| 单帧 CNN | **多帧 fusion**(0.5s 内 3 帧 majority vote)|
+| fold_area diff trigger | **SeatStateMachine 提供 reach-showdown 信号** |
+
+### §12.4 预期效果
+
+- 1 玩家亮牌率:93% → **99%**
+- 2+ 玩家亮牌率:12% → **80%+**
+- 3+ 玩家亮牌率:<1% → **60%+**
+- 平均亮牌 / hand:1.06 → **2.0+**
+
+→ **玩家画像最大 bias 源治根**
+
+### §12.5 实施位置
+
+```
+Step 5.5(13 规则盲点之后插入):摊牌专项(+1 周)
+  ├ SeatStateMachine.reach_showdown_seats 新增 set
+  ├ HandPhase.SHOWDOWN enter handler 锁定目标 seats
+  ├ CNN throttle 1/s → 4/s 配 ATTENTION_MODE
+  └ 多帧 fusion(连续 3 帧投票)
+```
+
+### §12.6 工程量更新
+
+**v3.1 → v3.2**:**总 9.5-10.5 周**(原 8.5-9.5 周 + §12 摊牌专项 1 周)
+
+### §12.7 自查 § 11.3 加法陷阱
+
+- ✅ 数据驱动(12% / 1% 真不可接受)
+- ✅ 治根方向对(CNN 调度而非 OCR)
+- ✅ 跟 SeatStateMachine 兼容(reach-showdown 信号自然来)
+- ✅ 替换 throttle 而非双轨保留
+- ✅ ROI 极高(摊牌 = 信息密度最高)
+
+→ **真不是加法陷阱,是数据驱动必修盲点**
 
 ### §11.6 真治根:必须拆 monolith
 
