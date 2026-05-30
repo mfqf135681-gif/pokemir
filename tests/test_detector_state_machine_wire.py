@@ -116,3 +116,64 @@ class TestStateTrackerMirrorT91:
         t.seat_lifecycle.transition_to(5, SeatLifecycle.ACTIVE)
         t.mirror_seat_state(5, SeatLifecycle.ACTIVE)  # 同状态
         assert t.seat_lifecycle.get(5) == SeatLifecycle.ACTIVE
+
+
+class TestStateTrackerIsSkippableT92:
+    """Step 2.3 — is_skippable_seat ATTENTION_MODE-gated read."""
+
+    def test_legacy_mode_reads_from_sets(self, monkeypatch):
+        """ATTENTION_MODE=0 (默认):is_skippable_seat 读旧 sets."""
+        import config
+        monkeypatch.setattr(config, "ATTENTION_MODE", False)
+        t = StateTracker()
+        # Initially none skippable
+        for i in range(9):
+            assert not t.is_skippable_seat(i)
+        # Add to legacy sets
+        t._folded_seats.add(0)
+        t._empty_seats.add(1)
+        assert t.is_skippable_seat(0)
+        assert t.is_skippable_seat(1)
+        # seat_lifecycle 不参与判断(legacy 模式)
+        t.seat_lifecycle.transition_to(2, SeatLifecycle.ACTIVE)
+        t.seat_lifecycle.transition_to(2, SeatLifecycle.FOLDED)
+        assert not t.is_skippable_seat(2)  # legacy 模式不看 seat_lifecycle
+
+    def test_attention_mode_reads_from_state_machine(self, monkeypatch):
+        """ATTENTION_MODE=1:is_skippable_seat 读 seat_lifecycle.is_skippable."""
+        import config
+        monkeypatch.setattr(config, "ATTENTION_MODE", True)
+        t = StateTracker()
+        # Initial all empty → all skippable (EMPTY in skippable set)
+        for i in range(9):
+            assert t.is_skippable_seat(i)  # EMPTY 也算 skippable
+        # Activate seat 0
+        t.seat_lifecycle.transition_to(0, SeatLifecycle.ACTIVE)
+        assert not t.is_skippable_seat(0)  # ACTIVE 不跳
+        # Fold seat 0
+        t.seat_lifecycle.transition_to(0, SeatLifecycle.FOLDED)
+        assert t.is_skippable_seat(0)  # FOLDED 再次 skippable
+        # 旧 sets 不参与判断(attention 模式)
+        t._folded_seats.add(1)
+        # seat 1 EMPTY → 仍 skippable (但靠 EMPTY 而非 _folded_seats)
+        assert t.is_skippable_seat(1)
+
+    def test_both_modes_consistent_after_full_mirror(self, monkeypatch):
+        """Mirror 写后,两模式应给相同 skip 答案(共识检查)."""
+        import config
+        t = StateTracker()
+        # 模拟 fold seat 3 + empty seat 4(经 mirror)
+        t._folded_seats.add(3)
+        t.mirror_seat_state(3, SeatLifecycle.FOLDED)
+        t._empty_seats.add(4)
+        t.mirror_seat_state(4, SeatLifecycle.SITTING_OUT)
+        # Active seat 5 (mirror only)
+        t.seat_lifecycle.transition_to(5, SeatLifecycle.ACTIVE)
+
+        for mode in (False, True):
+            monkeypatch.setattr(config, "ATTENTION_MODE", mode)
+            assert t.is_skippable_seat(3), f"seat 3 should skip in mode={mode}"
+            assert t.is_skippable_seat(4), f"seat 4 should skip in mode={mode}"
+            # seat 5: legacy 模式 EMPTY-by-default→不在 sets→不跳;
+            # attention 模式 ACTIVE→不跳。两模式一致。
+            assert not t.is_skippable_seat(5), f"seat 5 should NOT skip in mode={mode}"

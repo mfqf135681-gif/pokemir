@@ -185,6 +185,16 @@ class StateTracker:
                 f"failed: {e!r}"
             )
 
+    # Phase 1.5 v3.2 Step 2.3 (T92):ATTENTION_MODE-gated skip 读.
+    # ATTENTION_MODE=1 时从 seat_lifecycle.is_skippable() 读;否则旧 sets 联合判.
+    # 7 个 skip site(orchestrator.py)统一调用此方法,简化散点判断.
+    def is_skippable_seat(self, seat_idx: int) -> bool:
+        from config import ATTENTION_MODE
+        if ATTENTION_MODE:
+            return self.seat_lifecycle.is_skippable(seat_idx)
+        # Legacy:fold + empty 都跳(跟旧分散判断等价)
+        return seat_idx in self._folded_seats or seat_idx in self._empty_seats
+
     # ── Hero card detection ───────────────────────────────
 
     def check_hero_cards(self, hero_1: np.ndarray, hero_2: np.ndarray) -> bool:

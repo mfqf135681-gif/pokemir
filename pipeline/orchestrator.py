@@ -607,7 +607,8 @@ class PipelineOrchestrator:
             (sb_seat, ActionType.POST_SB, sb_amount, Position.SB),
             (bb_seat, ActionType.POST_BB, bb_amount, Position.BB),
         ):
-            if seat_idx in self.tracker._empty_seats:
+            # T92 Step 2.3 ATTENTION_MODE-gated skip
+            if self.tracker.is_skippable_seat(seat_idx):
                 diag.emit(
                     "post.injection_skipped",
                     {"reason": "seat_empty", "seat": seat_idx,
@@ -1141,7 +1142,8 @@ class PipelineOrchestrator:
             if sidx == hero_seat_idx:
                 # Hero 自己的牌走 rois.hero_card_1/2 独立捕获,摊牌主链路不重复处理
                 continue
-            if sidx in self.tracker._folded_seats:
+            # T92 Step 2.3 ATTENTION_MODE-gated skip
+            if self.tracker.is_skippable_seat(sidx):
                 continue
             # Throttle: limit per-seat CNN to 1 Hz
             last_at = self.tracker._showdown_last_cnn_at.get(sidx, 0.0)
@@ -1579,9 +1581,8 @@ class PipelineOrchestrator:
             sidx = seat.seat_index
             if seat.timer_area is None or seat.timer_area.width == 0:
                 continue
-            if sidx in self.tracker._folded_seats:
-                continue
-            if sidx in self.tracker._empty_seats:
+            # T92 Step 2.3 ATTENTION_MODE-gated skip (consolidates fold+empty)
+            if self.tracker.is_skippable_seat(sidx):
                 continue
             timer_img = self.capturer.capture_roi(seat.timer_area)
             timer_text = self.ocr.read_text(timer_img, allowlist="0123456789s ")
@@ -1659,7 +1660,8 @@ class PipelineOrchestrator:
         amount_items = []
         for seat_roi in rois.seat_regions:
             sidx = seat_roi.seat_index
-            if sidx in self.tracker._folded_seats or sidx in self.tracker._empty_seats:
+            # T92 Step 2.3 ATTENTION_MODE-gated skip
+            if self.tracker.is_skippable_seat(sidx):
                 continue
             if seat_roi.action_area is not None and seat_roi.action_area.width > 0:
                 img = self.capturer.capture_roi(seat_roi.action_area)
@@ -1715,7 +1717,8 @@ class PipelineOrchestrator:
             # 剩余 ticks 全跳过。fold 是用户 2026-05-29 观察"灰头像+弃牌字稳定显示"
             # 提的 insight,empty 是空座位"+号+背景色"同样稳定。一个 guard 治死人
             # 复活 + 空座 TempUser 噪音两个 P1 bug。
-            if sidx in self.tracker._folded_seats or sidx in self.tracker._empty_seats:
+            # T92 Step 2.3 ATTENTION_MODE-gated skip
+            if self.tracker.is_skippable_seat(sidx):
                 continue
 
             # P1 cross-validation: always read stack every tick (not just on action change)
@@ -1799,7 +1802,8 @@ class PipelineOrchestrator:
                 # state for this seat). Used at hand-end to detect真摊牌 vs hallucination.
                 else:
                     self._finalize_timer(sidx)
-                    if sidx not in self.tracker._folded_seats and fold_img.size > 0:
+                    # T92 Step 2.3 ATTENTION_MODE-gated: 仅非 skippable seat 更新 idle baseline
+                    if not self.tracker.is_skippable_seat(sidx) and fold_img.size > 0:
                         _t = time.perf_counter()
                         self.tracker._idle_avatar_hash[sidx] = _avg_hash_64(fold_img)
                         sub_ms["seat_avatar_hash"] += (time.perf_counter() - _t) * 1000.0
