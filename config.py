@@ -33,6 +33,14 @@ USE_GPU = os.getenv("POKEMIR_USE_GPU", "0").lower() in ("1", "true", "yes")
 # 预期 OCR 总耗时 ~1.4s → ~200ms,tick 4.9s → 2.5-3s.
 # 启用方式:POKEMIR_OCR_BATCH=1.前提 USE_GPU=1 才有意义.
 OCR_BATCH = os.getenv("POKEMIR_OCR_BATCH", "0").lower() in ("1", "true", "yes")
+# Phase 1.5 v3.2 (2026-05-31 T89):注意力机制 + 双 OCR + Seat 5/Hand 12 状态机
+# + §12 摊牌专项 + 13 规则盲点.Step 1 of 9-step execution sequence
+# (详 requirement-discussions/2026-05-30_phase-1-5-attention-mechanism-design.md
+#  §11.4). 默认 0 = 旧 path 100% 不变 (T80/T82 模块躺仓库不集成).
+# 后续 Step 2-9 实施时,所有新 path 包 `if ATTENTION_MODE:` 守卫,旧 path
+# 保 fallback. **回滚靠 env var 而非双轨代码** (per §11.3 陷阱 4).
+# 启用方式:POKEMIR_ATTENTION_MODE=1.前提 USE_GPU=1 + OCR_BATCH=1 已生效.
+ATTENTION_MODE = os.getenv("POKEMIR_ATTENTION_MODE", "0").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 
