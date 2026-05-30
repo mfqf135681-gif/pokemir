@@ -44,8 +44,23 @@ class TestSeatLifecycle:
         m.transition_to(0, SeatLifecycle.ACTIVE)  # 不报错
         assert m.get(0) == SeatLifecycle.ACTIVE
 
+    def test_empty_is_NOT_skippable(self):
+        """T94 fix: EMPTY = 未知/未初始化,默认 OCR 一次确认(跟 legacy mode 空集等价).
+
+        真 sit-out 由 _detect_empty_seats 触发 mirror → SITTING_OUT(才跳过).
+        """
+        m = SeatStateMachine(n_seats=4)
+        for i in range(4):
+            assert m.get(i) == SeatLifecycle.EMPTY
+            assert not m.is_skippable(i), f"EMPTY seat {i} should NOT be skippable"
+        assert m.skippable_seats() == set()
+        assert m.active_seats() == set()  # EMPTY 不算 active 也不算 skippable
+
     def test_skippable_states_match_spec(self):
-        """OCR-1 全局轮询应跳过 4 类(R3 §3.3)+ leaving."""
+        """OCR-1 全局轮询应跳过 4 类(R3 §3.3)+ leaving.
+
+        T94 fix: EMPTY 不在 _SKIPPABLE 内(未知 → 默认 OCR).
+        """
         m = SeatStateMachine(n_seats=6)
         # Set up: ACTIVE, ACTIVE, FOLDED, ALL_IN, SIT_OUT, LEAVING
         for i in range(2):

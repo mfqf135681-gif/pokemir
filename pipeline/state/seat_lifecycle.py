@@ -59,8 +59,15 @@ _TRANSITIONS: dict[SeatLifecycle, set[SeatLifecycle]] = {
 }
 
 # Seats in these states should be skipped by OCR-1 全局轮询 + per-seat action loop.
+#
+# T94 (2026-05-31): EMPTY 移除 — Win 端 ATTENTION_MODE=1 实测发现 EMPTY
+# 在 _SKIPPABLE 致初始全跳过 fold OCR → silent fold 率 70-100%(灾难).
+# 真语义重定义:
+#   EMPTY = 未知 / 未初始化 → 默认 OCR 一次看看(跟 legacy mode _empty_seats
+#           初始空集"默认不跳"等价)
+#   SITTING_OUT = 已确认 sit-out(_detect_empty_seats 触发后 mirror 进来)
+#                 → 真跳过
 _SKIPPABLE: frozenset[SeatLifecycle] = frozenset({
-    SeatLifecycle.EMPTY,
     SeatLifecycle.SITTING_OUT,
     SeatLifecycle.FOLDED,
     SeatLifecycle.ALL_IN,
