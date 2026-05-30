@@ -10,6 +10,7 @@ from PIL import Image
 
 from events.models import Hand, Street
 from events.normalizer import EventNormalizer
+from pipeline.state import HandPhaseMachine, SeatStateMachine
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,14 @@ class StateTracker:
         # Per-hand seat_index → platform user-ID (OCR'd at hand-start; used as player_name for cross-hand stats)
         self.player_id_map: dict[int, str] = {}
 
+        # Phase 1.5 v3.2 Step 2.1 (2026-05-31 T90):T80 状态机模块嵌入.
+        # 当前 sub-step:仅初始化字段,不读不写(旧 _folded_seats / _empty_seats
+        # 仍 authoritative).后续 sub-step(Step 2.2/2.3)加 mirror 写 + 切读.
+        # ATTENTION_MODE=0 时 100% 旧 path,字段闲置.
+        # 详 requirement-discussions/2026-05-30_phase-1-5-attention-mechanism-design.md §11.4
+        self.seat_lifecycle: SeatStateMachine = SeatStateMachine(n_seats=9)
+        self.hand_phase: HandPhaseMachine = HandPhaseMachine()
+
     @property
     def has_active_hand(self) -> bool:
         return self.current_hand is not None
@@ -272,6 +281,11 @@ class StateTracker:
         # 摊牌实时抓帧:每手清零(seat_pred_history 持久跨手,不清)
         self._showdown_captured_this_hand = {}
         self._showdown_last_cnn_at = {}
+        # Phase 1.5 v3.2 Step 2.1 (T90):新 hand → seat_lifecycle 重激活 FOLDED/ALL_IN
+        # → ACTIVE,hand_phase 重置至 BETWEEN_HANDS.ATTENTION_MODE=0 时这些状态
+        # 不被读取,只是保持跟旧 sets 一致以备后续 sub-step 启用.
+        self.seat_lifecycle.reset_for_new_hand()
+        self.hand_phase = HandPhaseMachine()
         # NB: player_id_map NOT reset — #2 cache lock so player IDs persist across
         # hands, preventing OCR drift between hands from creating multiple variants
         # of the same player. Cleared only on pipeline restart.
