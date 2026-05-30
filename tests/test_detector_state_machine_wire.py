@@ -65,3 +65,54 @@ class TestStateTrackerWireT80:
         t.start_new_hand("test")
         assert t._folded_seats == set()
         assert t._empty_seats == set()
+
+
+class TestStateTrackerMirrorT91:
+    """Step 2.2 — mirror_seat_state helper integration tests."""
+
+    def test_mirror_to_sitting_out_from_empty(self):
+        t = StateTracker()
+        t._empty_seats.add(0)  # legacy
+        t.mirror_seat_state(0, SeatLifecycle.SITTING_OUT)
+        assert t.seat_lifecycle.get(0) == SeatLifecycle.SITTING_OUT
+        assert t._empty_seats == {0}  # legacy unchanged
+
+    def test_mirror_to_all_in_auto_promotes_from_empty(self):
+        t = StateTracker()
+        # EMPTY → ALL_IN not directly allowed; helper auto-promotes via ACTIVE
+        t._went_all_in_this_hand.add(1)
+        t.mirror_seat_state(1, SeatLifecycle.ALL_IN)
+        assert t.seat_lifecycle.get(1) == SeatLifecycle.ALL_IN
+        assert t._went_all_in_this_hand == {1}
+
+    def test_mirror_to_folded_auto_promotes_from_empty(self):
+        t = StateTracker()
+        # EMPTY → FOLDED not directly allowed; helper auto-promotes via ACTIVE
+        t._folded_seats.add(2)
+        t.mirror_seat_state(2, SeatLifecycle.FOLDED)
+        assert t.seat_lifecycle.get(2) == SeatLifecycle.FOLDED
+        assert t._folded_seats == {2}
+
+    def test_mirror_from_active_to_folded(self):
+        t = StateTracker()
+        # Seat 3: pre-set to ACTIVE (simulating prior promotion)
+        t.seat_lifecycle.transition_to(3, SeatLifecycle.ACTIVE)
+        t._folded_seats.add(3)
+        t.mirror_seat_state(3, SeatLifecycle.FOLDED)
+        assert t.seat_lifecycle.get(3) == SeatLifecycle.FOLDED
+
+    def test_mirror_swallows_illegal_transition_silently(self):
+        """LEAVING → ACTIVE 不合法,但 mirror 应吞噬不抛."""
+        t = StateTracker()
+        t.seat_lifecycle.transition_to(4, SeatLifecycle.ACTIVE)
+        t.seat_lifecycle.transition_to(4, SeatLifecycle.LEAVING)
+        # Now LEAVING → ACTIVE is illegal; mirror should swallow.
+        t.mirror_seat_state(4, SeatLifecycle.ACTIVE)
+        # State unchanged (still LEAVING)
+        assert t.seat_lifecycle.get(4) == SeatLifecycle.LEAVING
+
+    def test_mirror_self_transition_is_noop(self):
+        t = StateTracker()
+        t.seat_lifecycle.transition_to(5, SeatLifecycle.ACTIVE)
+        t.mirror_seat_state(5, SeatLifecycle.ACTIVE)  # 同状态
+        assert t.seat_lifecycle.get(5) == SeatLifecycle.ACTIVE

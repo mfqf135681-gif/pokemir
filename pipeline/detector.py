@@ -10,7 +10,7 @@ from PIL import Image
 
 from events.models import Hand, Street
 from events.normalizer import EventNormalizer
-from pipeline.state import HandPhaseMachine, SeatStateMachine
+from pipeline.state import HandPhaseMachine, SeatLifecycle, SeatStateMachine
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +157,33 @@ class StateTracker:
     @property
     def has_active_hand(self) -> bool:
         return self.current_hand is not None
+
+    # Phase 1.5 v3.2 Step 2.2 (2026-05-31 T91):shadow mirror helper.
+    # 在旧 _folded_seats / _empty_seats / _went_all_in_this_hand 写点同步
+    # 调用此方法,保持 seat_lifecycle 跟旧 sets 一致.
+    #
+    # Shadow 模式语义:
+    # - best-effort:auto-promote EMPTY → ACTIVE 解决初始状态问题
+    # - 异常吞噬:transition_to 抛 IllegalTransition 时仅 log,不 crash
+    # - ATTENTION_MODE=0 时不被读取,失败无业务影响
+    # - Step 2.3 切读后,失败需 promote 为 warn-level(下个 sub-step)
+    def mirror_seat_state(self, seat_idx: int, target: SeatLifecycle) -> None:
+        try:
+            current = self.seat_lifecycle.get(seat_idx)
+            # Auto-promote EMPTY → ACTIVE if target requires it
+            # (EMPTY → FOLDED/ALL_IN 都不合法,需中转 ACTIVE)
+            if current == SeatLifecycle.EMPTY and target not in (
+                SeatLifecycle.SITTING_OUT,
+                SeatLifecycle.ACTIVE,
+            ):
+                self.seat_lifecycle.transition_to(seat_idx, SeatLifecycle.ACTIVE)
+            self.seat_lifecycle.transition_to(seat_idx, target)
+        except Exception as e:
+            # Shadow 模式:绝不 crash;记 debug 便于 Step 2.3 切读前调试
+            logger.debug(
+                f"mirror_seat_state(seat={seat_idx}, target={target.value}) "
+                f"failed: {e!r}"
+            )
 
     # ── Hero card detection ───────────────────────────────
 
