@@ -210,6 +210,12 @@ class PipelineOrchestrator:
         # ATTENTION_MODE=0 时永远空 {}.
         self._attention_focus_results: dict = {}
 
+        # T115(2026-05-31):fold-miss 探针去重集 — (str(hand_id), seat, reason).
+        # 定位 53% silent-fold 漏在哪个 bucket(见 requirement-discussions
+        # /2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md §16).
+        # 每组合一手只 emit 一次,有界;real-player seat only。
+        self._fold_probe_seen: set = set()
+
         self.tracker = StateTracker()
 
         # #10 Load persistent player registry (avatar fingerprints) from disk
@@ -2008,20 +2014,52 @@ class PipelineOrchestrator:
                 # (e.g. "15 sec" / "15." / " 15"). Permissive but bounded to
                 # 0-60 (reasonable timer range).
                 timer_match = re.search(r"\b(\d{1,2})\b", ft) if ft else None
+                parsed_fold = self.action_recognizer.parse(ft) if ft else None
+                _is_fold_action = bool(
+                    parsed_fold
+                    and parsed_fold["action_type"] in (ActionType.FOLD, ActionType.ALL_IN)
+                )
+
+                # ── T115 (2026-05-31) fold-miss probe ──────────────────────
+                # Localize the 53% silent-fold gap (see requirement-discussions
+                # /2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md §16).
+                # Bounded: real-player seat (not empty), not captured-as-fold,
+                # once per (hand, seat, reason). Join offline against
+                # v_ring_beam_handend_fold_inference.silent_folds_inferred.
+                if sidx not in self.tracker._empty_seats and not _is_fold_action:
+                    if (timer_match and 0 <= int(timer_match.group(1)) <= 60
+                            and parsed_fold is None):
+                        _probe_reason = "foldarea_digit_as_timer"
+                    elif ft:
+                        _probe_reason = "foldarea_unparsed"
+                    else:
+                        _probe_reason = "foldarea_empty"
+                    _phid = (self.tracker.current_hand.id
+                             if self.tracker.current_hand else None)
+                    if _phid is not None:
+                        _pk = (str(_phid), sidx, _probe_reason)
+                        if _pk not in self._fold_probe_seen:
+                            self._fold_probe_seen.add(_pk)
+                            diag.emit(
+                                "fold_probe.miss_candidate",
+                                {"seat": sidx, "reason": _probe_reason,
+                                 "text": ft[:24]},
+                                hand_id=_phid,
+                            )
+
                 # Branch 1: digit found and looks like timer → countdown
                 # Skip if dedicated timer_area already handled (logic above).
                 if timer_match and 0 <= int(timer_match.group(1)) <= 60:
                     # Also gate: text shouldn't contain action keywords (avoids
                     # "跟注 100" being parsed as timer "100").
-                    if self.action_recognizer.parse(ft) is None:
+                    if parsed_fold is None:
                         self._process_timer(sidx, int(timer_match.group(1)))
                         if stack_now is not None:
                             self.tracker._prev_stack[sidx] = stack_now
                         continue
                 # Branch 2: parser hits FOLD / ALL_IN keyword → action via fold_area
                 if ft:
-                    parsed_fold = self.action_recognizer.parse(ft)
-                    if parsed_fold and parsed_fold["action_type"] in (ActionType.FOLD, ActionType.ALL_IN):
+                    if _is_fold_action:
                         action_text = ft
                         self._finalize_timer(sidx)  # timer ended via fold/all-in
                 # Branch 3: empty (idle / between actions) → finalize timer

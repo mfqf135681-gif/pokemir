@@ -257,3 +257,100 @@ per [[feedback-data-driven-mandate]] mandate:
 - 完整 doc:`requirement-discussions/2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md`(本文件)
 - memory:无新 memory(per [[feedback-data-driven-mandate]] mandate,无定论不沉淀)
 - change-log:无(无代码改动)
+
+---
+
+# 追加(2026-05-31 同 session 续)— code+DB 深挖 + 用户实测 ground truth
+
+> 触发:用户提"新增专职 fold ROI,因弃牌两字稳定显示至本手结束"。下面把这个前提 ground 到底。
+
+## §11. 用户实测 ground truth(最强信号)
+
+用户开着 WePoker 实测一个弃牌对手,回答 3 问:
+
+| 问 | 用户实测答 |
+|---|---|
+| "弃牌"两字是否整手挂着? | **一直挂着** |
+| 头像是否变暗、持续? | **头像亮度同步持续变暗** |
+| 显示在 seat 哪个位置? | **头像居中** |
+
+→ 前提**成立**:fold 信号(文字 + 变暗)整手持续,且就在头像居中。
+
+## §12. 代码确认 — 停轮询架构 + fold 检测路径(grep verified)
+
+**① folded seat 一旦检测到就停轮询**(`detector.py:200` + `orchestrator.py:1806`):
+```python
+def is_skippable_seat(seat_idx):
+    if ATTENTION_MODE: return seat_lifecycle.is_skippable(...)
+    return seat_idx in self._folded_seats or seat_idx in self._empty_seats
+```
+- ATTENTION_MODE 默认关(`config.py:43`,env 没设)→ 录的数据走 legacy(folded+empty 跳)
+- 后果:检测到 fold → 加 `_folded_seats` → 后续 tick 全跳 → **dedup 数据无法反推 persistence**(1.2% 低 dedup 是架构必然)
+
+**② 对没 fold 的 seat,每 tick(4Hz)扫 fold_area,直到抓到或本手结束**(`orchestrator.py:1801-2036`):
+- Branch 0(1987-1999):`timer_area` 单独配则先读;读到 digit(0-60)→ `_process_timer` + **`continue`(跳过 fold 检测)**
+- Branch 1(2013-2020):fold_area 读到 digit 且 `parse(ft) is None` → 当 timer + `continue`
+- Branch 2(2022-2026):fold_area parse 命中 FOLD/ALL_IN → 记 action(**捕获路径**)
+- Branch 3(2030-2036):空 → finalize timer + 更新 idle baseline
+
+## §13. 47% 全量复核(1192 hands,非 180 抽样)
+
+`v_ring_beam_handend_fold_inference` 全量聚合:
+
+| 指标 | 值 |
+|---|---:|
+| hands | 1192 |
+| folds_captured 合计 | 4057 |
+| silent_folds_inferred 合计 | 4593 |
+| **capture_rate** | **0.469** |
+| avg captured/hand | 3.40 |
+| avg silent/hand | 3.85 |
+
+→ 47% 不是抽样误差,**全量实测确认**。
+
+## §14. 核心悖论 + 候选漏点
+
+**悖论(实测 + 代码推出)**:
+> 信号整手在(§11)+ ROI 框对位置(§11 头像居中 / 代码 `line 1973` "avatar center")+ 每 tick 都扫(§12②)→ 本该 ~100%,实测 47%。
+
+→ **那 53% 不可能是"信号没出现"漏的。是代码路径里某步,在信号在的情况下没读到/没记。**
+
+**候选漏点(代码 verified,非定论)**:
+- Branch 0 / Branch 1:folded 头像变暗 + "弃牌"笔画 → 在 timer/fold ROI 产生 **digit 噪声** → 被当 timer `continue` → 整手不再回看
+- 这正是"多用途 ROI 污染" → **专职 fold ROI + 收窄 allowlist 恰好能治这一类**
+- ⚠️ 但**没数据证明它是 53% 的主因**(漏 tick 不落日志,doc §6 缺口 #1)
+
+## §15. 47% 的 confound(必须标:可能虚低)
+
+`silent_folds_inferred = n_seated − 摊牌人 − captured_fold` 倒推。
+
+- 若有人**坐着没发牌(sit-out)**→ 被算成"silent fold",但他没玩这手、没弃牌
+- button "jumped 25.5%"(§3.2)暗示 sit-out 不罕见
+- → **真实漏读率可能 < 53%**;此 confound 未用数据剥离,标"未验证"
+
+## §16. T115 插桩方案(已决:🅰️ 先插桩后建 ROL)
+
+**目的**:定位 53% 漏在哪个 bucket,决定专职 ROI 能治多少。
+
+**有界设计**(per `diag.emit` 每条一次 DB insert,只在候选点 emit、每 (hand,seat,reason) 一次、real-player seat only):
+在 fold_area 路径加 `fold_probe.miss_candidate` diag,reason 分:
+
+| reason | 含义 | 专职 ROI 能治? |
+|---|---|:---:|
+| `foldarea_digit_as_timer` | fold_area 读出 digit 被当 timer | ✅ allowlist 治 |
+| `foldarea_unparsed` | 非空但 parse 不出 FOLD(如"弃"残字/噪声)| ✅ allowlist + 专 ROI 治 |
+| `foldarea_empty` | real-player seat 读出空(信号该在却读空)| ⚠️ 指向 ROI 标定/暗化 OCR,allowlist 不够 |
+| (无任何 probe + silent fold) | seat 被 skip 没读 / sit-out 假漏 | 需后续追查 |
+
+**验证流程**:插桩 → 用户录 30 min → join `fold_probe.miss_candidate` 与 `silent_folds_inferred` 的 seat → 看 53% 落哪个 bucket。
+
+**结论门**:
+- 主因 = digit_as_timer / unparsed → 专职 ROI + allowlist 治根,建
+- 主因 = empty → 专职 ROI 不够,需先标定 ROI / 解决暗化 OCR
+- 主因 = sit-out 假漏 → 47% 本身虚低,问题没想象大
+
+## §17. 沉淀位置(更新)
+
+- doc:本文件(含本追加段)
+- code:T115 插桩 = DEV(本 session 实施)
+- memory:仍无新 memory(主因未定,无定论不沉淀)
