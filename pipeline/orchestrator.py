@@ -1062,6 +1062,69 @@ class PipelineOrchestrator:
         decision_time_ms = int((time.time() - started_at) * 1000)
         self.tracker._pending_decision_time[sidx] = decision_time_ms
 
+    # ── Phase 1.5 v3.2 Step 3.3a (T98, 2026-05-31): Pattern D focus seat ──
+    # OCR-2 "focus" 抓 timer seat 的 action + amount + chip.
+    # 当前 sub-step: helper methods ready,**未 wire 进 _tick**(3.3b 接入).
+    # ATTENTION_MODE=0 时这些方法返回 None / 空 dict,不影响 legacy path.
+
+    def get_focus_seat(self) -> int | None:
+        """返回当前 focus seat(timer 在的那个 seat).
+
+        从 tracker._pointer_state["current_seat"] 读(T48 shadow 已现成数据源).
+        若无 active timer / 状态机未推断出 current_seat → 返回 None.
+        """
+        if not self.tracker.has_active_hand:
+            return None
+        state = self.tracker._pointer_state
+        return state.get("current_seat") if state else None
+
+    def _capture_focus_seat_ocr(self, rois, focus_seat: int | None) -> dict:
+        """Pattern D OCR-2 capture:抓 focus seat 的 action + amount + chip.
+
+        Args:
+            rois: ROI 配置对象(rois.seat_regions[idx] 找对应 seat)
+            focus_seat: 由 get_focus_seat() 决定的 timer seat index
+
+        Returns:
+            dict — 至少含 keys {"action_text", "amount_text", "chip_text"};
+            ATTENTION_MODE=0 或 ocr_focus None 或 focus_seat None → 返回 {}
+        """
+        from config import ATTENTION_MODE
+        if not ATTENTION_MODE or self.ocr_focus is None or focus_seat is None:
+            return {}
+
+        seat = next(
+            (s for s in rois.seat_regions if s.seat_index == focus_seat),
+            None,
+        )
+        if seat is None:
+            return {}
+
+        out: dict = {"action_text": "", "amount_text": "", "chip_text": ""}
+        # action
+        if seat.action_area is not None and seat.action_area.width > 0:
+            img = self.capturer.capture_roi(seat.action_area)
+            if img is not None and img.size > 0:
+                out["action_text"] = self.ocr_focus.read_text(
+                    img, allowlist=ACTION_OCR_ALLOWLIST
+                )
+        # amount
+        if seat.amount is not None and seat.amount.width > 0:
+            img = self.capturer.capture_roi(seat.amount)
+            if img is not None and img.size > 0:
+                out["amount_text"] = self.ocr_focus.read_text(
+                    img, allowlist="0123456789.k万"
+                )
+        # chip(stack 也叫 chip in some configs)
+        chip_roi = getattr(seat, "stack_area", None)
+        if chip_roi is not None and chip_roi.width > 0:
+            img = self.capturer.capture_roi(chip_roi)
+            if img is not None and img.size > 0:
+                out["chip_text"] = self.ocr_focus.read_text(
+                    img, allowlist="0123456789."
+                )
+        return out
+
     def _detect_hero_seat_index(self, rois) -> int | None:
         """检测 hero 自己的座位 index(几何上 seat.cards_area 与 hero_card_1 重叠)。
 
