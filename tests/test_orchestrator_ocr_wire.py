@@ -117,6 +117,30 @@ class TestPatternDFocusSeatT98:
         rois = MagicMock()
         assert o._capture_focus_seat_ocr(rois, focus_seat=3) == {}
 
+    def test_capture_focus_seat_ocr_uses_real_SeatROI_attrs(self, monkeypatch):
+        """T102 regression:验证 _capture_focus_seat_ocr 用真实 SeatROI 属性名.
+
+        Bug 实测发现:之前用 seat.amount(不存在),Win 端 mode=1 every tick crash.
+        Linux MagicMock 没抓到(mock auto-creates any attr).
+        本测用真实 SeatROI dataclass(amount_area=None)验证 no AttributeError.
+        """
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        from capture.roi import SeatROI, ROIRegion
+        from unittest.mock import MagicMock
+        # 真 SeatROI dataclass, amount_area=None 触发 optional path
+        # ROIRegion(name, left, top, width, height)
+        seat3 = SeatROI(
+            seat_index=3,
+            action_area=ROIRegion("action", 0, 0, 0, 0),  # width=0 触发 skip
+            amount_area=None,  # T102 关键:Optional None
+            stack_area=ROIRegion("stack", 0, 0, 0, 0),
+        )
+        rois = MagicMock()
+        rois.seat_regions = [seat3]
+        # 该调用之前会抛 AttributeError 'amount';修复后正常返回
+        result = o._capture_focus_seat_ocr(rois, focus_seat=3)
+        assert result == {"action_text": "", "amount_text": "", "chip_text": ""}
+
 
 class TestAttentionFocusResultsT99:
     """Step 3.3b — _tick attention 分支 + _attention_focus_results storage."""

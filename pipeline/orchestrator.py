@@ -1199,24 +1199,23 @@ class PipelineOrchestrator:
             return {}
 
         out: dict = {"action_text": "", "amount_text": "", "chip_text": ""}
-        # action
+        # action(SeatROI.action_area)
         if seat.action_area is not None and seat.action_area.width > 0:
             img = self.capturer.capture_roi(seat.action_area)
             if img is not None and img.size > 0:
                 out["action_text"] = self.ocr_focus.read_text(
                     img, allowlist=ACTION_OCR_ALLOWLIST
                 )
-        # amount
-        if seat.amount is not None and seat.amount.width > 0:
-            img = self.capturer.capture_roi(seat.amount)
+        # T102 hotfix:用 amount_area(not amount)— SeatROI dataclass 正确字段名
+        if seat.amount_area is not None and seat.amount_area.width > 0:
+            img = self.capturer.capture_roi(seat.amount_area)
             if img is not None and img.size > 0:
                 out["amount_text"] = self.ocr_focus.read_text(
                     img, allowlist="0123456789.k万"
                 )
-        # chip(stack 也叫 chip in some configs)
-        chip_roi = getattr(seat, "stack_area", None)
-        if chip_roi is not None and chip_roi.width > 0:
-            img = self.capturer.capture_roi(chip_roi)
+        # chip(SeatROI.stack_area)
+        if seat.stack_area is not None and seat.stack_area.width > 0:
+            img = self.capturer.capture_roi(seat.stack_area)
             if img is not None and img.size > 0:
                 out["chip_text"] = self.ocr_focus.read_text(
                     img, allowlist="0123456789."
