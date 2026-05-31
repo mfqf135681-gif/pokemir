@@ -247,6 +247,68 @@ class TestPatternDMergeT100:
         assert o._pattern_d_merge_amount(3, "") == ""
 
 
+class TestStackPercentDetectT103:
+    """R15 — stack_area 全押后显胜率"%" 检测."""
+
+    def _make_orchestrator(self, monkeypatch, attention_mode: bool = False):
+        import config
+        monkeypatch.setattr(config, "ATTENTION_MODE", attention_mode)
+        from pipeline.orchestrator import PipelineOrchestrator
+        with patch.object(PipelineOrchestrator, "_probe_db", return_value=False), \
+             patch("pipeline.orchestrator.ROIManager"), \
+             patch("pipeline.orchestrator.ScreenCapturer"):
+            return PipelineOrchestrator(roi_profile="party_poker_9", observer_mode=True)
+
+    def test_ocr_stack_chips_normal_returns_amount(self, monkeypatch):
+        """正常 stack OCR "1500" → 返 1500.0."""
+        o = self._make_orchestrator(monkeypatch)
+        from unittest.mock import MagicMock
+        # mock OCR returns "1500"
+        o.ocr = MagicMock()
+        o.ocr.read_text = MagicMock(return_value="1500")
+        result = o._ocr_stack_chips(img=MagicMock(), seat_idx=3)
+        assert result == 1500.0
+
+    def test_ocr_stack_chips_percent_returns_none(self, monkeypatch):
+        """all-in equity "78%" → 返 None(关键 R15 fix)."""
+        o = self._make_orchestrator(monkeypatch)
+        from unittest.mock import MagicMock
+        o.ocr = MagicMock()
+        o.ocr.read_text = MagicMock(return_value="78%")
+        result = o._ocr_stack_chips(img=MagicMock(), seat_idx=3)
+        assert result is None, "stack='78%' should return None,不当 78 chips"
+
+    def test_ocr_stack_chips_percent_with_leading_text(self, monkeypatch):
+        """"100%" 也应返 None(防御性)."""
+        o = self._make_orchestrator(monkeypatch)
+        from unittest.mock import MagicMock
+        o.ocr = MagicMock()
+        o.ocr.read_text = MagicMock(return_value="100%")
+        result = o._ocr_stack_chips(img=MagicMock(), seat_idx=3)
+        assert result is None
+
+    def test_ocr_stack_chips_empty_returns_none(self, monkeypatch):
+        """空 OCR → None(原行为不变)."""
+        o = self._make_orchestrator(monkeypatch)
+        from unittest.mock import MagicMock
+        o.ocr = MagicMock()
+        o.ocr.read_text = MagicMock(return_value="")
+        result = o._ocr_stack_chips(img=MagicMock(), seat_idx=3)
+        assert result is None
+
+    def test_ocr_stack_chips_allowlist_includes_percent(self, monkeypatch):
+        """allowlist 包含 % 才能 detect."""
+        o = self._make_orchestrator(monkeypatch)
+        from unittest.mock import MagicMock
+        o.ocr = MagicMock()
+        o.ocr.read_text = MagicMock(return_value="50")
+        o._ocr_stack_chips(img=MagicMock(), seat_idx=3)
+        # 验证 read_text 被调时 allowlist 含 %
+        call_args = o.ocr.read_text.call_args
+        assert "%" in call_args.kwargs.get("allowlist", ""), \
+            "stack OCR allowlist must include '%' to detect all-in equity"
+
+
 class TestMultiPotObserveT101:
     """Step 3.4 — _observe_multi_pot framework stub."""
 

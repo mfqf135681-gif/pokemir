@@ -261,6 +261,29 @@ v3 § 2.6 假设"DB IO 700ms / tick" → T83 真实数据 verify(254 ticks):
 #### R13: Hero seat 简化(hero 不 silent)
 #### R14: 发牌动画期间 OCR 噪音
 
+#### R15: **all-in 后 stack_area 显胜率(2026-05-31 T103 用户实操发现)** 🆕
+
+**用户观察**:WePoker UI all-in 玩家的 stack_area(非下注区)显胜率"78%",**不再显示筹码**。
+
+**bug 严重度**:**🔴 pre-existing 历史污染源**(非 v3.2 引入)
+- 旧 stack OCR allowlist `"0123456789."` 把 "%" 滤掉 → "78" 入库当筹码
+- 污染:stack tracking / pot delta 关系 / ring beam D1 silent inference / 玩家画像 all-in 决策点
+- **影响所有历史数据**(T75 52.5% / T85 stratified / T87 摊牌 12% 都含此污染)
+
+**Fix(T103 ship)**:
+1. stack OCR allowlist 加 "%":`"0123456789.%"`
+2. helper `_ocr_stack_chips()` 检测 "%" → 返 None(标记 all-in equity 而非筹码)
+3. 4 个 stack OCR call site 统一走 helper
+4. emit `all_in.winprob_detected` diag
+
+**未来扩展(Tier 2+)**:
+- equity 提取作为新 signal(`raw_data["equity_at_allin"]`)
+- ring beam 新 view `v_ring_beam_equity_at_allin`
+- 跟 D26-D28 保险数学反推 cross-validate
+- 玩家"all-in + 胜率"组合作为 NIT trap detection 信号
+
+→ R15 是 **Step 5 13 规则盲点 + 1** = 14 个真规则盲点
+
 ## §4. 12 提升空间(Tier 分级,**chip motion 已删**)
 
 ### Tier 1: Sprint 1 同 Phase 1.5(+1 周,从 +2 周降)

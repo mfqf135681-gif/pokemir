@@ -1213,12 +1213,14 @@ class PipelineOrchestrator:
                 out["amount_text"] = self.ocr_focus.read_text(
                     img, allowlist="0123456789.k万"
                 )
-        # chip(SeatROI.stack_area)
+        # chip(SeatROI.stack_area)— T103 R15: %-aware
         if seat.stack_area is not None and seat.stack_area.width > 0:
             img = self.capturer.capture_roi(seat.stack_area)
             if img is not None and img.size > 0:
+                # 用 % 加入 allowlist 检测 all-in equity;chip_text 含 "%" 时
+                # 调用方应判定 all-in equity 而非筹码
                 out["chip_text"] = self.ocr_focus.read_text(
-                    img, allowlist="0123456789."
+                    img, allowlist="0123456789.%"
                 )
         return out
 
@@ -1557,6 +1559,30 @@ class PipelineOrchestrator:
             self.tracker._idle_avatar_hash[sidx] = _avg_hash_64(img)
             logger.debug(f"_initialize_avatar_baselines: seat_{sidx} baseline set at hand-start")
 
+    # ── R15 (T103, 2026-05-31): stack_area 全押后显胜率 ───────────────
+    # 用户实操观察:WePoker all-in 玩家的 stack_area 不再显示筹码,而显示胜率
+    # 如 "78%".旧 allowlist "0123456789." 把 "%" 滤掉 → "78" 当 78 chips 入库 →
+    # stack tracking / ring beam D1 / 画像 全污染(影响 historical 数据).
+    # Fix:allowlist 加 "%" → 检测 "%" → 返 None(表示"非筹码"),emit diag 标记
+    # all-in equity signal.
+    # 4 个 stack OCR call site 统一走这 helper.
+    def _ocr_stack_chips(self, img, seat_idx: int | None = None) -> float | None:
+        """OCR stack_area,处理 all-in 后显胜率 case.
+
+        Returns:
+            float chip count if normal stack display
+            None if "%" detected(all-in equity view)or no digit
+        """
+        text = self.ocr.read_text(img, allowlist="0123456789.%")
+        if "%" in text:
+            diag.emit(
+                "all_in.winprob_detected",
+                {"seat": seat_idx, "raw_text": text},
+                hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
+            )
+            return None
+        return ActionRecognizer._extract_amount(text)
+
     def _capture_seat_stacks(self) -> dict[int, float]:
         """Snapshot per-seat stack via OCR (digit-only allowlist).
 
@@ -1571,8 +1597,8 @@ class PipelineOrchestrator:
             if seat.stack_area is None or seat.stack_area.width == 0:
                 continue
             img = self.capturer.capture_roi(seat.stack_area)
-            text = self.ocr.read_text(img, allowlist="0123456789.")
-            amount = ActionRecognizer._extract_amount(text)
+            # T103 R15: %-aware stack OCR(all-in 后显胜率不当 chips)
+            amount = self._ocr_stack_chips(img, seat_idx=seat.seat_index)
             if amount is not None:
                 stacks[seat.seat_index] = amount
         return stacks
@@ -1648,8 +1674,8 @@ class PipelineOrchestrator:
             stack_empty = True
             if seat.stack_area is not None and seat.stack_area.width > 0:
                 stack_img = self.capturer.capture_roi(seat.stack_area)
-                stack_text = self.ocr.read_text(stack_img, allowlist="0123456789.")
-                stack_empty = (ActionRecognizer._extract_amount(stack_text) is None)
+                # T103 R15: %-aware(all-in equity returns None,触发 stack_empty)
+                stack_empty = (self._ocr_stack_chips(stack_img, seat_idx=sidx) is None)
             if avatar_zero and stack_empty:
                 self.tracker._empty_seats.add(sidx)
                 # T91 Step 2.2 mirror to seat_lifecycle (shadow)
@@ -1908,9 +1934,9 @@ class PipelineOrchestrator:
             if seat_roi.stack_area is not None and seat_roi.stack_area.width > 0:
                 _t = time.perf_counter()
                 stack_img = self.capturer.capture_roi(seat_roi.stack_area)
-                stack_text = self.ocr.read_text(stack_img, allowlist="0123456789.")
+                # T103 R15: %-aware stack OCR(all-in equity returns None)
+                stack_now = self._ocr_stack_chips(stack_img, seat_idx=sidx)
                 sub_ms["seat_stack_ocr"] += (time.perf_counter() - _t) * 1000.0
-                stack_now = ActionRecognizer._extract_amount(stack_text)
                 # Digit-miss sanity: reject sudden ≥10x jump (OCR misread digits like
                 # 3001001 should-be-300100, or 2841 vs 28410). Keep prior reading.
                 # 2026-05-27 EXCEPTION:stack=0 是合法 all-in 状态,不视为 OCR jump → 不拒收.
