@@ -1,0 +1,259 @@
+# 主题 — 双 OCR paradigm 重设计 + Hand-edge detection + Fold-47% 数据 ground
+
+> **2026-05-31 立**(本 session 用户实操观察 + 数据驱动讨论)
+>
+> **状态**:讨论 doc,**未实施**。所有断言基于 grep + DB query verified facts;hypothesis 显式标 "未 verify"。
+>
+> **关联**:[[phase-1-5-attention-mechanism-design]] / [[feedback-data-driven-mandate]] / [[wepoker-card-brightness-variance]]
+
+---
+
+## §1. 用户提议(2 轮)
+
+### §1.1 Round 1 — 双 OCR paradigm 重设计
+
+**OCR-1 角色**(状态机驱动信号源):
+1. 一局开始 → 全 seat 扫 timer(最快速度),唯一目标找 timer 位置 → 告知 OCR-2
+2. 后续 → 全 seat 扫弃牌,弃牌 seat → 从活动玩家列表剔除
+
+**OCR-2 角色**(持续内容抓取):
+1. 收到 timer 位置后立即关注该 seat:动作区 + 下注区 + 弃牌区(暂用头像区代替)
+2. 永远只盯 2 个 seat:
+   - **current_timer**(timer 在的)
+   - **next_active**(活动列表中下一个,德扑顺序)
+3. timer 转移时 → 对刚行动的 seat **持续盯 1s**(timer 转移 = 必有动作)
+
+**核心 paradigm**:
+- OCR-1 = "谁/什么时候"(信号源 + 活动列表维护)
+- OCR-2 = "什么内容"(动作抓取)
+- 不重叠覆盖
+
+### §1.2 Round 2 — 边界条件 + 兜底
+
+**边界 1**:**桩位(D)移动 = hand-start**(OCR-1 干)
+- 基于用户实测观察:桩位抓取稳定
+
+**边界 2**:**活动玩家头上 "+xx" 显示 = hand-end**
+- 筹码结算瞬间出现
+
+**兜底策略**:互为边界
+- A 触发 → 上局结束 + 新局开始
+- B 触发 → 同上
+- 冗余 — 任一漏检测,另一救
+
+---
+
+## §2. 现有 code 状态(grep verified)
+
+### §2.1 现有 hand-start 路径
+
+| Trigger | grep 位置 | 7-day 实际 emit n |
+|---|---|:---:|
+| Hero card change | _start_new_hand 内 check_hero_cards | observer 模式不可用 |
+| Community count 0→0 reset | community_just_reset 信号 | **0** events emit |
+| "总底池" label OCR | line 2395 hand_start.via_pot_label | **1** event 7-day |
+| pointer.hand_init(内部 emit)| _start_new_hand 末尾 | 830 events |
+
+→ 实际触发路径数据**几乎只有 pointer.hand_init**(无法 distinguish 哪条 signal trigger)
+
+### §2.2 现有 Button detect
+
+```python
+# orchestrator.py line 2499+
+3 层 fallback (T13 ship 2026-05-28):
+  L1: OCR "D" 命中
+  L2: brightness peak(button seat 亮度 163-188 vs 非 button 102-119)
+       ratio ≥1.3 OR absolute ≥150
+  L3: fallback seat=0(diag WARN)
+```
+
+**仅在 hand-start 后跑一次**(不持续 monitor button 移动)。
+
+### §2.3 现有 win_amount_area
+
+| 项 | 状态 |
+|---|---|
+| `SeatROI.win_amount_area` 字段 | ✅ 已定义(`capture/roi.py` line 171)|
+| `party_poker_8.json` 包含 win_amount entry | ✅ grep 命中 |
+| orchestrator 使用 | ❌ **未使用**(0 grep 命中处理 win_amount_area 的 logic) |
+
+→ ROI 就绪,逻辑空白。
+
+### §2.4 现有 fold detect
+
+```python
+# orchestrator.py line 2003-2004
+fold_img = self.capturer.capture_roi(seat_roi.fold_area)
+fold_text = self.ocr.read_text(fold_img)   # 无 allowlist
+# 后续 action_recognizer.parse 判定 "弃牌"/"盖牌"/"FOLD"
+```
+
+- fold_area 是**多用途 ROI**(同时识别 timer 数字 / "弃牌" / "All in")
+- 没收窄 allowlist
+- **当前唯一 fold detect 信号**(无备份信号)
+- avatar phash diff(_idle_avatar_hash)**仅用于 showdown gate**,不用于 fold detect
+
+---
+
+## §3. 数据驱动 verify 结果(1196 hands / 7 day)
+
+### §3.1 Button detect 准度
+
+| 方法 | n | % |
+|---|---:|:---:|
+| L1-OCR | 46 | 3.9% |
+| L2-brightness | 1142 | **95.6%** |
+| L3-fallback | 6 | 0.5% |
+| null_button | 2 | 0.2% |
+
+→ **有效率 99.5%**(L1+L2 命中)
+→ Button seat 在 0-8 间均匀分布(125-186 each,seat 8 = 32 因少数 9-max)
+
+### §3.2 Button 连续 hand 间 transition 类型
+
+| 类型 | n | % |
+|---|---:|:---:|
+| 严格 +1 移动(8-max) | 757 | 63.4% |
+| 严格 +1 移动(9-max) | 56 | 4.7% |
+| **jumped(跳 ≥2)** | **304** | **25.5%** |
+| same_seat(连续 2 hand 同 button) | 76 | 6.4% |
+| no_prev(首手) | 1 | 0.1% |
+
+**Findings**:
+- "严格 +1 移动" 仅占 68.1%
+- "jumped" 占 25.5%(原因未 verify:可能 sit-out 跳过 / 桌型切换 / 偶发误检)
+- "same_seat" 6.4%(原因未 verify)
+
+→ **不能假设 button 100% "+1 移动"**
+→ 用 **"button 跟上手不同"** 作 trigger 比 "+1" 兜容性强
+
+### §3.3 Fold detect 准度数据
+
+**捕获的 fold(24h sample, 875 events)**:
+
+| OCR 文本 | n | % |
+|---|---:|:---:|
+| "弃牌" | 871 | 99.5% |
+| "盖牌" | 3 | 0.3% |
+| "3弃牌" | 1 | 0.1% |
+
+→ 抓到时,OCR 文本 100% 含 fold 字串
+→ 7-day fold avg conf **0.912**,p50 **0.85**,conf_low (<0.7) **= 0**
+
+**漏抓数据(180 showdown hands)**:
+
+| Street | captured/hand |
+|---|---:|
+| preflop | 2.55(主战场) |
+| flop | 0.63 |
+| turn | 0.22 |
+| river | 0.13 |
+| **total captured** | **3.34** |
+| **silent inferred** | **3.82** |
+
+→ **fold capture rate = 3.34 / (3.34+3.82) = 46.7%**
+→ silent fold 跨多街普遍
+
+### §3.4 Active list 维护准度(基于 fold detect 准度)
+
+| 链路 | 数据 |
+|---|---|
+| user 提议:OCR-2 盯 next_active | 依赖 active list 准 |
+| active list 准 | 依赖 fold detect 准 |
+| fold detect 准 | **实测 46.7%** |
+
+→ active list 维护链路在数据上**漏剔 53% 的 fold seat**
+→ 直接导致 next_active 预测错乱
+
+---
+
+## §4. 矩阵评估(数据 ground 状态)
+
+| 提议 | 数据状态 | 结论 |
+|---|:---:|:---:|
+| **边界 1**:button 移动 = hand-start | 99.5% detect 准 + 68% 严格 +1 | 数据支持(用"≠上手 button"作 trigger 更稳) |
+| **边界 2**:"+xx" = hand-end | 0 数据(从未跑过 win_amount OCR)| **无法 verify** |
+| **兜底**:互为边界 | 架构 grep 兼容 | 数据 verify 需 B 上线后 |
+| **OCR-2 盯 current(timer 位置)** | timer detect 128 events / 30 min | 数据支持(timer 检测 reliable) |
+| **OCR-2 盯 next_active** | fold detect **仅 46.7%** | 数据矛盾(active list 链路从根断) |
+| **OCR-1 维护 active list** | fold detect **仅 46.7%** | 数据矛盾(同上) |
+| **OCR-1 全 seat 找 timer** | 现有 _shadow_pointer_scan 已实现 | 已 ship 部分 |
+| **OCR-1 全 seat 扫弃牌** | 现有 _process_seat_actions fold_area OCR 已实现,但 47% 漏 | 现有机制 = 47%,不会因 paradigm shift 自动改善 |
+
+---
+
+## §5. fold 47% 漏抓的 hypothesis 跟数据状态
+
+### Hypothesis A:OCR 抓到时准,漏在 OCR 没触发(时序漏 / ROI 漏)
+- **数据部分支持**:抓到 conf 0.912 高,文本 99.5% 含 fold 字串
+- **未 verify**:没"_process_seat_actions 跑过但 fold_area 返空"的 diag instrumentation
+
+### Hypothesis B:overlay 窗口短,4Hz tick 跨不过
+- **未 verify**:没 WePoker UI 真显示时长 ground truth
+- 推测**没数据支撑**
+
+### Hypothesis C:无 backup 信号(仅 OCR text 单信号)
+- **grep 支持**:当前 code 确实仅依赖 OCR
+- avatar 变灰 phash diff 字段存在但未用于 fold detect
+
+---
+
+## §6. 数据缺口(实施前需 ground)
+
+per [[feedback-data-driven-mandate]],下列断言需要数据 verify 才能继续:
+
+| 数据缺口 | 怎么取 |
+|---|---|
+| fold_area OCR 在漏 fold tick 返了什么(空 / 时序错过 / 其他文本)| 加 instrumentation:每 tick fold_area OCR 返空 → emit diag 含 phash diff |
+| WePoker UI 弃牌 overlay 真显示时长 | 用户实操观察 + 录屏 ground truth |
+| Avatar 变灰 phash diff 在 fold 前后差异 | 加 instrumentation:对比 fold 前后 phash hamming 分布 |
+| "+xx" win_amount OCR 准度 | 实际跑一次 OCR + 人工 ground truth verify |
+| button "jumped" 25% 原因(sit-out / 误检) | 加 instrumentation + ground truth |
+| ROI 是否需要 fold_area + win_amount 单独 calibrate | 用户实操确认 ROI 位置精度 |
+
+---
+
+## §7. 当前 doc 不下结论
+
+per [[feedback-data-driven-mandate]] mandate:
+- **不**说 "应该改 paradigm"
+- **不**说 "fold 47% 的瓶颈是 X"
+- **不**说 "broadcast OCR-2 治根" 或类似 polish 推断
+
+**doc 仅记录**:
+1. 用户提议的设计
+2. grep verified 的 code 现状
+3. DB query verified 的数据 fact
+4. 数据缺口清单
+
+实施决策需用户基于 doc + 后续 ground 数据 拍板。
+
+---
+
+## §8. 跟现有 Phase 1.5 v3.2 design doc 的关系
+
+[[phase-1-5-attention-mechanism-design]]:
+- §2.4 Pattern D 协作 — 跟用户提议 paradigm 不同(事件驱动 vs 持续盯)
+- §3 R 规则盲点 — 部分覆盖(R3 skip 4 类 / R5 sit-out)
+- §11 重构清单 — 不含 button trigger / win_amount detect
+
+→ 若用户决定走新 paradigm,**phase-1-5 design doc 需要 update**(可能新 v3.3 版本)
+→ 若仍 Pattern D 路径,本 doc 仅作"备选方向 ground"
+
+---
+
+## §9. 实施前置(无论选哪 paradigm)
+
+| 前置 | 依据 |
+|---|---|
+| Fold detect 47% 治根 | 因为 next_active / Pattern D / silent rate 全依赖 fold detect 准 |
+| Instrumentation 加 | 数据缺口 §6 不补,任何方案都妄想 |
+| Win_amount OCR 试跑 | "+xx" 边界 2 可行性 verify 必需 |
+
+---
+
+## §10. 沉淀位置
+
+- 完整 doc:`requirement-discussions/2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md`(本文件)
+- memory:无新 memory(per [[feedback-data-driven-mandate]] mandate,无定论不沉淀)
+- change-log:无(无代码改动)
