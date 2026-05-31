@@ -182,8 +182,29 @@ class PipelineOrchestrator:
         self.card_recognizer = CardRecognizer()
         self.action_recognizer = ActionRecognizer()
         # T72(2026-05-29):config.USE_GPU 控制 EasyOCR GPU 模式.
-        from config import USE_GPU
-        self.ocr = OCREngine(gpu=USE_GPU)
+        # T97 (Phase 1.5 v3.2 Step 3.2,2026-05-31):双 OCR instance Wire.
+        # OCR-1 "global":全局扫(timer-region + id-region + multi-pot),
+        #                 instance-level default_allowlist 收窄到 attention 字符集.
+        # OCR-2 "focus":  当前 timer seat 抓(action + amount + chip),
+        #                 dynamic per-call allowlist.
+        # ATTENTION_MODE=0 时 self.ocr_focus = None(不分配 VRAM).
+        # Pattern D 协作 logic 在 Sub-step 3.3 接入(本 sub-step 仅 wire).
+        from config import USE_GPU, ATTENTION_MODE
+        # OCR-1 全局(name + default_allowlist 仅 attention mode 实际用,
+        # legacy mode 仍调用 read_text(..., allowlist=...) 覆盖,行为不变)
+        self.ocr = OCREngine(
+            gpu=USE_GPU,
+            name="global",
+            default_allowlist="弃牌跟注让牌加下0123456789" if ATTENTION_MODE else "",
+        )
+        # OCR-2 专注 — lazy init only when ATTENTION_MODE=1(避免 mode=0 浪费 VRAM)
+        self.ocr_focus: OCREngine | None = (
+            OCREngine(gpu=USE_GPU, name="focus") if ATTENTION_MODE else None
+        )
+        if ATTENTION_MODE:
+            logger.info(
+                f"Phase 1.5 v3.2 双 OCR wired: ocr=global / ocr_focus=focus"
+            )
 
         self.tracker = StateTracker()
 
