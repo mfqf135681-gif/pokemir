@@ -48,8 +48,9 @@ class TestStateTrackerWireT80:
         for i in range(2, 9):
             assert t.seat_lifecycle.get(i) == SeatLifecycle.EMPTY
 
-        # HandPhaseMachine: fresh instance → BETWEEN_HANDS
-        assert t.hand_phase.current == HandPhase.BETWEEN_HANDS
+        # T106 Sprint 2 Step 5A: start_new_hand 现 force 到 PREFLOP_ACTING
+        # (skipping BLIND_POSTING / DEALING_CARDS — 后续 sub-step 由信号驱动)
+        assert t.hand_phase.current == HandPhase.PREFLOP_ACTING
 
     def test_legacy_sets_unchanged(self):
         """Step 2.1 invariant: 旧 _folded_seats / _empty_seats 仍是 authoritative.
@@ -116,6 +117,72 @@ class TestStateTrackerMirrorT91:
         t.seat_lifecycle.transition_to(5, SeatLifecycle.ACTIVE)
         t.mirror_seat_state(5, SeatLifecycle.ACTIVE)  # 同状态
         assert t.seat_lifecycle.get(5) == SeatLifecycle.ACTIVE
+
+
+class TestHandPhaseMirrorT106:
+    """Sprint 2 Step 5A — HandPhase mirror writes from community card count."""
+
+    def test_start_new_hand_force_to_preflop_acting(self):
+        """start_new_hand 后 hand_phase 应 force 到 PREFLOP_ACTING(跳 BLIND_POSTING)."""
+        t = StateTracker()
+        assert t.hand_phase.current == HandPhase.BETWEEN_HANDS
+        t.start_new_hand("test")
+        assert t.hand_phase.current == HandPhase.PREFLOP_ACTING
+
+    def test_mirror_community_3_to_flop_acting(self):
+        t = StateTracker()
+        t.start_new_hand("t")
+        t.mirror_hand_phase_for_community(3)
+        assert t.hand_phase.current == HandPhase.FLOP_ACTING
+
+    def test_mirror_community_4_to_turn_acting(self):
+        t = StateTracker()
+        t.start_new_hand("t")
+        t.mirror_hand_phase_for_community(4)
+        assert t.hand_phase.current == HandPhase.TURN_ACTING
+
+    def test_mirror_community_5_to_river_acting(self):
+        t = StateTracker()
+        t.start_new_hand("t")
+        t.mirror_hand_phase_for_community(5)
+        assert t.hand_phase.current == HandPhase.RIVER_ACTING
+
+    def test_mirror_community_0_to_between_hands(self):
+        """count=0 重置(hand 间)→ BETWEEN_HANDS."""
+        t = StateTracker()
+        t.start_new_hand("t")
+        t.mirror_hand_phase_for_community(5)  # river
+        t.mirror_hand_phase_for_community(0)  # 新 hand 开始前的 reset
+        assert t.hand_phase.current == HandPhase.BETWEEN_HANDS
+
+    def test_mirror_community_invalid_count_noop(self):
+        """1, 2 等非 canonical count → 不动 hand_phase(shadow only)."""
+        t = StateTracker()
+        t.start_new_hand("t")
+        original = t.hand_phase.current
+        t.mirror_hand_phase_for_community(1)
+        t.mirror_hand_phase_for_community(2)
+        t.mirror_hand_phase_for_community(7)
+        assert t.hand_phase.current == original
+
+    def test_full_hand_lifecycle_via_community_changes(self):
+        """模拟完整 hand:start → flop → turn → river → next hand."""
+        t = StateTracker()
+        # 新 hand
+        t.start_new_hand("t")
+        assert t.hand_phase.current == HandPhase.PREFLOP_ACTING
+        # check_community_change 流(从 0 到 3)
+        assert t.check_community_change(["2s", "4h", "6d"]) is True
+        assert t.hand_phase.current == HandPhase.FLOP_ACTING
+        # 0→4 一般不发生(必经 3),但 mirror 直接跳到 turn 也合法 force
+        assert t.check_community_change(["2s", "4h", "6d", "Tc"]) is True
+        assert t.hand_phase.current == HandPhase.TURN_ACTING
+        # turn→river
+        assert t.check_community_change(["2s", "4h", "6d", "Tc", "Kh"]) is True
+        assert t.hand_phase.current == HandPhase.RIVER_ACTING
+        # river→between(reset)— count=0 是 canonical 返 True
+        assert t.check_community_change([]) is True
+        assert t.hand_phase.current == HandPhase.BETWEEN_HANDS
 
 
 class TestStateTrackerIsSkippableT92:

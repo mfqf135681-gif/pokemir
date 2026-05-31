@@ -266,10 +266,45 @@ class StateTracker:
                 # P3: street transition → reset per-street betting state
                 self._street_to_call = 0.0
                 self._street_has_bet = False
+                # T106 Sprint 2 Step 5A: HandPhase shadow mirror
+                # 由 community card count 转移驱动 hand_phase 推进.shadow 写,
+                # 不参与决策读路径(Sprint 2 完成后才接读).force() 跳过 linear
+                # 转移表验证 — mirror best-effort.
+                self.mirror_hand_phase_for_community(count)
                 return True
             return False
         self._community_just_reset = False
         return False
+
+    def mirror_hand_phase_for_community(self, count: int) -> None:
+        """T106 Step 5A: 把 community card count 映射到 HandPhase shadow 状态.
+
+        转移:
+          count=0 (between-hand reset)→ BETWEEN_HANDS
+          count=3 (flop dealt)        → FLOP_ACTING
+          count=4 (turn dealt)        → TURN_ACTING
+          count=5 (river dealt)       → RIVER_ACTING
+
+        BLIND_POSTING / DEALING_* / SHOWDOWN / SETTLING 的 transitions
+        待后续 sub-step(由 timer / showdown 信号驱动).当前 shadow only,
+        异常不抛.
+        """
+        from pipeline.state.hand_phase import HandPhase
+        target = {
+            0: HandPhase.BETWEEN_HANDS,
+            3: HandPhase.FLOP_ACTING,
+            4: HandPhase.TURN_ACTING,
+            5: HandPhase.RIVER_ACTING,
+        }.get(count)
+        if target is None:
+            return
+        try:
+            self.hand_phase.force(target)
+            logger.debug(
+                f"hand_phase mirror: count={count} → {target.value}"
+            )
+        except Exception as e:
+            logger.debug(f"hand_phase mirror failed: {e!r}")
 
     def community_just_reset(self) -> bool:
         """True if community count just dropped to 0 (new hand dealing).
@@ -323,6 +358,13 @@ class StateTracker:
         # 不被读取,只是保持跟旧 sets 一致以备后续 sub-step 启用.
         self.seat_lifecycle.reset_for_new_hand()
         self.hand_phase = HandPhaseMachine()
+        # T106 Sprint 2 Step 5A: 新 hand 进入 PREFLOP_ACTING(force 跳过 dealing/posting
+        # 中间状态).BLIND_POSTING / DEALING_* 转移留后续 sub-step(信号驱动).
+        from pipeline.state.hand_phase import HandPhase
+        try:
+            self.hand_phase.force(HandPhase.PREFLOP_ACTING)
+        except Exception:
+            pass
         # NB: player_id_map NOT reset — #2 cache lock so player IDs persist across
         # hands, preventing OCR drift between hands from creating multiple variants
         # of the same player. Cleared only on pipeline restart.
