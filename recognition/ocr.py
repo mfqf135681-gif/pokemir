@@ -13,11 +13,33 @@ class OCREngine:
 
     Pre-processes images with upscale + thresholding to improve
     accuracy on small / anti-aliased fonts.
+
+    Phase 1.5 v3.2 Step 3.1 (T96, 2026-05-31): instance-specialized 改造.
+    支持多 instance — 每个 instance 可以有自己的:
+    - name(诊断用,标识 OCR-1 全局 / OCR-2 专注)
+    - default_allowlist(instance-level allowlist,read_text 仍可覆盖)
+    每个 instance 各持一个 EasyOCR Reader(VRAM ~1.5GB × N).
     """
 
-    def __init__(self, gpu: bool = False):
+    def __init__(
+        self,
+        gpu: bool = False,
+        *,
+        name: str = "default",
+        default_allowlist: str = "",
+    ):
         self._reader = None
         self._gpu = gpu
+        self._name = name
+        self._default_allowlist = default_allowlist
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def default_allowlist(self) -> str:
+        return self._default_allowlist
 
     def _init(self):
         if self._reader is not None:
@@ -31,6 +53,7 @@ class OCREngine:
         # 'ch_sim' enables WePoker Chinese action text (跟注/加注/弃牌/...);
         # 'en' kept for card rank glyphs + numeric amounts. First-time loading
         # auto-downloads ~50MB ch_sim model to POKEMIR_EASYOCR_DIR (.cache/easyocr/).
+        logger.info(f"OCREngine[{self._name}] init: gpu={self._gpu}")
         self._reader = easyocr.Reader(
             ["ch_sim", "en"],
             gpu=self._gpu,
@@ -45,11 +68,14 @@ class OCREngine:
         Args:
             image: BGR / BGRA crop
             allowlist: if non-empty, restrict OCR output to these characters.
+                若空 → 使用 instance.default_allowlist(T96 instance-specialized)
             ensemble: #8 if True, run OCR on TWO preprocessed variants (default
                 2x upscaled + 3x upscaled) and pick the longer non-empty result.
                 Use sparingly (2x cost); good for action / id where accuracy matters.
         """
         self._init()
+        if not allowlist:
+            allowlist = self._default_allowlist
         if not ensemble:
             return self._read_one(image, allowlist, scale=2)
         # Ensemble: try 2x and 3x scales, prefer longer result
@@ -69,7 +95,8 @@ class OCREngine:
 
         Args:
             images: list of np.ndarray (BGR/BGRA) — 不同尺寸允许(用 n_width/n_height auto-resize)
-            allowlist: 全部图共用一个 allowlist
+            allowlist: 全部图共用一个 allowlist.若空 → 用 instance.default_allowlist
+                       (T96 instance-specialized).
             scale: 内部 mag_ratio,默认 3(高准度 + 仍快)
 
         Returns:
@@ -81,6 +108,8 @@ class OCREngine:
         - None 或空图返回 "" 占位
         """
         self._init()
+        if not allowlist:
+            allowlist = self._default_allowlist
         if not images:
             return []
         # Step 1: BGRA fix + 收集有效图
