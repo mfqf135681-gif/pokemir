@@ -87,11 +87,24 @@ class TestPatternDFocusSeatT98:
         assert o.get_focus_seat() is None
 
     def test_get_focus_seat_reads_pointer_state(self, monkeypatch):
-        """active hand + _pointer_state["current_seat"]=3 → 返 3."""
+        """T108 fix:get_focus_seat 读 just_acted_seat(刚行动完那个),不再读 current_seat."""
+        import time as _time
         o = self._make_orchestrator(monkeypatch, attention_mode=True)
         o.tracker.start_new_hand("test")
-        o.tracker._pointer_state["current_seat"] = 3
+        # current_seat 已废弃接入 OCR-2(它是"正在 think 的人",overlay 不在他身上)
+        o.tracker._pointer_state["current_seat"] = 5  # 不影响 get_focus_seat
+        o.tracker._pointer_state["just_acted_seat"] = 3
+        o.tracker._pointer_state["just_acted_at"] = _time.time()
         assert o.get_focus_seat() == 3
+
+    def test_get_focus_seat_stale_just_acted_returns_none(self, monkeypatch):
+        """T108 fix:just_acted 超过 2s → 返 None(避免 stale overlay 已 fade)."""
+        import time as _time
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        o.tracker.start_new_hand("test")
+        o.tracker._pointer_state["just_acted_seat"] = 3
+        o.tracker._pointer_state["just_acted_at"] = _time.time() - 3.0  # 3s 前
+        assert o.get_focus_seat() is None  # stale
 
     def test_capture_focus_seat_ocr_attention_off(self, monkeypatch):
         """ATTENTION_MODE=0 → 返空 dict(skip)."""
@@ -194,11 +207,17 @@ class TestPatternDMergeT100:
         assert o._pattern_d_merge_action(3, "") == ""
         assert o._pattern_d_merge_action(3, "跟注") == "跟注"
 
+    def _set_just_acted(self, o, seat: int):
+        """Helper:T108 fix 后,focus_seat 真源是 just_acted_seat."""
+        import time as _time
+        o.tracker._pointer_state["just_acted_seat"] = seat
+        o.tracker._pointer_state["just_acted_at"] = _time.time()
+
     def test_merge_action_legacy_already_captured(self, monkeypatch):
         """legacy 已抓到 → 不覆盖."""
         o = self._make_orchestrator(monkeypatch, attention_mode=True)
         o.tracker.start_new_hand("t")
-        o.tracker._pointer_state["current_seat"] = 3
+        self._set_just_acted(o, 3)
         o._attention_focus_results = {"action_text": "弃牌"}  # OCR-2 也有
         # legacy 给 "跟注" 不变
         assert o._pattern_d_merge_action(3, "跟注") == "跟注"
@@ -207,7 +226,7 @@ class TestPatternDMergeT100:
         """非 focus seat → 不 fallback."""
         o = self._make_orchestrator(monkeypatch, attention_mode=True)
         o.tracker.start_new_hand("t")
-        o.tracker._pointer_state["current_seat"] = 3
+        self._set_just_acted(o, 3)
         o._attention_focus_results = {"action_text": "弃牌"}
         # seat 5 不是 focus → 不 fallback
         assert o._pattern_d_merge_action(5, "") == ""
@@ -216,7 +235,7 @@ class TestPatternDMergeT100:
         """OCR-2 无数据 → 不 fallback."""
         o = self._make_orchestrator(monkeypatch, attention_mode=True)
         o.tracker.start_new_hand("t")
-        o.tracker._pointer_state["current_seat"] = 3
+        self._set_just_acted(o, 3)
         o._attention_focus_results = {}  # 空
         assert o._pattern_d_merge_action(3, "") == ""
 
@@ -224,7 +243,7 @@ class TestPatternDMergeT100:
         """ATTENTION + focus + legacy 空 + OCR-2 有 → fallback."""
         o = self._make_orchestrator(monkeypatch, attention_mode=True)
         o.tracker.start_new_hand("t")
-        o.tracker._pointer_state["current_seat"] = 3
+        self._set_just_acted(o, 3)
         o._attention_focus_results = {"action_text": "弃牌"}
         result = o._pattern_d_merge_action(3, "")
         assert result == "弃牌"
@@ -234,7 +253,7 @@ class TestPatternDMergeT100:
     def test_merge_amount_fallback_fires(self, monkeypatch):
         o = self._make_orchestrator(monkeypatch, attention_mode=True)
         o.tracker.start_new_hand("t")
-        o.tracker._pointer_state["current_seat"] = 3
+        self._set_just_acted(o, 3)
         o._attention_focus_results = {"amount_text": "100"}
         assert o._pattern_d_merge_amount(3, "") == "100"
 
@@ -242,7 +261,7 @@ class TestPatternDMergeT100:
         o = self._make_orchestrator(monkeypatch, attention_mode=False)
         # mode=0 永不 fallback
         o.tracker.start_new_hand("t")
-        o.tracker._pointer_state["current_seat"] = 3
+        self._set_just_acted(o, 3)
         o._attention_focus_results = {"amount_text": "100"}
         assert o._pattern_d_merge_amount(3, "") == ""
 

@@ -114,6 +114,10 @@ class StateTracker:
             "last_timer_seat": None,
             "last_timer_value": None,
             "last_timer_at": None,
+            # T108(2026-05-31)Pattern D fix:刚行动完那个 seat(timer 从 A 跳走时记 A).
+            # OCR-2 真该抓的不是 current_seat(在 think 的 B),而是 A(action overlay 在 A 上).
+            "just_acted_seat": None,
+            "just_acted_at": None,
         }
         # Seats that fired ANY event this hand (active set). Used at showdown:
         # non_folded_active = _seats_with_events - _folded_seats;

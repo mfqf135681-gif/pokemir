@@ -1087,15 +1087,27 @@ class PipelineOrchestrator:
     # ATTENTION_MODE=0 时这些方法返回 None / 空 dict,不影响 legacy path.
 
     def get_focus_seat(self) -> int | None:
-        """返回当前 focus seat(timer 在的那个 seat).
+        """返回 OCR-2 真该抓的 focus seat(刚行动完那个).
 
-        从 tracker._pointer_state["current_seat"] 读(T48 shadow 已现成数据源).
-        若无 active timer / 状态机未推断出 current_seat → 返回 None.
+        T108 fix(2026-05-31):原读 current_seat = timer 在的人(正在 think,
+        action overlay 还未出现).真该读 just_acted_seat = timer 刚从此座
+        跳走的人(action overlay 显示在他身上).
+
+        Time window:仅返回 2s 内刚行动的 seat(避免 stale).
         """
         if not self.tracker.has_active_hand:
             return None
         state = self.tracker._pointer_state
-        return state.get("current_seat") if state else None
+        if not state:
+            return None
+        just_acted = state.get("just_acted_seat")
+        just_acted_at = state.get("just_acted_at")
+        if just_acted is None or just_acted_at is None:
+            return None
+        # 仅 2s 内的 just-acted 才有效(action overlay 一般 1-2s)
+        if time.time() - just_acted_at > 2.0:
+            return None
+        return just_acted
 
     # ── Phase 1.5 v3.2 Step 3.4 (T101): Multi-pot observation framework ──
     # 完整 multi-pot 需 Win 端 UI verify(side pot ROI 划定 — 现 rois/party_poker_*.json
@@ -1821,6 +1833,9 @@ class PipelineOrchestrator:
                          "next_seat": timer_seat},
                         hand_id=self.tracker.current_hand.id,
                     )
+                    # T108 Pattern D fix:A 刚行动完(timer 从 A 跳走)→ 记录给 OCR-2 抓
+                    state["just_acted_seat"] = last_seat
+                    state["just_acted_at"] = now_ts
                 # 指针移动了(或第一次检测到)
                 diag.emit(
                     "pointer.timer_moved",
@@ -1846,6 +1861,9 @@ class PipelineOrchestrator:
                          "time_since_timer": round(dt, 2)},
                         hand_id=self.tracker.current_hand.id,
                     )
+                # T108 Pattern D fix:timer 消失 = last_seat 刚行动完 → 记录给 OCR-2
+                state["just_acted_seat"] = last_seat
+                state["just_acted_at"] = now_ts
                 # 清 timer 状态,等下个 seat 的 timer 出现
                 state["last_timer_seat"] = None
                 state["last_timer_value"] = None
