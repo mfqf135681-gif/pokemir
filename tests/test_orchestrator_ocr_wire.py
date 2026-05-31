@@ -221,3 +221,43 @@ class TestPatternDMergeT100:
         o.tracker._pointer_state["current_seat"] = 3
         o._attention_focus_results = {"amount_text": "100"}
         assert o._pattern_d_merge_amount(3, "") == ""
+
+
+class TestMultiPotObserveT101:
+    """Step 3.4 — _observe_multi_pot framework stub."""
+
+    def _make_orchestrator(self, monkeypatch, attention_mode: bool):
+        import config
+        monkeypatch.setattr(config, "ATTENTION_MODE", attention_mode)
+        from pipeline.orchestrator import PipelineOrchestrator
+        with patch.object(PipelineOrchestrator, "_probe_db", return_value=False), \
+             patch("pipeline.orchestrator.ROIManager"), \
+             patch("pipeline.orchestrator.ScreenCapturer"):
+            return PipelineOrchestrator(roi_profile="party_poker_9", observer_mode=True)
+
+    def test_observe_mode_off_returns_empty(self, monkeypatch):
+        o = self._make_orchestrator(monkeypatch, attention_mode=False)
+        from unittest.mock import MagicMock
+        rois = MagicMock()
+        result = o._observe_multi_pot(rois)
+        assert result == {"main_pot": None, "side_pot_count": 0}
+
+    def test_observe_mode_on_rois_none(self, monkeypatch):
+        """rois None → 不 crash."""
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        result = o._observe_multi_pot(None)
+        assert result == {"main_pot": None, "side_pot_count": 0}
+
+    def test_observe_mode_on_no_pot_size_attr(self, monkeypatch):
+        """rois 没 pot_size 属性 → 防御性返回."""
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        from types import SimpleNamespace
+        rois = SimpleNamespace(pot_size=None)
+        result = o._observe_multi_pot(rois)
+        assert result == {"main_pot": None, "side_pot_count": 0}
+
+    def test_observe_side_pot_count_zero_for_now(self, monkeypatch):
+        """T101 framework stub:side_pot_count 永远 0(待 Win UI verify 后扩展)."""
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        result = o._observe_multi_pot(None)
+        assert result["side_pot_count"] == 0

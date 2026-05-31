@@ -1095,6 +1095,44 @@ class PipelineOrchestrator:
         state = self.tracker._pointer_state
         return state.get("current_seat") if state else None
 
+    # ── Phase 1.5 v3.2 Step 3.4 (T101): Multi-pot observation framework ──
+    # 完整 multi-pot 需 Win 端 UI verify(side pot ROI 划定 — 现 rois/party_poker_*.json
+    # 仅有主底池 pot_size).本 sub-step 仅 framework stub,**Win 端 UI 实操后**
+    # 再加 side_pot_1, side_pot_2 等 ROI + 真 OCR.
+    # 当前结构:返回 {"main_pot": float|None, "side_pot_count": 0}.
+    # 未来扩展:从 v_ring_beam_insurance_v2 / D28 边池分解 view cross-validate.
+
+    def _observe_multi_pot(self, rois) -> dict:
+        """Step 3.4 framework — 观察 multi-pot 状态(当前仅 main pot).
+
+        ATTENTION_MODE=0 → 返回 {"main_pot": None, "side_pot_count": 0}.
+        ATTENTION_MODE=1 → 抓 main pot,side_pots 暂空(待 Win 端 UI verify).
+        """
+        from config import ATTENTION_MODE
+        result = {"main_pot": None, "side_pot_count": 0}
+        if not ATTENTION_MODE:
+            return result
+        # 抓 main pot — 复用 OCR-1(default_allowlist 已含 digits)
+        if rois is None or getattr(rois, "pot_size", None) is None:
+            return result
+        try:
+            pot_img = self.capturer.capture_roi(rois.pot_size)
+            if pot_img is not None and pot_img.size > 0:
+                pot_text = self.ocr.read_text(pot_img, allowlist="0123456789.")
+                from recognition.actions import ActionRecognizer
+                main_pot_amount = ActionRecognizer._extract_amount(pot_text)
+                result["main_pot"] = main_pot_amount
+                diag.emit(
+                    "pattern_d.pot_observation",
+                    {"main_pot": main_pot_amount,
+                     "side_pot_count": 0,
+                     "source": "ocr_global_pot_size"},
+                    hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
+                )
+        except Exception as e:
+            logger.debug(f"_observe_multi_pot failed: {e!r}")
+        return result
+
     def _pattern_d_merge_action(self, sidx: int, current_action_text: str) -> str:
         """T100 Step 3.3c: Pattern D OCR-2 fallback for action_text.
 
