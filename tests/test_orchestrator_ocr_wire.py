@@ -149,3 +149,75 @@ class TestAttentionFocusResultsT99:
         o._attention_focus_results = {"action_text": "跟注", "amount_text": "100"}
         assert o._attention_focus_results["action_text"] == "跟注"
         assert o._attention_focus_results["amount_text"] == "100"
+
+
+class TestPatternDMergeT100:
+    """Step 3.3c — _pattern_d_merge_action / _pattern_d_merge_amount."""
+
+    def _make_orchestrator(self, monkeypatch, attention_mode: bool):
+        import config
+        monkeypatch.setattr(config, "ATTENTION_MODE", attention_mode)
+        from pipeline.orchestrator import PipelineOrchestrator
+        with patch.object(PipelineOrchestrator, "_probe_db", return_value=False), \
+             patch("pipeline.orchestrator.ROIManager"), \
+             patch("pipeline.orchestrator.ScreenCapturer"):
+            return PipelineOrchestrator(roi_profile="party_poker_9", observer_mode=True)
+
+    # ─── action merge ────────────────────────────────────────────────
+
+    def test_merge_action_mode_off_returns_original(self, monkeypatch):
+        o = self._make_orchestrator(monkeypatch, attention_mode=False)
+        assert o._pattern_d_merge_action(3, "") == ""
+        assert o._pattern_d_merge_action(3, "跟注") == "跟注"
+
+    def test_merge_action_legacy_already_captured(self, monkeypatch):
+        """legacy 已抓到 → 不覆盖."""
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        o.tracker.start_new_hand("t")
+        o.tracker._pointer_state["current_seat"] = 3
+        o._attention_focus_results = {"action_text": "弃牌"}  # OCR-2 也有
+        # legacy 给 "跟注" 不变
+        assert o._pattern_d_merge_action(3, "跟注") == "跟注"
+
+    def test_merge_action_not_focus_seat(self, monkeypatch):
+        """非 focus seat → 不 fallback."""
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        o.tracker.start_new_hand("t")
+        o.tracker._pointer_state["current_seat"] = 3
+        o._attention_focus_results = {"action_text": "弃牌"}
+        # seat 5 不是 focus → 不 fallback
+        assert o._pattern_d_merge_action(5, "") == ""
+
+    def test_merge_action_no_ocr2_data(self, monkeypatch):
+        """OCR-2 无数据 → 不 fallback."""
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        o.tracker.start_new_hand("t")
+        o.tracker._pointer_state["current_seat"] = 3
+        o._attention_focus_results = {}  # 空
+        assert o._pattern_d_merge_action(3, "") == ""
+
+    def test_merge_action_fallback_fires(self, monkeypatch):
+        """ATTENTION + focus + legacy 空 + OCR-2 有 → fallback."""
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        o.tracker.start_new_hand("t")
+        o.tracker._pointer_state["current_seat"] = 3
+        o._attention_focus_results = {"action_text": "弃牌"}
+        result = o._pattern_d_merge_action(3, "")
+        assert result == "弃牌"
+
+    # ─── amount merge ────────────────────────────────────────────────
+
+    def test_merge_amount_fallback_fires(self, monkeypatch):
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        o.tracker.start_new_hand("t")
+        o.tracker._pointer_state["current_seat"] = 3
+        o._attention_focus_results = {"amount_text": "100"}
+        assert o._pattern_d_merge_amount(3, "") == "100"
+
+    def test_merge_amount_mode_off(self, monkeypatch):
+        o = self._make_orchestrator(monkeypatch, attention_mode=False)
+        # mode=0 永不 fallback
+        o.tracker.start_new_hand("t")
+        o.tracker._pointer_state["current_seat"] = 3
+        o._attention_focus_results = {"amount_text": "100"}
+        assert o._pattern_d_merge_amount(3, "") == ""

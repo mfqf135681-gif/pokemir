@@ -1095,6 +1095,49 @@ class PipelineOrchestrator:
         state = self.tracker._pointer_state
         return state.get("current_seat") if state else None
 
+    def _pattern_d_merge_action(self, sidx: int, current_action_text: str) -> str:
+        """T100 Step 3.3c: Pattern D OCR-2 fallback for action_text.
+
+        若 ATTENTION_MODE=1 + 当前 seat 是 focus + legacy 抓空 + OCR-2 有数据 →
+        用 OCR-2 结果填补.最简 merge(无冲突仲裁,Ring beam 仲裁是 3.3c-extended).
+        """
+        from config import ATTENTION_MODE
+        if not ATTENTION_MODE:
+            return current_action_text
+        if current_action_text:
+            return current_action_text  # legacy 已抓到,保留
+        if sidx != self.get_focus_seat():
+            return current_action_text
+        ocr2_text = self._attention_focus_results.get("action_text", "")
+        if not ocr2_text:
+            return current_action_text
+        # Fallback fires:
+        diag.emit(
+            "pattern_d.ocr2_action_fallback",
+            {"seat": sidx, "action_text": ocr2_text, "source": "ocr_focus"},
+            hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
+        )
+        return ocr2_text
+
+    def _pattern_d_merge_amount(self, sidx: int, current_amount_text: str) -> str:
+        """T100 Step 3.3c: Pattern D OCR-2 fallback for amount_text."""
+        from config import ATTENTION_MODE
+        if not ATTENTION_MODE:
+            return current_amount_text
+        if current_amount_text:
+            return current_amount_text
+        if sidx != self.get_focus_seat():
+            return current_amount_text
+        ocr2_text = self._attention_focus_results.get("amount_text", "")
+        if not ocr2_text:
+            return current_amount_text
+        diag.emit(
+            "pattern_d.ocr2_amount_fallback",
+            {"seat": sidx, "amount_text": ocr2_text, "source": "ocr_focus"},
+            hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
+        )
+        return ocr2_text
+
     def _capture_focus_seat_ocr(self, rois, focus_seat: int | None) -> dict:
         """Pattern D OCR-2 capture:抓 focus seat 的 action + amount + chip.
 
@@ -1932,6 +1975,9 @@ class PipelineOrchestrator:
                     )
                     sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
 
+                # T100 Step 3.3c: Pattern D OCR-2 action fallback merge.
+                action_text = self._pattern_d_merge_action(sidx, action_text or "")
+
                 # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
                 # parser regex (\d+\.?\d*) will pull the number from the combined text
                 if action_text and seat_roi.amount_area is not None:
@@ -1948,6 +1994,8 @@ class PipelineOrchestrator:
                             ensemble=False,
                         )
                         sub_ms["seat_amount_ocr"] += (time.perf_counter() - _t) * 1000.0
+                    # T100 Step 3.3c: Pattern D OCR-2 amount fallback merge.
+                    amount_text = self._pattern_d_merge_amount(sidx, amount_text or "")
                     if amount_text:
                         action_text = f"{action_text} {amount_text}"
 
