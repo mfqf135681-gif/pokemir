@@ -273,6 +273,8 @@ class PipelineOrchestrator:
         "seat_stack_ocr", "seat_timer_ocr", "seat_fold_ocr",
         "seat_action_ocr", "seat_amount_ocr", "seat_avatar_hash",
         "seat_parse_persist",
+        # T99 Phase 1.5 v3.2 attention focus OCR(2026-05-31 加入聚合)
+        "attention_focus_ocr",
     )
 
     def _tick(self):
