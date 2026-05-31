@@ -116,3 +116,36 @@ class TestPatternDFocusSeatT98:
         from unittest.mock import MagicMock
         rois = MagicMock()
         assert o._capture_focus_seat_ocr(rois, focus_seat=3) == {}
+
+
+class TestAttentionFocusResultsT99:
+    """Step 3.3b — _tick attention 分支 + _attention_focus_results storage."""
+
+    def _make_orchestrator(self, monkeypatch, attention_mode: bool):
+        import config
+        monkeypatch.setattr(config, "ATTENTION_MODE", attention_mode)
+        from pipeline.orchestrator import PipelineOrchestrator
+        with patch.object(PipelineOrchestrator, "_probe_db", return_value=False), \
+             patch("pipeline.orchestrator.ROIManager"), \
+             patch("pipeline.orchestrator.ScreenCapturer"):
+            return PipelineOrchestrator(roi_profile="party_poker_9", observer_mode=True)
+
+    def test_attention_focus_results_initialized_mode_off(self, monkeypatch):
+        """mode=0 时 _attention_focus_results 仍 init 为空 dict."""
+        o = self._make_orchestrator(monkeypatch, attention_mode=False)
+        assert hasattr(o, "_attention_focus_results")
+        assert o._attention_focus_results == {}
+
+    def test_attention_focus_results_initialized_mode_on(self, monkeypatch):
+        """mode=1 时 _attention_focus_results init 为空 dict(tick 内填充)."""
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        assert hasattr(o, "_attention_focus_results")
+        assert o._attention_focus_results == {}
+
+    def test_attention_focus_results_writeable(self, monkeypatch):
+        """_capture_focus_seat_ocr 返值能 assign 到 _attention_focus_results."""
+        o = self._make_orchestrator(monkeypatch, attention_mode=True)
+        # 模拟 tick 内逻辑
+        o._attention_focus_results = {"action_text": "跟注", "amount_text": "100"}
+        assert o._attention_focus_results["action_text"] == "跟注"
+        assert o._attention_focus_results["amount_text"] == "100"

@@ -205,6 +205,10 @@ class PipelineOrchestrator:
             logger.info(
                 f"Phase 1.5 v3.2 双 OCR wired: ocr=global / ocr_focus=focus"
             )
+        # T99 Step 3.3b: 每 tick OCR-2 focus 结果存这,Step 3.3c merge logic 读
+        # 格式: {"action_text": str, "amount_text": str, "chip_text": str}
+        # ATTENTION_MODE=0 时永远空 {}.
+        self._attention_focus_results: dict = {}
 
         self.tracker = StateTracker()
 
@@ -334,6 +338,19 @@ class PipelineOrchestrator:
                 t_p = time.perf_counter()
                 self._shadow_pointer_scan(rois)
                 phase_ms["shadow_pointer"] = (time.perf_counter() - t_p) * 1000.0
+
+            # T99 Step 3.3b: Pattern D OCR-2 attention focus 抓.
+            # 接在 shadow_pointer_scan 后(_pointer_state["current_seat"] 已更新).
+            # ATTENTION_MODE=0 / ocr_focus None / 无 active hand → 跳过.
+            # 结果存 self._attention_focus_results 给 Step 3.3c merge logic 读.
+            from config import ATTENTION_MODE as _ATTN_MODE
+            if _ATTN_MODE and self.ocr_focus and self.tracker.has_active_hand:
+                t_p = time.perf_counter()
+                focus_seat = self.get_focus_seat()
+                self._attention_focus_results = self._capture_focus_seat_ocr(
+                    rois, focus_seat
+                )
+                phase_ms["attention_focus_ocr"] = (time.perf_counter() - t_p) * 1000.0
 
             # 5. Seat actions — writes raw_data with stack_delta + pot_delta evidence
             if self.tracker.has_active_hand:
