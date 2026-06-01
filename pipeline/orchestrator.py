@@ -210,11 +210,13 @@ class PipelineOrchestrator:
         # ATTENTION_MODE=0 时永远空 {}.
         self._attention_focus_results: dict = {}
 
-        # T115(2026-05-31):fold-miss 探针去重集 — (str(hand_id), seat, reason).
-        # 定位 53% silent-fold 漏在哪个 bucket(见 requirement-discussions
-        # /2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md §16).
-        # 每组合一手只 emit 一次,有界;real-player seat only。
-        self._fold_probe_seen: set = set()
+        # T117(2026-06-01):fold-miss 精准探针 v2 — per-seat per-hand fold_area
+        # 读取画像累积 {seat: {empty:int, unparsed:[str], digit:[str]}}。
+        # hand-end(_end_current_hand)仅对"确认 silent 弃牌"座位 emit,去掉 v1
+        # (T115)对闲置座位的 foldarea_empty 误报。reset 于 _start_new_hand。
+        # 见 requirement-discussions/
+        # 2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md §16。
+        self._fold_read_profile: dict = {}
 
         self.tracker = StateTracker()
 
@@ -519,6 +521,7 @@ class PipelineOrchestrator:
 
     def _start_new_hand(self, db, hero_1, hero_2):
         hand = self.tracker.start_new_hand()
+        self._fold_read_profile = {}  # T117: reset per-seat fold_area read profile
         c1 = self.card_recognizer.recognize_single(hero_1)
         c2 = self.card_recognizer.recognize_single(hero_2)
         hand.hero_cards = []
@@ -875,6 +878,10 @@ class PipelineOrchestrator:
             if showdown_cards:
                 cur.raw_data["showdown_cards"] = showdown_cards
 
+            # T117(2026-06-01):fold-miss 精准探针 — 对本手"确认 silent 弃牌"座位
+            # emit fold_area 读取画像(见下 _emit_silent_fold_profiles)。
+            self._emit_silent_fold_profiles(cur, showdown_cards)
+
         hand = self.tracker.finalize_hand()
         if hand and db is not None:
             try:
@@ -889,6 +896,49 @@ class PipelineOrchestrator:
         self._canonicalize_player_id_map()
         # #10 Persist player registry at hand end (cheap; small JSON file)
         _save_player_registry(self.tracker._avatar_fingerprints)
+
+    def _emit_silent_fold_profiles(self, hand, showdown_cards) -> None:
+        """T117(2026-06-01):fold-miss 精准探针 v2.
+
+        对本手"确认 silent 弃牌"座位 emit fold_area 读取画像。
+        silent = 入场座位(range(num_seats) − _empty_seats)
+                 − 已捕获 fold(_folded_seats) − 摊牌座位(showdown_cards)。
+        含至多 1 个未摊牌赢家(false positive,已知偏差,~1/hand)。
+
+        dominant 优先级 unparsed > digit > empty > no_read:
+          - unparsed/digit → 弃牌信号被认错/污染 → allowlist+专 ROI 可治
+          - empty(且无 unparsed/digit)→ 弃牌后仍读空 → 信号没读到
+                                          → 指向 ROI 标定/暗化,allowlist 不够
+          - no_read → 座位整手没进 fold_area 路径(被 skip / 没轮到)
+
+        有界:每手 ≤ 入场座位数 条 emit。离线 join
+        v_ring_beam_handend_fold_inference 交叉验证。
+        """
+        try:
+            num_seats = self.roi_manager.rois.num_seats
+            dealt = set(range(num_seats)) - self.tracker._empty_seats
+            shown = set((showdown_cards or {}).keys())
+            silent = dealt - self.tracker._folded_seats - shown
+            for sidx in sorted(silent):
+                prof = self._fold_read_profile.get(sidx)
+                if prof and prof["unparsed"]:
+                    dominant = "unparsed"
+                elif prof and prof["digit"]:
+                    dominant = "digit"
+                elif prof and prof["empty"] > 0:
+                    dominant = "empty"
+                else:
+                    dominant = "no_read"
+                diag.emit(
+                    "fold_probe.silent_seat",
+                    {"seat": sidx, "dominant": dominant,
+                     "empty_ticks": (prof or {}).get("empty", 0),
+                     "unparsed": (prof or {}).get("unparsed", []),
+                     "digit": (prof or {}).get("digit", [])},
+                    hand_id=hand.id,
+                )
+        except Exception:
+            logger.debug("fold_probe.silent_seat emit failed", exc_info=True)
 
     def _infer_insurance(self, hand, final_stacks: dict[int, float]) -> list[dict]:
         """#12a Infer insurance buys from stack patterns (user hypothesis + win/lose split).
@@ -2020,32 +2070,26 @@ class PipelineOrchestrator:
                     and parsed_fold["action_type"] in (ActionType.FOLD, ActionType.ALL_IN)
                 )
 
-                # ── T115 (2026-05-31) fold-miss probe ──────────────────────
-                # Localize the 53% silent-fold gap (see requirement-discussions
-                # /2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md §16).
-                # Bounded: real-player seat (not empty), not captured-as-fold,
-                # once per (hand, seat, reason). Join offline against
-                # v_ring_beam_handend_fold_inference.silent_folds_inferred.
+                # ── T117 (2026-06-01) fold-miss probe v2 — accumulate per-seat ──
+                # Record what fold_area returned for each real-player seat that did
+                # NOT get captured as a fold this tick. At hand-end,
+                # _emit_silent_fold_profiles emits a profile ONLY for seats confirmed
+                # to have silently folded (no capture, no showdown) — removing v1's
+                # idle-seat over-count. empty ticks are expected pre-fold; the real
+                # question is whether the POST-fold read was mangled (unparsed/digit →
+                # allowlist-fixable) or also empty (signal not read → ROI/calibration).
                 if sidx not in self.tracker._empty_seats and not _is_fold_action:
+                    _prof = self._fold_read_profile.setdefault(
+                        sidx, {"empty": 0, "unparsed": [], "digit": []})
                     if (timer_match and 0 <= int(timer_match.group(1)) <= 60
                             and parsed_fold is None):
-                        _probe_reason = "foldarea_digit_as_timer"
+                        if ft[:24] not in _prof["digit"] and len(_prof["digit"]) < 6:
+                            _prof["digit"].append(ft[:24])
                     elif ft:
-                        _probe_reason = "foldarea_unparsed"
+                        if ft[:24] not in _prof["unparsed"] and len(_prof["unparsed"]) < 6:
+                            _prof["unparsed"].append(ft[:24])
                     else:
-                        _probe_reason = "foldarea_empty"
-                    _phid = (self.tracker.current_hand.id
-                             if self.tracker.current_hand else None)
-                    if _phid is not None:
-                        _pk = (str(_phid), sidx, _probe_reason)
-                        if _pk not in self._fold_probe_seen:
-                            self._fold_probe_seen.add(_pk)
-                            diag.emit(
-                                "fold_probe.miss_candidate",
-                                {"seat": sidx, "reason": _probe_reason,
-                                 "text": ft[:24]},
-                                hand_id=_phid,
-                            )
+                        _prof["empty"] += 1
 
                 # Branch 1: digit found and looks like timer → countdown
                 # Skip if dedicated timer_area already handled (logic above).

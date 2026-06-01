@@ -354,3 +354,44 @@ def is_skippable_seat(seat_idx):
 - doc:本文件(含本追加段)
 - code:T115 插桩 = DEV(本 session 实施)
 - memory:仍无新 memory(主因未定,无定论不沉淀)
+
+---
+
+# 追加 2(2026-06-01 Win 侧实录)— T115 首测结果 + T117 精准探针 v2
+
+## §18. T115 v1 首测(sample=17 手,observer / party_poker_8,不可外推)
+
+录制健康度(实测):17 手 / 79 action / 31 fold captured / conf 0.858 / 91 探针。
+ROI 对齐良好(窗口 1454x1287 精确吻合,seats/community/pot/button 全准)。
+
+**v1 探针 reason 分类(91 条)**:
+
+| reason | n | 判读 |
+|---|---:|---|
+| `foldarea_empty` | 61 | **存疑** — v1 对"还没弃牌的活跃座位"误报(闲置读空也记)|
+| `foldarea_unparsed` | 26 | **铁证**:含 `奈牌`(OCR 把"弃"认成"奈")、`FCIB?`、`十` → allowlist 可治 |
+| `foldarea_digit_as_timer` | 7 | 多用途污染(`11`/`25`/`正在带入 11`)→ allowlist 可治 |
+
+**数字巧合**:captured 31 ≈ (unparsed 26 + digit 7)=33 → 若这俩是主体,漏的是"信号被认错"非"无信号",user 专职 ROI+allowlist 可把捕获率近翻倍。
+
+**但 crux 未解**:61 条 empty 分不清"闲置噪声"vs"真弃了却读空"。后者 allowlist 治不了(指向 ROI 标定/暗化)。v1 探针无法区分 → 故做 v2。
+
+## §19. T117 精准探针 v2(本 session 实施)
+
+**改法**:per-seat per-hand 累积 fold_area 读取画像 → **hand-end 仅对"确认 silent 弃牌"座位 emit**(`fold_probe.silent_seat`),去掉 v1 闲置误报。
+- silent 集 = `range(num_seats) − _empty_seats − _folded_seats − showdown_seats`(含 ≤1 未摊牌赢家 false positive)
+- `dominant` 优先级 `unparsed > digit > empty > no_read`:
+  - empty 票预期(弃牌前闲置),故排在后;**只有"弃牌后仍只读到 empty"才落 `dominant=empty`** = 信号没读到的真盲区
+- 有界:每手 ≤ 入场座位数 条
+
+**结论门(下次录 30 min 后 join)**:
+- silent 座位 dominant 多为 unparsed/digit → user 专职 ROI+allowlist 治大头,建
+- 多为 empty → 信号没读到,先标定 ROI / 解决暗化,allowlist 不够
+- 多为 no_read → 座位被 skip,查 skip 逻辑
+
+## §20. 旁路发现 — created_at 列 bug(2026-06-01)
+
+`hands.created_at` 列默认值是**写死常量** `'2026-05-19 08:26:10.951156+00'`(非 `now()` 函数)→ 之后每行 created_at 都冻结在该值。`action_events.created_at` 同病。
+- 影响:**仅审计列**,数据本身正常(真实时间在 `started_at`/`timestamp`/`occurred_at`)
+- 教训:**单看 created_at 一列差点误判"数据没落库"**(已被 started_at 推翻)→ 复刻 [[feedback-data-driven-mandate]]:单字段不验证不下结论
+- 修法(deferred):`ALTER TABLE hands/action_events ALTER COLUMN created_at SET DEFAULT now()`(DEV,需确认无依赖该冻结值的逻辑)
