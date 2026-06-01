@@ -92,6 +92,9 @@ class TableROIs:
             if seat.win_amount_area:
                 entry["win_amount"] = (seat.win_amount_area.left, seat.win_amount_area.top,
                                        seat.win_amount_area.width, seat.win_amount_area.height)
+            if seat.fold_text_area:
+                entry["fold_text"] = (seat.fold_text_area.left, seat.fold_text_area.top,
+                                      seat.fold_text_area.width, seat.fold_text_area.height)
             result["seats"].append(entry)
         return result
 
@@ -133,6 +136,7 @@ class TableROIs:
                 hand_type_area=_tuple_to_roi(s["hand_type"], "seat_hand_type") if s.get("hand_type") else None,
                 timer_area=_tuple_to_roi(s["timer"], "seat_timer") if s.get("timer") else None,
                 win_amount_area=_tuple_to_roi(s["win_amount"], "seat_win_amount") if s.get("win_amount") else None,
+                fold_text_area=_tuple_to_roi(s["fold_text"], "seat_fold_text") if s.get("fold_text") else None,
             )
             rois.seat_regions.append(seat)
         return rois
@@ -172,6 +176,13 @@ class SeatROI:
                                                 # 只在 hand 结算 1-2 秒短暂显示;为 Path B 净胜负
                                                 # 统计提供直接信号(无需 stack delta 推算).
                                                 # 紧框 "+" 号 + 数字本身.
+    fold_text_area: ROIRegion | None = None  # T120(2026-06-01):专职"弃牌"文字 ROL,
+                                              # 紧框"弃牌/盖牌"渲染处(独立于多用途 fold_area).
+                                              # 配 allowlist=弃牌盖 单用途读 → 治 OCR 认错
+                                              # (奈/奔)+ 治 fold_area 框偏读空(seat 0/5/7).
+                                              # 向后兼容:None 时 pipeline 回落现有 fold_area 路径.
+                                              # 标定见 requirement-discussions/
+                                              # 2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md §23.
 
 
 class ROIManager:

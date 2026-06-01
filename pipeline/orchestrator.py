@@ -2061,7 +2061,30 @@ class PipelineOrchestrator:
             if timer_handled:
                 continue
 
-            if seat_roi.fold_area is not None:
+            # T120 (2026-06-01): dedicated single-purpose fold_text_area read with a
+            # narrow allowlist. Framed precisely on the "弃牌"/"盖牌" text →
+            #   - allowlist forces OCR off look-alikes (奈/奔 → fixes seats 4/6 unparsed)
+            #   - correct per-seat placement (fixes seats 0/5/7 blank-bg mis-frame empty)
+            # Backward-compatible: active ONLY when fold_text_area is configured;
+            # otherwise falls through to the existing multi-purpose fold_area path.
+            # allin/timer/showdown/avatar stay on fold_area (allowlist can't read "ALL IN").
+            # See requirement-discussions/
+            # 2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md §23.
+            _fold_via_text = False
+            if seat_roi.fold_text_area is not None:
+                _t = time.perf_counter()
+                ftxt_img = self.capturer.capture_roi(seat_roi.fold_text_area)
+                ftxt = self.ocr.read_text(ftxt_img, allowlist="弃牌盖")
+                sub_ms["seat_fold_ocr"] += (time.perf_counter() - _t) * 1000.0
+                ftxt = ftxt.strip() if ftxt else ""
+                if ftxt:
+                    _pf = self.action_recognizer.parse(ftxt)
+                    if _pf and _pf["action_type"] == ActionType.FOLD:
+                        action_text = ftxt
+                        self._finalize_timer(sidx)
+                        _fold_via_text = True
+
+            if not _fold_via_text and seat_roi.fold_area is not None:
                 _t = time.perf_counter()
                 fold_img = self.capturer.capture_roi(seat_roi.fold_area)
                 fold_text = self.ocr.read_text(fold_img)
