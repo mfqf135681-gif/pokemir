@@ -13,6 +13,17 @@
 
 ---
 
+> ## ⚠️ 2026-06-01 重大 update — 先读这条再决定是否投 9.5 周
+>
+> spike A 实测(详 `2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md` §24):
+> - **真瓶颈 = GPU OCR 串行**(~32 次未批逐座 OCR;tick 0.3Hz)。多 CUDA stream 并行受 GIL 限+争用,attention 实测**反而更慢**、Pattern D fire **0 次**
+> - **一个天级"逐座 OCR 批处理"切片**:tick 0.32→1.08Hz、pot-gap 丢失 **29.4%→18.5%**(↓37%)
+> - **真丢失是筹码动作 ~25%,非弃牌**;"fold 52.5% / VPIP+30%"被 confound 夸大(详 data-reliability §1.6-1.7)
+>
+> → **本 v3.2 方案(9.5 周双 OCR/Pattern D 重写)很可能是杀鸡用牛刀。** 投之前必须先把"批处理+skip+冲 4Hz"这条便宜路压到极限,看还剩多少丢失。**下面的设计作为参考,不要无脑全量实施。**
+
+---
+
 ## §0. 背景 — 为什么要做(T75 数据驱动 verdict)
 
 `memory/data-reliability-50-70-percent.md` §6 原本说"50-70% 是均匀 noise,Phase 1 接受"。

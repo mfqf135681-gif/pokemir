@@ -597,6 +597,45 @@ python tools/roi_config.py --name party_poker_8 --window "WePoker" --field seat_
 - **精确 stats(VPIP/AF 数值)垫着 ~25% 筹码动作丢失,只能 directional**
 - **pot-gap ~25%** 是比 fold-capture 干净的真 baseline 指标(后续优化看它,不看 fold-silent)
 
+### §24. Spike A(2026-06-01)— tick 瓶颈定位 + 逐座 OCR 批处理(便宜 win,可能替代 9.5 周)
+
+**背景**:决定做杠杆 B 重量版(Pattern D 重写,9.5 周)前,审慎评估 v3.2 方案。审慎评估推翻 3 假设,其中"性能瓶颈"一条做 spike A 深挖。
+
+**spike A 定位过程(连纠 3 次自己的归因错误,全靠数据)**:
+| 猜测 | 数据裁决 |
+|---|---|
+| hand_detect 是瓶颈 | ❌ 实测 0.4ms(误把换手偶发尖刺当稳态)|
+| 32 个 OCR 调用是瓶颈 | ❌ OCR 子相只占 44%(被 GPU 异步低估)|
+| 探针太多是瓶颈 | ❌ 1.04 diag/tick,非稳态主因 |
+| artifact 截图 / pattern_d merge | ❌ 7ms / 0ms,排除 |
+| **真相:GPU OCR(无 cuda.synchronize→异步,计时器低估;~24 次未批逐座 OCR)** | ✅ |
+
+**元教训**:计时器本身因 **GPU 异步**不可信 → 这是反复被绕的根因。**先量再优化。**
+
+**逐座 OCR 批处理(v3.2 OCR-1 核心切片,gated 默认开后)A/B 实测**:
+| | 批处理关 | 批处理开 |
+|---|---:|---:|
+| seat_actions | 961ms | **463ms**(↓2x)|
+| effective_hz | 0.32 | **1.08**(↑3x)|
+| **pot-gap 动作丢失** | **29.4%** | **18.5%**(↓~37% 相对)|
+
+且识别**没坏**(ok 对账 48→66 升,捕获更多)。**"快 tick = 少丢失" 假设验证成立。**
+
+**为什么批处理而非多 CUDA stream 并行**:单进程 GPU OCR,批处理 = 一次 call 喂 N 图,GPU 内部并行 = 正确的并行方式。多 stream 受 Python GIL 限 + 两 EasyOCR 实例争用 GPU(attention 实测反而更慢),v3.2 自标"~80% 凭原理未 benchmark"。**批处理简单已验证 2x > 多流复杂未验证。**
+
+**🎯 战略含义**:一个**天级**批处理切片把丢失降 ~1/3 + tick 升 3x → **9.5 周全量双 OCR/Pattern D 重写很可能是杀鸡用牛刀**。批处理 + skip + 冲 4Hz 这条便宜路可能拿大部分收益。
+
+**已实施(commit 序列 88b5f16→653553d→本次)**:
+- 插桩定位(seat_artifact/seat_pattern_d)
+- `_pre_batch_seat_state_ocr`:timer/fold_text/fold_area/stack 各批 1 次(原 ~32 次)
+- POKEMIR_BATCH_SEAT_OCR **默认开**(回退 =0);_ocr_stack_chips 拆出 _stack_text_to_chips 复用
+- B:POKEMIR_VERBOSE_DIAG 默认关,gate spent 探针
+
+**未决/下一步**:
+- 更大样本复测 29%→18.5%(当前 12/15 手,小)
+- 批处理路径识别精度 A/B 同手核(scale=3 细节)
+- 批处理压到极限后还剩多少丢失 → 决定要不要投 9.5 周(大概率不必)
+
 ### §23.6 风险 / 未决
 
 - "弃牌"渲染位置 8 座是否一致偏移、还是各异 → 标定时观察(若规律偏移可批量算)

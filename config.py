@@ -47,8 +47,9 @@ ATTENTION_MODE = os.getenv("POKEMIR_ATTENTION_MODE", "0").lower() in ("1", "true
 VERBOSE_DIAG = os.getenv("POKEMIR_VERBOSE_DIAG", "0").lower() in ("1", "true", "yes")
 # 2026-06-01 spike A:把逐座 timer/fold_text/fold_area OCR 批成 3 次 GPU call
 # (原 ~24 次独立调用 = seat_actions 真瓶颈,GPU 异步下被计时器低估)。默认关
-# = 逐座旧路径(可 A/B 对照 tick 速度 + pot-gap 丢失)。POKEMIR_BATCH_SEAT_OCR=1 开。
-BATCH_SEAT_OCR = os.getenv("POKEMIR_BATCH_SEAT_OCR", "0").lower() in ("1", "true", "yes")
+# 2026-06-01 A/B 验证:tick 0.32→1.08Hz、pot-gap 丢失 29.4%→18.5% → 默认开。
+# 回退:POKEMIR_BATCH_SEAT_OCR=0(逐座旧路径)。
+BATCH_SEAT_OCR = os.getenv("POKEMIR_BATCH_SEAT_OCR", "1").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 

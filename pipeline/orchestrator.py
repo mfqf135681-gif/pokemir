@@ -1656,14 +1656,19 @@ class PipelineOrchestrator:
             None if "%" detected(all-in equity view)or no digit
         """
         text = self.ocr.read_text(img, allowlist="0123456789.%")
-        if "%" in text:
+        return self._stack_text_to_chips(text, seat_idx)
+
+    def _stack_text_to_chips(self, text: str, seat_idx: int | None = None) -> float | None:
+        """2026-06-01 spike A:stack OCR 文本 → 筹码值的后处理(从 _ocr_stack_chips
+        拆出,使批处理路径能复用)。"%" = all-in 胜率显示 → None。"""
+        if text and "%" in text:
             diag.emit(
                 "all_in.winprob_detected",
                 {"seat": seat_idx, "raw_text": text},
                 hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
             )
             return None
-        return ActionRecognizer._extract_amount(text)
+        return ActionRecognizer._extract_amount(text or "")
 
     def _capture_seat_stacks(self) -> dict[int, float]:
         """Snapshot per-seat stack via OCR (digit-only allowlist).
@@ -1994,9 +1999,10 @@ class PipelineOrchestrator:
         self._batched_timer_results = {}
         self._batched_fold_text_results = {}
         self._batched_fold_results = {}  # sidx -> (img, text)
+        self._batched_stack_results = {}
         if not BATCH_SEAT_OCR:
             return
-        timer_items, ftxt_items, fold_items = [], [], []
+        timer_items, ftxt_items, fold_items, stack_items = [], [], [], []
         for seat_roi in rois.seat_regions:
             sidx = seat_roi.seat_index
             if self.tracker.is_skippable_seat(sidx):
@@ -2013,6 +2019,10 @@ class PipelineOrchestrator:
                 img = self.capturer.capture_roi(seat_roi.fold_area)
                 if img is not None and img.size > 0:
                     fold_items.append((sidx, img))
+            if seat_roi.stack_area is not None and seat_roi.stack_area.width > 0:
+                img = self.capturer.capture_roi(seat_roi.stack_area)
+                if img is not None and img.size > 0:
+                    stack_items.append((sidx, img))
         if timer_items:
             texts = self.ocr.read_text_batch([i for _, i in timer_items], allowlist="0123456789s ")
             for (sidx, _), t in zip(timer_items, texts):
@@ -2025,6 +2035,10 @@ class PipelineOrchestrator:
             texts = self.ocr.read_text_batch([i for _, i in fold_items], allowlist="")
             for (sidx, img), t in zip(fold_items, texts):
                 self._batched_fold_results[sidx] = (img, t)
+        if stack_items:
+            texts = self.ocr.read_text_batch([i for _, i in stack_items], allowlist="0123456789.%")
+            for (sidx, _), t in zip(stack_items, texts):
+                self._batched_stack_results[sidx] = t
 
     def _process_seat_actions(self, db, rois):
         # NB: iterate using seat_roi.seat_index (NOT enumerate's i) for all
@@ -2069,9 +2083,12 @@ class PipelineOrchestrator:
             stack_now = None
             if seat_roi.stack_area is not None and seat_roi.stack_area.width > 0:
                 _t = time.perf_counter()
-                stack_img = self.capturer.capture_roi(seat_roi.stack_area)
                 # T103 R15: %-aware stack OCR(all-in equity returns None)
-                stack_now = self._ocr_stack_chips(stack_img, seat_idx=sidx)
+                if BATCH_SEAT_OCR and sidx in self._batched_stack_results:
+                    stack_now = self._stack_text_to_chips(self._batched_stack_results[sidx], sidx)  # spike A: batched
+                else:
+                    stack_img = self.capturer.capture_roi(seat_roi.stack_area)
+                    stack_now = self._ocr_stack_chips(stack_img, seat_idx=sidx)
                 sub_ms["seat_stack_ocr"] += (time.perf_counter() - _t) * 1000.0
                 # Digit-miss sanity: reject sudden ≥10x jump (OCR misread digits like
                 # 3001001 should-be-300100, or 2841 vs 28410). Keep prior reading.
