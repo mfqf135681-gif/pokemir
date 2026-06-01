@@ -11,11 +11,13 @@
 
 **范式 = 有条件可行。** 风险**干净地从「求解器聪不聪明」挪到了「捕获质量」**:
 
-> 范式能成,**当且仅当**捕获过两关:
+> 范式能成,**当且仅当**过三关:
 > **① 底池总额读到高可靠(锚点,现 ~92%)**
 > **② 事件流(谁/何动作类型/顺序)抓得够全(用来把池子分摊到各家)**
+> **③ "永不渲染"地板 <5%(预设/瞬间动作至少有可读帧,否则物理封顶,见 §8 #2)**
 >
-> 而这两关**正是高帧 + CNN 要解决的**。目标因此收窄:**不用读准所有金额,只要把「底池」+「事件流」抓好**,金额由规则解出来。
+> ①② **正是高帧 + CNN 要解决的**;③ 须先实测(§8)。目标因此收窄:**不用读准所有金额,只要把「底池」+「事件流」抓好**,金额由规则解出来。
+> ⚠️ 求解器的完整输入不止"动作",还要盲注/起始 stack/位置 —— 见 §3.1。
 
 ---
 
@@ -71,6 +73,21 @@
 
 **与圈梁关系**:圈梁是种子(手末兜底);本范式把它**从兜底提拔成脊梁**,由高帧事件流喂养,规则做实时求解+过滤+定序。
 
+### §3.1 求解器输入清单(2026-06-01 复检补 — "解数字"不止靠动作流)
+
+PokerKit/求解器要跑,需**一整套输入**,不只动作流。各输入的获取可靠性:
+
+| 输入 | 用途 | 获取现状 / 可靠性 |
+|---|---|---|
+| **动作流**(谁/类型/顺序) | 主驱动 | 高帧+融合主攻;现残(§4.1) |
+| **盲注级别 SB/BB(stakes)** | PokerKit post 盲注 + 算跟注/最小加注的基准 | 🔴 **§4 实测 `stakes="0.00/0.00"` —— 当前根本没抓!** 必须补:读 stakes 显示(固定 UI,应易)或从最小强制投入反推。**"规则定死跟注/盲注"全压在这个输入上,不补则链条断。** |
+| **起始 stack** | 检测 all-in + 边池 + stack 单调约束 | 🟠 §4 实测不可靠(只看到 22-50% 池);高帧+融合待提 |
+| **按钮/位置** | 行动顺序 + 盲注位 | 🟡 庄家钮捕获可靠性未验(YOLO 检测或现有 button_indicator ROI) |
+| **底池总额** | 守恒锚点 | 🟢 ~92%(§4 发现2) |
+
+→ **复检发现的真断点**:盲注级别没抓(stakes=0.00)。**T126 测量地基 / T125 应顺带确认 stakes 与按钮的获取**,否则求解器缺基准输入。
+→ **Hero(自己座位)是 trivial 例**:不 silent、底牌已知、动作自见 → 重点是对手 villain 的重建。
+
 ## §4. 离线原型判决(2026-06-01 实测,DB 1455 手)⭐
 
 > **目的**:在砸几个月前,用零成本离线数据回答"范式可行吗"。
@@ -112,7 +129,7 @@
 ## §5. 下一步 — Win 端命门 benchmark(离线已榨干)
 
 离线这口井到底。转 Win 端测两个"可能致命"的不确定:
-1. **吞吐**:A 档 CNN + B 档数字识别器 + C 档缓存,全量读在 5070 Ti 上扣掉启动开销/GIL **稳定冲到几 Hz**?(治"N 小模型不一定快"风险)
+1. **吞吐**:**先用 EasyOCR recognize-only(免训练起步,见 §7.1)+ 批处理** 全量读在 5070 Ti 上扣掉启动开销/GIL **稳定冲到几 Hz**?(不先建 CNN;够快则免训练,不够再上 §7.6 bake-off 的轻量识别器。治"N 小模型不一定快"风险)
 2. **底池可靠性能否 92%→99%**:高帧 + 多帧融合后,底池这一个锚点数能否读到 99%?
 
 > ⚠️ **这两个出数前,3-5 个月的大建一个字别承诺。**(工程量估算:锚定 phase-1-5 的 9.5 周,本范式换掉双 OCR、加求解器 + 数字识别器 + 拆 monolith → 更多,月级,且我 Win 端半盲的长迁移)
@@ -162,7 +179,7 @@ web search:easyPokerHUD / PokerTracker / Orca / Poker-Hand-Tracker **无一例�
 
 | 原风险 | 核查后 |
 |---|---|
-| 求解器偏研究 HARD | 🟢 **降级** — PokerKit 给前向引擎+边池+rake+合法性 oracle |
+| 求解器偏研究 HARD | 🟢 **部分降级** — PokerKit 给前向引擎+边池+rake+合法性 oracle;**但反向填缺口搜索仍难,见 §8 #5** |
 | 便宜化要先训 N 个 CNN(标注苦力) | 🟢 **降级** — EasyOCR recognize-only 免训练起步 |
 | rake 漏守恒(LR4) | 🟢 **降级** — PokerKit rake 可自定义建模 |
 | 高帧抓屏行不行 | 🟢 确认(DXcam 60-120fps),🟡 **新增**:黑屏/跳帧 Win 必验 |
@@ -206,7 +223,7 @@ YOLO11n/12n:**5070 Ti 上 ~1ms/帧**(T4 TensorRT 1.64ms),~3-6MB,**PyTorch**,自�
 | 环节 | 发现 | 影响 |
 |---|---|---|
 | **加速(命门使能)** | **TensorRT for RTX**:Blackwell CC12.0 明确支持(FP16/INT8/FP8/FP4);<200MB drop-in,专为消费级 RTX;JIT <30s 在机编译;ONNX 一行建 engine;**多 execution context 并发推理** | 🟢 **Blackwell 支持不再是问号**;治"N 小模型并发"(风险#7);吞吐命门有强加速路 |
-| **时序融合(怎么做)** | **Ultralytics `model.track(persist=True)`**(ByteTrack/BoT-SORT)跨帧维持 `track_id` → 按 id 累积多帧读数再融合 | 🟢 "跨帧关联同一元素"= 这个解(固定座位下略 overkill,但配 YOLO 前端时一体) |
+| **时序融合(怎么做)** | **Ultralytics `model.track(persist=True)`**(ByteTrack/BoT-SORT)跨帧维持 `track_id` | ⚠️ **被 §8 #6 修正**:v1 固定 ROI 元素不动,融合=「攒同 ROI 最近 N 帧 + 投票」,**不需 tracker**;tracking 仅在走 YOLO 检测前端(动框)时才用 |
 | **训练数据(头号实操风险)** | 固定字体下合成近乎 trivial:PIL 渲染字体 + 随机数字/文字 + 增强(匹配已知亮度差等);工具 trdg/Synthtiger/PaddleOCR text_renderer | 🟡 **基本消灭手工标注**(头号风险 🔴→🟡);真风险 synth-to-real gap → 增强对齐 + 小真集验证(已有摊牌 fixture + #LR12) |
 | **输出(战略)** | 同行全读牌谱 .txt;**若我们输出标准牌谱格式 → 白嫖整个分析/HUD 生态**(PokerTracker 等)而非自建。PokerKit 定义并能序列化 **PHH(Poker Hand History)标准格式** | 🟡 重建出的手 → PHH;但主流 tracker 用站点专属文本格式,需转换。**重构 dashboard/stats 层时再权衡"自建 vs 转标准格式喂现成工具"** |
 
@@ -272,6 +289,8 @@ YOLO11n/12n:**5070 Ti 上 ~1ms/帧**(T4 TensorRT 1.64ms),~3-6MB,**PyTorch**,自�
 | pipeline/orchestrator.py(2812 行 monolith) | 🔴 重建 | tick 循环 → 事件驱动控制流 |
 | pipeline/detector.py `StateTracker`(400 行) | 🔴 拆解重建 | 多责任 hub:手生命周期(start/finalize_hand 产 Hand)+ 图像 hash + 变化检测 + 位置图 |
 | events/normalizer.py(infer_action_from_delta) | 🔴 大部分替换 | 动作推断 → PokerKit + 约束求解器 |
+| recognition/ocr.py(OCREngine 包装) | 🟠 复用包装/换模型 | 保 wrapper,内部换 recognize-only / PaddleOCR(§7.6) |
+| recognition/vision.py(SmolVLM) | ⚪ 疑似闲置,核实后大概率不带入 | VLM 太慢不进高帧;确认无引用即弃 |
 
 ### 真成本 + 早期可做项
 - **两个纠缠件(玩家ID 归一化 + avatar phash)不是 lift-and-drop** —— proven 逻辑但埋在 StateTracker hub + 散 4-5 文件。重写陷阱在此咬人。
