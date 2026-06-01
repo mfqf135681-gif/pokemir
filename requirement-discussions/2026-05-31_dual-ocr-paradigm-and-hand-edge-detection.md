@@ -538,6 +538,32 @@ python tools/roi_config.py --name party_poker_8 --window "WePoker" --field seat_
 
 **校准状态(commits 7f87d5d / cf923b3 / 96531a7 / f2fa4a7 / c2c95f6)**:fold_text 全对称、timer 全对称+加宽、seat_0 去 seated 污染 → **首次全 ROI 验证正确状态**。之前 40.5%/49.3% 均"带病"不算数。待干净 30min 录制给真实捕获率,再决 seat 0 区域问题(🅰️图像增强 / 🅱️收手)。
 
+### §23.10 最终结论(2026-06-01,clean run 35 手)— fold 检测 ROI 层关闭
+
+**全干净校准后的 clean run(35 手,~35 min)**:
+
+| 阶段 | 捕获率 |
+|---|---:|
+| 历史(带病)| 40.5% |
+| fold_text(带病 29 手)| 49.3% |
+| **全干净校准 35 手** | **50.2%** |
+
+**核心发现:全干净校准只 +0.9pp(49.3→50.2),纹丝不动。**
+
+**① seat 0 证伪 region 说**:clean run 中 seat 0 silent 掉到 7/35=**0.2/手(全场最低)** ← 之前 ~1/手(22%)。**用户对:是早期框污染(seated 坐标),不是区域 OCR。我的 region 结论收回。**
+
+**② 改善归因**:40.5→50.2 的 ~10pp **主力是 allowlist(治 seat 4 的奈/奔认错)**,全干净校准贡献 ~0(因 seat 0 的旧 empty 本就不是真漏,修框只是把 silent 在座位间重分布,总量不变)。
+
+**③ "干净度量"撞墙 — 探针测不出真漏率**:
+- clean run silent_seat:no_read 36 / empty 51 / **unparsed 54** / digit 3
+- unparsed 54 条文本全是**倒计时**(`125`=12s / `12s` / `9s` / `115`=11s)—— 探针读 fold_area,行动座位那里是倒计时,污染了 dominant 分类,**盖住弃牌信号**
+- 剥 sit-out(no_read)+ 赢家(~1/手)+ timer 噪声(unparsed)后,真漏区间 ~0-70(捕获 50%~100%)→ **无意义,测不准**
+- 粗 sanity:captured 3.5/手 vs 典型 ~5-6 弃/手 ≈ **~60-65%(估算,不可作结论)**
+
+**④ VPIP+30% bias 修正**:[[data-reliability-50-70-percent]] §1.5 的恐慌**被 confound 夸大**;真实 bias 未知、更小;评估应在**终点层(VPIP vs 人工)**,非 fold-capture 层。
+
+**→ 关闭决定**:fold 检测 ROI/OCR 能做的做完了。**banked**:fold_text 专职 ROI + allowlist + 全 8 座干净校准(对称验证)+ seat_0 去 seated 污染 + timer 加宽 + .pyc 去跟踪。**残留 ~50% 是 confound(赢家/sit-out/timer 噪声),非可修漏 → 不再投入。** 回 [[phase-1-5-attention-mechanism-design]] 主线。
+
 ### §23.6 风险 / 未决
 
 - "弃牌"渲染位置 8 座是否一致偏移、还是各异 → 标定时观察(若规律偏移可批量算)
