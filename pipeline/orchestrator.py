@@ -929,9 +929,16 @@ class PipelineOrchestrator:
                     dominant = "empty"
                 else:
                     dominant = "no_read"
+                # T119(2026-06-01):player_name + 头像区亮度,分开"座位几何"
+                # vs"玩家/头像污染" —— 离线按 player / avg_lum 分组即可判别。
+                _ln = (prof or {}).get("lum_n", 0)
+                _avg_lum = round((prof or {}).get("lum_sum", 0.0) / _ln, 1) if _ln else None
+                _min_lum = round((prof or {}).get("lum_min", 255.0), 1) if _ln else None
                 diag.emit(
                     "fold_probe.silent_seat",
                     {"seat": sidx, "dominant": dominant,
+                     "player": self.tracker.player_id_map.get(sidx, f"seat_{sidx}"),
+                     "avg_lum": _avg_lum, "min_lum": _min_lum,
                      "empty_ticks": (prof or {}).get("empty", 0),
                      "unparsed": (prof or {}).get("unparsed", []),
                      "digit": (prof or {}).get("digit", [])},
@@ -2080,7 +2087,8 @@ class PipelineOrchestrator:
                 # allowlist-fixable) or also empty (signal not read → ROI/calibration).
                 if sidx not in self.tracker._empty_seats and not _is_fold_action:
                     _prof = self._fold_read_profile.setdefault(
-                        sidx, {"empty": 0, "unparsed": [], "digit": []})
+                        sidx, {"empty": 0, "unparsed": [], "digit": [],
+                               "lum_sum": 0.0, "lum_n": 0, "lum_min": 255.0})
                     if (timer_match and 0 <= int(timer_match.group(1)) <= 60
                             and parsed_fold is None):
                         if ft[:24] not in _prof["digit"] and len(_prof["digit"]) < 6:
@@ -2090,6 +2098,18 @@ class PipelineOrchestrator:
                             _prof["unparsed"].append(ft[:24])
                     else:
                         _prof["empty"] += 1
+                    # T119(2026-06-01):accumulate fold_area brightness — separates
+                    # "ROI sees blank bg"(geometry)vs"dark avatar low-contrast"
+                    # (user's pollution hypothesis). Image already captured above.
+                    if fold_img is not None and fold_img.size > 0:
+                        _bgr = (fold_img[..., :3]
+                                if fold_img.ndim == 3 and fold_img.shape[2] >= 3
+                                else fold_img)
+                        _lum = float(_bgr.mean())
+                        _prof["lum_sum"] += _lum
+                        _prof["lum_n"] += 1
+                        if _lum < _prof["lum_min"]:
+                            _prof["lum_min"] = _lum
 
                 # Branch 1: digit found and looks like timer → countdown
                 # Skip if dedicated timer_area already handled (logic above).

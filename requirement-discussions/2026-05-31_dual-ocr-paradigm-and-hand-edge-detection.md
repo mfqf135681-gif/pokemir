@@ -389,6 +389,29 @@ ROI 对齐良好(窗口 1454x1287 精确吻合,seats/community/pot/button 全准
 - 多为 empty → 信号没读到,先标定 ROI / 解决暗化,allowlist 不够
 - 多为 no_read → 座位被 skip,查 skip 逻辑
 
+## §21. T117 v2 首测(39 手 / 33 min)+ T119 v3 加 player/亮度
+
+**v2 实测 dominant(剥赢家后)**:unparsed 80(干净,allowlist 可治)/ empty ~46(剥 ~34 赢家,集中座位 0/5/7)/ no_read ~30 / digit 2。
+
+**按座位 + 名字 OCR 交叉(关键)**:
+
+| seat | 名字失败 | fold empty | fold unparsed | 读法 |
+|---:|---:|---:|---:|---|
+| 0 | 58 | 24 | 3 | 名字+fold 双废 |
+| 5 | 22 | 20 | 7 | 名字+fold 双废 |
+| 7 | **0** | 24 | 5 | **名字好、fold 空** |
+| 4 | 1 | 8 | 30 | 名字好、fold 认错 |
+| 6 | 1 | 1 | 26 | 名字好、fold 认错 |
+
+- seat 7(名字好、fold 空)**推翻纯头像污染**(污染应出乱码非 empty)→ 指向 fold 区本身
+- seat 0/5(名字+fold 双废)**支持用户"那玩家/那位置整体难读"**
+- 至少 2-3 种原因,非单一;**座位 vs 玩家在本数据绑死(无人换座)+ probe 无 player → 分不开**
+
+**T119 probe v3(本 session 实施)**:`fold_probe.silent_seat` payload 加 `player`(seat→player_id_map)+ `avg_lum`/`min_lum`(fold_area 区每 tick 累积亮度)。
+- 下次录完离线按 player 分组:某玩家跨座位都 empty → 玩家/头像(用户对);某座位换玩家仍 empty → 几何(框偏)
+- 按 avg_lum 相关:empty 集中在低亮度 → 暗化污染(用户变体对);empty 与亮度无关 → 几何
+- 用户选 B(不截图,避免传输色差/分辨率失真,源头采数据更可信)
+
 ## §20. 旁路发现 — created_at 列 bug(2026-06-01)
 
 `hands.created_at` 列默认值是**写死常量** `'2026-05-19 08:26:10.951156+00'`(非 `now()` 函数)→ 之后每行 created_at 都冻结在该值。`action_events.created_at` 同病。
