@@ -649,12 +649,14 @@ def _draw_rois(img: np.ndarray, data: dict, element_filter: str | None = None):
         "timer":      (255, 255, 0),   # cyan
         "hand_type":  (180, 105, 255), # pink
         "win_amount": (0, 255, 128),   # light-green
+        "fold_text":  (0, 215, 255),   # amber — T120 专职弃牌框(区别于 fold_area 红)
     }
     # (color_key, short_label_when_full_draw)
     seat_elements = {
         "action":           ("seat",       "S{}"),
         "amount":           ("pot",        "$"),
         "fold_area":        ("fold",       "FOLD"),
+        "fold_text":        ("fold_text",  "FT{}"),
         "stack":            ("seat",       ""),
         "cards":            ("seat",       ""),
         "button_indicator": ("button",     "BTN?"),
