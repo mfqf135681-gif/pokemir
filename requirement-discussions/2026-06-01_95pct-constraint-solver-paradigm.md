@@ -170,3 +170,31 @@ web search:easyPokerHUD / PokerTracker / Orca / Poker-Hand-Tracker **无一例�
 | 我们在重造轮子? | 🟢 **否** — 无轮子可造,被逼硬路;但 95% 是真野心(期望校准) |
 | 吞吐几 Hz(命门) | 🔴 **仍未知** — T125 benchmark,形态现具体:DXcam+recognize-only+批处理 |
 | B 档数字识别精度 | 🟡 仍待建+val(但可先用 recognize-only 起步) |
+
+### §7.6 OCR 模型谱系(2026-06-01 context7,轻↔重选型)
+
+EasyOCR 是中量;两端都有现成更优:
+
+| 模型 | 大小 | 准确率* | 定位 |
+|---|---:|---:|---|
+| 自训微型数字 CNN(造) | 极小 | 单字体可极高 | 最轻,同识牌打法 |
+| **PP-OCRv4_mobile_rec** | **10.5MB** | 78.7%(通用) | **轻端**:英文+数字专用、recognition-only、TensorRT |
+| EasyOCR(现状) | 数十 MB | — | 中量 |
+| **PP-OCRv4_server_rec_doc** | **182MB** | **86.6%** | **重端**:15000+ 字含繁体 → 玩家 ID 最准 |
+| Dots MOCR(3B VLM) | GB 级 | SOTA | **出局**:vLLM/秒级,杀牛用核弹,最多离线兜底 |
+
+\* 通用 benchmark,**非单字体**;单字体数字微调后远高于 78%。
+- **落点**:B 档数字 = 自训 CNN(最轻)或 PP-OCRv4_mobile_rec(现成,可微调单字体);C 档 ID = PP-OCRv4_server_rec_doc。
+- **可用"更准"端是 CNN 识别器(PP server),不是 VLM**(VLM 太慢,不进高帧循环)。
+- **PaddleOCR = #LR2 落地**,横跨轻/重。**坑**:PaddlePaddle 框架(Blackwell 支持存疑)→ 用 **PaddleOCR2Pytorch** 转 PyTorch 跑,留在我们栈。
+- **T125 加 bake-off**:`EasyOCR recognize-only` vs `PP-OCRv4_mobile_rec` vs `自训数字 CNN`,比速度+单字体准确率。
+
+### §7.7 YOLO 检测前端(2026-06-01 context7)— #LR1/#LR3 最佳实现
+
+YOLO11n/12n:**5070 Ti 上 ~1ms/帧**(T4 TensorRT 1.64ms),~3-6MB,**PyTorch**,自定义类训练极简 → 10Hz 下成本可忽略。三接口:
+- 🟢 **A 鲁棒元素检测前端(最大价值)**:一次 pass 找出所有元素(牌/筹码/下注区/timer/钮/overlay)位置 → 替掉固定 ROI。**治坐标脆弱(高帧会放大)+ 8v9 桌型割裂(一套搞定,免两 profile)+ UI 改版脆弱**。流程:YOLO 找 → 检测到的小图喂识别器读。**比 §主题-数据质量 讨论的 VLM grounding 强得多**(目标检测的本职就是找坐标,YOLO 主场)→ **#LR1/#LR3 的最佳落地**。
+- 🟢 **B 数字检测式读数**:0-9 当 10 类检测 → 按 x 排序读数(车牌/水表技法)→ B 档候选,进 T125 bake-off。
+- 🟡 **C 视觉签名事件检测**:"筹码出现"/"弃牌 overlay"/"亮边" 等类 → 位置无关事件信号。
+- 🔴 **不接口**:多字符文字/中文 ID(YOLO 非序列识别器)→ 仍归 PaddleOCR。
+- **真代价**:画框标注比分类重 + 多一个模型。
+- **定位**:**前端升级,非起步件**。首个高帧原型仍固定 ROI + recognize-only 起步(零画框);YOLO 等固定 ROI 在高帧下脆弱真咬人 / 想灭 8v9 割裂时上。
