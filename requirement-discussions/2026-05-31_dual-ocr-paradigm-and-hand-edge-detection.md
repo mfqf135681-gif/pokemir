@@ -513,6 +513,31 @@ python tools/roi_config.py --name party_poker_8 --window "WePoker" --field seat_
 - `--field seat_N --element fold_text` = 只改该座该元素,合并保留其余(不动 4/6 / 其他 ROI)
 - 框完 commit `rois/party_poker_8.json` + push → Claude pull 核对 0/5/7 偏移是否真挪了(非≈0)→ 再录 30 min 验证
 
+### §23.9 全 ROI 校准清扫(2026-06-01,用户逐元素肉眼核 + 对称校验)
+
+触发:用户用 `--verify --element X` 逐元素核对,发现多处偏移。一轮清扫:
+
+**① seat_0 的 seated 污染(用户抓出,实锤)**
+- `--verify` 发现 seat_0 的 stack/cards/hand_type 偏移
+- diff(cf923b3→7f87d5d):stack y 1218→1072、cards y 1093→991、hand_type y 1192→1075,**全部上移 ~100-150px**
+- 诊断:旧坐标是 **hero 上桌(seated)底部布局**,被带进了观战 profile。fold_area/timer/action/id 未变(本就观战正确)→ **只这 3 个元素被 seated 污染,已修**
+- ⚠️ 注意:seat_0 的 fold 读空 / 名字 OCR 失败是**另一区域 OCR 问题**(id 框正确却仍失败),与本次 seated 污染无关,仍未解
+
+**② 8 座 fold_text 重框 → 对称验证通过**
+- 用户严格对准可见「弃牌」逐座重框
+- 镜像校验:1↔7 / 2↔6 / 3↔5 的 center_x 和 = **1454(±0)**,Δy≤1;中线 0/4 x=727 → **几何完美**
+- 结论:**0/5/7 的 empty 确定不是框歪**(框验证压在「弃牌」上 + 对称)→ 残留 empty = 区域 OCR / 赢家 sit-out confound
+
+**③ timer 偏窄 → 复用 9-max + 对称**
+- 实测 8-max timer ~25px vs 9-max ~40px(偏窄,有 2-3 字符截断风险)
+- 程序化复用:8max 0/1/2/3/5/6/7 ← 9max 0/1/2/3/**6/7/8**(用户原映射 5←4/6←5/7←6 经校验错了,右侧应 ←6/7/8;偏 400-640px)
+- seat 4(顶中,9-max 无对应)手框
+- 校验:8 座 timer 镜像 x 和 1455-1456、中线 0/4 x=728、宽度 38-41px **统一** ✓
+
+**④ chore:停止跟踪 34 个 .pyc + ignore logs/**(c2c95f6)— 它们在 .gitignore 规则前就被提交,每次运行 modified、挡 `git pull --rebase`。已 `git rm --cached`,根治。
+
+**校准状态(commits 7f87d5d / cf923b3 / 96531a7 / f2fa4a7 / c2c95f6)**:fold_text 全对称、timer 全对称+加宽、seat_0 去 seated 污染 → **首次全 ROI 验证正确状态**。之前 40.5%/49.3% 均"带病"不算数。待干净 30min 录制给真实捕获率,再决 seat 0 区域问题(🅰️图像增强 / 🅱️收手)。
+
 ### §23.6 风险 / 未决
 
 - "弃牌"渲染位置 8 座是否一致偏移、还是各异 → 标定时观察(若规律偏移可批量算)
