@@ -198,3 +198,16 @@ YOLO11n/12n:**5070 Ti 上 ~1ms/帧**(T4 TensorRT 1.64ms),~3-6MB,**PyTorch**,自�
 - 🔴 **不接口**:多字符文字/中文 ID(YOLO 非序列识别器)→ 仍归 PaddleOCR。
 - **真代价**:画框标注比分类重 + 多一个模型。
 - **定位**:**前端升级,非起步件**。首个高帧原型仍固定 ROI + recognize-only 起步(零画框);YOLO 等固定 ROI 在高帧下脆弱真咬人 / 想灭 8v9 割裂时上。
+
+### §7.8 收官:加速 / 融合 / 训练数据 / 输出(2026-06-01 context7 + 知识)
+
+逐环补完后的剩余盲区,逐一查实:
+
+| 环节 | 发现 | 影响 |
+|---|---|---|
+| **加速(命门使能)** | **TensorRT for RTX**:Blackwell CC12.0 明确支持(FP16/INT8/FP8/FP4);<200MB drop-in,专为消费级 RTX;JIT <30s 在机编译;ONNX 一行建 engine;**多 execution context 并发推理** | 🟢 **Blackwell 支持不再是问号**;治"N 小模型并发"(风险#7);吞吐命门有强加速路 |
+| **时序融合(怎么做)** | **Ultralytics `model.track(persist=True)`**(ByteTrack/BoT-SORT)跨帧维持 `track_id` → 按 id 累积多帧读数再融合 | 🟢 "跨帧关联同一元素"= 这个解(固定座位下略 overkill,但配 YOLO 前端时一体) |
+| **训练数据(头号实操风险)** | 固定字体下合成近乎 trivial:PIL 渲染字体 + 随机数字/文字 + 增强(匹配已知亮度差等);工具 trdg/Synthtiger/PaddleOCR text_renderer | 🟡 **基本消灭手工标注**(头号风险 🔴→🟡);真风险 synth-to-real gap → 增强对齐 + 小真集验证(已有摊牌 fixture + #LR12) |
+| **输出(战略)** | 同行全读牌谱 .txt;**若我们输出标准牌谱格式 → 白嫖整个分析/HUD 生态**(PokerTracker 等)而非自建。PokerKit 定义并能序列化 **PHH(Poker Hand History)标准格式** | 🟡 重建出的手 → PHH;但主流 tracker 用站点专属文本格式,需转换。**重构 dashboard/stats 层时再权衡"自建 vs 转标准格式喂现成工具"** |
+
+**信息收集收官判断**:抓→检测→识别→融合→解→存→分析**全环都有 grounded 工具 + 主要风险多被降级**。剩余真未知**全是经验值**(高帧几 Hz / 底池高帧可靠性 / 识别器单字体准确率),**不是知识盲区** → 只能 T125 Win 端实测。**该查的查完了,下一步是建原型 + 实测,不是再查。**
