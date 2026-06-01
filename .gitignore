@@ -47,3 +47,5 @@ resource/
 # persistent player registry (machine-local, may contain player names; #10)
 data/
 *.log
+# runtime logs dir (machine-local)
+logs/
