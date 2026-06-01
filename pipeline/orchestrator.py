@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE
 from difflib import get_close_matches
 
 import cv2
@@ -2102,6 +2102,17 @@ class PipelineOrchestrator:
                     logger.debug(f"seat_{sidx} stack OCR jump {prev_stack}→{stack_now}, "
                                  f"likely digit miss, keeping prev")
                     stack_now = prev_stack
+                # 2026-06-01 stack-drop 探针:stack 掉(≥1bb)= 该玩家投了钱 = 一个 chip
+                # 动作。规则铁律(筹码守恒),持久信号,不怕预设/瞬态/多人快。离线对照
+                # pot-gap silent 看它能否逮住漏掉的动作。POKEMIR_STACK_PROBE=1 才开。
+                if (STACK_PROBE and stack_now is not None and prev_stack is not None
+                        and prev_stack - stack_now >= 4):
+                    diag.emit(
+                        "stack.drop_observed",
+                        {"seat": sidx, "prev": prev_stack, "now": stack_now,
+                         "delta": prev_stack - stack_now},
+                        hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
+                    )
 
             # fold_area is a MULTI-PURPOSE overlay zone at the avatar center.
             # WePoker shows different things at different game states:

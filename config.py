@@ -50,6 +50,10 @@ VERBOSE_DIAG = os.getenv("POKEMIR_VERBOSE_DIAG", "0").lower() in ("1", "true", "
 # 2026-06-01 A/B 验证:tick 0.32→1.08Hz、pot-gap 丢失 29.4%→18.5% → 默认开。
 # 回退:POKEMIR_BATCH_SEAT_OCR=0(逐座旧路径)。
 BATCH_SEAT_OCR = os.getenv("POKEMIR_BATCH_SEAT_OCR", "1").lower() in ("1", "true", "yes")
+# 2026-06-01 stack-drop 探针:每 tick 记 stack 下跌(规则:筹码守恒,stack 掉=投了钱
+# =一个 chip 动作)。验证"stack 是否比 timer/动作字幕更可靠地逮住漏掉的动作"。
+# 默认关;POKEMIR_STACK_PROBE=1 测时开。验证通过后再考虑扶正为主驱动。
+STACK_PROBE = os.getenv("POKEMIR_STACK_PROBE", "0").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 
