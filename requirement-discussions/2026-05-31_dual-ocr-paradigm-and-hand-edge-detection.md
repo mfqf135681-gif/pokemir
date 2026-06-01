@@ -412,6 +412,88 @@ ROI 对齐良好(窗口 1454x1287 精确吻合,seats/community/pot/button 全准
 - 按 avg_lum 相关:empty 集中在低亮度 → 暗化污染(用户变体对);empty 与亮度无关 → 几何
 - 用户选 B(不截图,避免传输色差/分辨率失真,源头采数据更可信)
 
+---
+
+# 追加 3(2026-06-01)— T119 v3 换桌判别结论 + T120 重框+allowlist 实施方案
+
+## §22. 换桌判别结论(105 条 / 26 手 / 26 玩家 / ~24 min,含换桌)
+
+**实测 per-seat(v3,带 player + 亮度):**
+
+| seat | empty | empty 落在几个不同玩家 | empty 区均亮 | 非 empty 均亮 |
+|---:|---:|:---:|---:|---:|
+| 0 | 12 | **4** | 130 | 101 |
+| 5 | 6 | 3 | 83 | 61 |
+| 7 | 14 | **4** | 116 | 128 |
+| 4 | 3 | 1 | 155 | 77(主 unparsed×20)|
+| 6 | 4 | 2 | 110 | 85(主 unparsed)|
+
+**两条独立证据 → 根因 = 座位几何,非头像污染:**
+1. **玩家无关**:换桌后 seat 0/7 坐的是全新的人/头像,**仍 empty(跨 4 个不同玩家)** → empty 只跟座位绑定
+2. **亮度无关**:empty 普遍**偏亮**(seat 0/4 empty 比非 empty 还亮)→ ROI 框在明亮空背景上,非"暗头像低对比"
+
+→ **用户头像污染假说被换桌实验否掉**(好实验的价值:能推翻提出者猜想)。
+→ 边界:26 手;seat 0/7(12-14×4 人)扎实;seat 1/2/3/6 小样本不下结论(非问题座位)。
+
+**两类漏 + 治法:**
+| 漏因 | 座位 | 治法 |
+|---|---|---|
+| fold ROI 框偏到空背景(几何)| 0, 5, 7 | 重框 |
+| OCR 认错(奈/奔)| 4, 6 | allowlist 收窄 |
+
+## §23. T120 实施方案 — 独立 fold ROI + allowlist
+
+### §23.1 设计决策:新增独立 `fold_text_area`,**不动** `fold_area`
+
+依据:
+- `fold_area` 是多用途(头像 baseline / 摊牌 CNN / timer fallback / allin / fold),`capture/roi.py:160`。直接改它的框会波及摊牌/头像/timer
+- **红线** [[ocr-allowlist-double-edge]]:allowlist 收窄**只能加在单用途 ROI**,加在多用途 fold_area 会把空背景 quantize 成假噪声
+- → 唯一正解:**新增单用途 `fold_text_area`**,精确框在"弃牌"文字处,**专配 allowlist `弃牌盖`**,只管 fold 检测;allin/timer/摊牌/头像继续走 fold_area
+
+### §23.2 代码改动(向后兼容:JSON 没配则回落现有 fold_area 路径)
+
+| 文件 | 改动 |
+|---|---|
+| `capture/roi.py` SeatROI | 加 `fold_text_area: ROIRegion \| None = None` |
+| `capture/roi.py` from_json(~125)| `fold_text_area=_tuple_to_roi(s["fold_text"],"seat_fold_text") if s.get("fold_text") else None` |
+| `capture/roi.py` to_json(~76)| 序列化 `fold_text_area` → `entry["fold_text"]` |
+| `rois/party_poker_8*.json` | 每座加 `"fold_text": [l,t,w,h]`(标定得来)|
+| `pipeline/orchestrator.py` fold 路径(~2001)| fold_text_area 存在则**先**读它(allowlist=`弃牌盖`)→ parse 命中 FOLD 即记;否则回落现有 fold_area 逻辑(保 allin/timer 不变)|
+
+允许字符集:`弃牌盖`(强制 OCR 把"奈/奔"收敛到"弃")。allin("ALL IN")不在此集 → 继续由 fold_area 处理。
+
+### §23.3 标定(Win 端,源头取,免截图色差)
+
+- 用 `tools/roi_config.py` 在 Win 实时画面上**逐座位框 `fold_text` 到"弃牌"文字位置**(8 座全框,0/5/7 是已知偏的、必修)
+- 实时画面取框 = 无传输失真(呼应用户选 B 的理由)
+- 未来可接 #LR14 Dashboard 可视化拖框
+
+### §23.4 验证(回归用同一探针)
+
+- 重框后重录 30 min → 跑 `fold_probe.silent_seat`:
+  - 预期 seat 0/5/7 的 `empty` 大幅下降
+  - 预期 seat 4/6 的 `unparsed` 大幅下降(allowlist 生效)
+  - 预期整体 capture rate 明显上升(历史 47% → ?)
+- 探针保留,作重框前后 A/B 度量
+
+### §23.5 回滚
+
+- JSON 删掉 `fold_text` 键 → 自动回落现有 fold_area 路径(零风险)
+- 或加 env flag `POKEMIR_FOLD_TEXT_ROI`(默认开,1 行回滚)
+
+### §23.6 风险 / 未决
+
+- "弃牌"渲染位置 8 座是否一致偏移、还是各异 → 标定时观察(若规律偏移可批量算)
+- `fold_text_area` 与 `action_area`/`fold_area` 是否重叠 → 标定避让
+- allin 仍依赖 fold_area 广读 → 不受本方案影响(确认)
+- sample:seat 5 与小样本座位的 empty 还需重录后复核
+
+## §24. 沉淀(更新)
+
+- doc:本文件 §22-23
+- code(本 session 已 ship):T115/T117/T119 探针;**T120 重框+allowlist 待实施(需 Win 端标定)**
+- memory:仍无新 memory(实施未完成,结论待重框验证后再固化)
+
 ## §20. 旁路发现 — created_at 列 bug(2026-06-01)
 
 `hands.created_at` 列默认值是**写死常量** `'2026-05-19 08:26:10.951156+00'`(非 `now()` 函数)→ 之后每行 created_at 都冻结在该值。`action_events.created_at` 同病。
