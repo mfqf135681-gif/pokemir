@@ -41,6 +41,10 @@ OCR_BATCH = os.getenv("POKEMIR_OCR_BATCH", "0").lower() in ("1", "true", "yes")
 # 保 fallback. **回滚靠 env var 而非双轨代码** (per §11.3 陷阱 4).
 # 启用方式:POKEMIR_ATTENTION_MODE=1.前提 USE_GPU=1 + OCR_BATCH=1 已生效.
 ATTENTION_MODE = os.getenv("POKEMIR_ATTENTION_MODE", "0").lower() in ("1", "true", "yes")
+# 2026-06-01:spent-investigation 探针总开关(fold_probe / p3.text_priority /
+# showdown.dark_cards_area 等调查已结束的 observability)。默认关 = 不写 DB,
+# 减 transition 尖刺 + DB clutter。需要时 POKEMIR_VERBOSE_DIAG=1 重新打开。
+VERBOSE_DIAG = os.getenv("POKEMIR_VERBOSE_DIAG", "0").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 

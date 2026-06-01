@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG
 from difflib import get_close_matches
 
 import cv2
@@ -283,6 +283,8 @@ class PipelineOrchestrator:
         "seat_parse_persist",
         # T99 Phase 1.5 v3.2 attention focus OCR(2026-05-31 加入聚合)
         "attention_focus_ocr",
+        # 2026-06-01 spike A:定位 seat_actions 未计时 gap(~410ms)
+        "seat_artifact", "seat_pattern_d",
     )
 
     def _tick(self):
@@ -879,8 +881,10 @@ class PipelineOrchestrator:
                 cur.raw_data["showdown_cards"] = showdown_cards
 
             # T117(2026-06-01):fold-miss 精准探针 — 对本手"确认 silent 弃牌"座位
-            # emit fold_area 读取画像(见下 _emit_silent_fold_profiles)。
-            self._emit_silent_fold_profiles(cur, showdown_cards)
+            # emit fold_area 读取画像。2026-06-01:调查已结束,默认关
+            # (VERBOSE_DIAG),需要时再开。
+            if VERBOSE_DIAG:
+                self._emit_silent_fold_profiles(cur, showdown_cards)
 
         hand = self.tracker.finalize_hand()
         if hand and db is not None:
@@ -1438,11 +1442,12 @@ class PipelineOrchestrator:
             # "弃牌", "All in") → cards_area still empty → mass non-card dumps.
             mean_brightness = float(img.mean())
             if mean_brightness < self._SHOWDOWN_CARDS_BRIGHTNESS_MIN:
-                diag.emit("showdown.dark_cards_area",
-                          {"seat": sidx, "mean_brightness": round(mean_brightness, 1),
-                           "fold_hamming": diff,
-                           "threshold": self._SHOWDOWN_CARDS_BRIGHTNESS_MIN},
-                          hand_id=hand.id)
+                if VERBOSE_DIAG:  # 2026-06-01:高频 spent 探针,默认关
+                    diag.emit("showdown.dark_cards_area",
+                              {"seat": sidx, "mean_brightness": round(mean_brightness, 1),
+                               "fold_hamming": diff,
+                               "threshold": self._SHOWDOWN_CARDS_BRIGHTNESS_MIN},
+                              hand_id=hand.id)
                 # Don't mark throttle — let next tick re-check (overlay may still be transient)
                 continue
             # Texture gate (2026-05-27):亮但均匀 = 卡背(均匀花纹)而非卡正面.
@@ -1994,6 +1999,9 @@ class PipelineOrchestrator:
             "seat_amount_ocr": 0.0,
             "seat_avatar_hash": 0.0,
             "seat_parse_persist": 0.0,
+            # 2026-06-01 spike A:未计时 gap 定位
+            "seat_artifact": 0.0,
+            "seat_pattern_d": 0.0,
         }
         # T73:pre-batch(OCR_BATCH=0 时 noop)
         _t = time.perf_counter()
@@ -2108,7 +2116,7 @@ class PipelineOrchestrator:
                 # idle-seat over-count. empty ticks are expected pre-fold; the real
                 # question is whether the POST-fold read was mangled (unparsed/digit →
                 # allowlist-fixable) or also empty (signal not read → ROI/calibration).
-                if sidx not in self.tracker._empty_seats and not _is_fold_action:
+                if VERBOSE_DIAG and sidx not in self.tracker._empty_seats and not _is_fold_action:
                     _prof = self._fold_read_profile.setdefault(
                         sidx, {"empty": 0, "unparsed": [], "digit": [],
                                "lum_sum": 0.0, "lum_n": 0, "lum_min": 255.0})
@@ -2166,10 +2174,13 @@ class PipelineOrchestrator:
                 if OCR_BATCH and sidx in self._batched_action_results:
                     action_text = self._batched_action_results[sidx]
                     # 抓 img 给 T1 review artifact + 后续 cache 更新
+                    # 2026-06-01 spike A:计时这个未计时的 artifact 截图
+                    _t = time.perf_counter()
                     action_img = self.capturer.capture_roi(seat_roi.action_area)
                     # 维护 T52 cache 一致性(下次若 OCR_BATCH=0 仍可命中)
                     self.tracker._last_roi_img[f"seat_{sidx}_action"] = action_img
                     self.tracker._last_roi_text[f"seat_{sidx}_action"] = action_text
+                    sub_ms["seat_artifact"] += (time.perf_counter() - _t) * 1000.0
                 else:
                     # T52(2026-05-29):pixel diff trigger 包装 — Phase 0 实测 9.17x
                     # speedup,大部分 tick action overlay 无变化 → reuse cache 省 OCR.
@@ -2184,7 +2195,9 @@ class PipelineOrchestrator:
                     sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
 
                 # T100 Step 3.3c: Pattern D OCR-2 action fallback merge.
+                _t = time.perf_counter()
                 action_text = self._pattern_d_merge_action(sidx, action_text or "")
+                sub_ms["seat_pattern_d"] += (time.perf_counter() - _t) * 1000.0
 
                 # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
                 # parser regex (\d+\.?\d*) will pull the number from the combined text
@@ -2203,7 +2216,9 @@ class PipelineOrchestrator:
                         )
                         sub_ms["seat_amount_ocr"] += (time.perf_counter() - _t) * 1000.0
                     # T100 Step 3.3c: Pattern D OCR-2 amount fallback merge.
+                    _t = time.perf_counter()
                     amount_text = self._pattern_d_merge_amount(sidx, amount_text or "")
+                    sub_ms["seat_pattern_d"] += (time.perf_counter() - _t) * 1000.0
                     if amount_text:
                         action_text = f"{action_text} {amount_text}"
 
@@ -2301,8 +2316,9 @@ class PipelineOrchestrator:
                     override_reason = f"stack-derived {stack_derived.value} overrode text-derived {text_derived.value}"
                     logger.info(f"[P3 override T16] seat_{sidx} text={action_text!r} "
                                 f"text→{text_derived.value} stack→{stack_derived.value}")
-                elif stack_derived is not None and stack_derived != text_derived:
+                elif VERBOSE_DIAG and stack_derived is not None and stack_derived != text_derived:
                     # text 优先(包括 T9 前会被 override 的 6 个 fold→call case)
+                    # 2026-06-01:spent 探针,默认关(VERBOSE_DIAG)
                     diag.emit(
                         "p3.text_priority_preserved",
                         {
