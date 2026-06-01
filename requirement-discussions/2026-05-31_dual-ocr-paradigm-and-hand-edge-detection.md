@@ -481,6 +481,38 @@ ROI 对齐良好(窗口 1454x1287 精确吻合,seats/community/pot/button 全准
 - JSON 删掉 `fold_text` 键 → 自动回落现有 fold_area 路径(零风险)
 - 或加 env flag `POKEMIR_FOLD_TEXT_ROI`(默认开,1 行回滚)
 
+### §23.7 首次重框后验证(29 手,2026-06-01 02:09-02:31)
+
+**捕获率**:修前 40.5%(95 手)→ 修后 **49.3%**(29 手)≈ +9pp(含换桌 confound,真实归因不纯)。
+
+**per-seat empty/手 对比**:
+
+| seat | 修前 | 修后 | 判 |
+|---:|---:|---:|---|
+| 0 | 0.46 | **0.45** | ❌ 没变 |
+| 7 | 0.54 | 0.28 | ↓ 改善 |
+| 5 | 0.23 | 0.10 | ↓(n=5 太小)|
+| 3 | ~0 | 0.72 | ⚠️ 新差(换桌玩家变数)|
+
+**结论**:
+- fold_text 小赢(+9pp),**多半来自 allowlist**(治 4/6 的奈/奔认错)
+- **0/5/7 几何没真修好** —— 印证 §23.6 风险:首次框把 0/5/7 的 fold_text 框在**旧 fold_area 正中心**(偏移≈0),「弃牌」不在那中心 → 等于没挪 → seat 0 照漏
+- per-seat 跨桌有玩家/桌面变数(seat 3 修前净修后差),9pp 含噪声
+- **教训**:重框必须**对准屏幕上可见的「弃牌」两字**,不能照头像中心点(「弃牌」整手持续,有时间等)
+
+**下一步**:仅重框 seat 0/5/7(4/6 allowlist 已生效,别动),框时务必等该座有人弃牌、「弃牌」可见。命令见 §23.8。
+
+### §23.8 单座重框命令(per-seat,2026-06-01)
+
+```
+python tools/roi_config.py --name party_poker_8 --window "WePoker" --field seat_0 --element fold_text
+python tools/roi_config.py --name party_poker_8 --window "WePoker" --field seat_5 --element fold_text
+python tools/roi_config.py --name party_poker_8 --window "WePoker" --field seat_7 --element fold_text
+```
+- 每条:**等该座位有人弃牌、「弃牌」两字亮着** → 拖框紧贴「弃牌」 → SPACE 确认保存
+- `--field seat_N --element fold_text` = 只改该座该元素,合并保留其余(不动 4/6 / 其他 ROI)
+- 框完 commit `rois/party_poker_8.json` + push → Claude pull 核对 0/5/7 偏移是否真挪了(非≈0)→ 再录 30 min 验证
+
 ### §23.6 风险 / 未决
 
 - "弃牌"渲染位置 8 座是否一致偏移、还是各异 → 标定时观察(若规律偏移可批量算)
