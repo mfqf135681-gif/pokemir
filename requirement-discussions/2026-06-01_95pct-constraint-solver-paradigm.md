@@ -244,3 +244,38 @@ YOLO11n/12n:**5070 Ti 上 ~1ms/帧**(T4 TensorRT 1.64ms),~3-6MB,**PyTorch**,自�
 4. 看数 → 建 → A/B(此时有真值可校准)
 ```
 **最狠一句:不能命中一个无法度量的目标 → ground truth(#1)+ 帧录制(#3)必须在动手建之前钉进计划。**
+
+## §9. 重建接缝蓝图(2026-06-01 读码确认)
+
+对现 codebase 读码,确认"封存旧 + 重建识别层(复用 CNN/ROI)"的具体刀口。
+
+### 核心:输出缝是干净的 ✅
+```
+新识别层 ──产出──> events/models.py (Hand / ActionEvent 纯 dataclass 契约)
+                  └──> storage/repository.py (Hand/ActionEventRepository) ──> 同一 DB (schema 不变)
+```
+新管线只需**产出 Hand/ActionEvent 域对象 + 调 repo** → 下游(views/dashboard)不动,**A/B = 两管线写同一 DB 直接比**。冻结契约已确认存在且干净。
+
+### 接缝清单(三类)
+
+| 文件/模块 | 处置 | 说明 |
+|---|---|---|
+| storage/(repository+database+models) | 🟢 直接复用 | DB 层 + engine/session = 冻结契约 |
+| events/models.py(Hand/ActionEvent) | 🟢 直接复用 | 框架无关域契约,新层产出目标 |
+| recognition/cards.py + cnn_classifier.py | 🟢 直接复用 | 识牌 CNN,干净 class |
+| capture/roi.py + rois/*.json | 🟢 复用(⚠️ 重验几何) | DXcam 几何可能变,坐标重验 |
+| recognition/actions.py `_extract_amount` | 🟢 复用 | 数字解析正则小工具 |
+| pipeline/state/(T80, 31 测试) | 🟢 集成(本为重建造) | StateTracker 已部分引用 SeatLifecycle → running start |
+| **玩家ID 归一化** | 🟠 **⚠️ 纠缠,需先抽取** | 散在 detector+normalizer+orchestrator+ocr+tools **5 处** |
+| **avatar phash** | 🟠 **⚠️ 纠缠,需先抽取** | 在 `StateTracker._hash_image` + detector+orchestrator+roi 散布 |
+| capture/screen.py(mss) | 🔴 重建 | → DXcam 高帧 |
+| pipeline/orchestrator.py(2812 行 monolith) | 🔴 重建 | tick 循环 → 事件驱动控制流 |
+| pipeline/detector.py `StateTracker`(400 行) | 🔴 拆解重建 | 多责任 hub:手生命周期(start/finalize_hand 产 Hand)+ 图像 hash + 变化检测 + 位置图 |
+| events/normalizer.py(infer_action_from_delta) | 🔴 大部分替换 | 动作推断 → PokerKit + 约束求解器 |
+
+### 真成本 + 早期可做项
+- **两个纠缠件(玩家ID 归一化 + avatar phash)不是 lift-and-drop** —— proven 逻辑但埋在 StateTracker hub + 散 4-5 文件。重写陷阱在此咬人。
+- **建议早期步骤**:从冻结旧代码**纯抽取成带测试的干净组件**(不重建、只搬出)。**Linux 可做可测**(纯逻辑)→ 提前拆雷。
+- ⚠️ **但仍排在 T126 测量地基之后**:重建不在 spike 出数前启动(序见 §8)。抽取组件已算"动手改码",归入重建启动后的早期任务。
+- **Hand 装配器**:`StateTracker.start/finalize_hand` 现产 Hand → 重建时变成"从事件流 + 求解器输出组装 Hand"的新组件,替换点明确。
+- **running start**:pipeline/state/(T80)已为状态层造好且部分接线,非白纸。
