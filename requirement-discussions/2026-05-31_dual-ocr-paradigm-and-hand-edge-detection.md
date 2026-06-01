@@ -564,6 +564,39 @@ python tools/roi_config.py --name party_poker_8 --window "WePoker" --field seat_
 
 **→ 关闭决定**:fold 检测 ROI/OCR 能做的做完了。**banked**:fold_text 专职 ROI + allowlist + 全 8 座干净校准(对称验证)+ seat_0 去 seated 污染 + timer 加宽 + .pyc 去跟踪。**残留 ~50% 是 confound(赢家/sit-out/timer 噪声),非可修漏 → 不再投入。** 回 [[phase-1-5-attention-mechanism-design]] 主线。
 
+### §23.11 终点层度量(2026-06-01,clean run 35 手)— 真丢失是"筹码动作"非弃牌
+
+从 fold-capture 层转到终点层,三方法交叉(用户提议):
+
+**方法① 单局复盘**(hand 50456a80,15 动作最激烈):
+- 转牌 pot 268→620 **跳 +352,却只记到弃牌** → **丢了一个转牌大加注**(下注者自己"弃了自己的注"= 他其实是 fold 给了未捕获的 re-raise)
+- 另有小噪声:重复 check、seq 缺号、flop pot +28 不一致
+
+**方法② 玩家画像**(留泽神牛 34 手最活跃):
+- 风格**方向有效**:留泽神牛(NIT,0 激进/32 弃)vs 好好千他们・MajicD77(各 11 激进)清晰可分
+- 但激进动作系统性偏少
+
+**方法③ pot-gap 系统度量(最干净,不受 confound 污染)**:
+筹码守恒:进池筹码无对应动作 = 丢了动作。**赢家/sit-out 不动筹码 → 此指标天然剥离 confound。**
+
+| status | 转换 | 手 |
+|---|--:|--:|
+| ok | 150 | 34 |
+| **silent_action_detected** | **57** | **26** |
+| negative_drift(OCR 噪声)| 20 | 14 |
+
+→ **~25% 的"动筹码"转换丢了动作**(57/227);**76% 的手(26/34)≥1 个筹码动作丢失**。
+
+**🔑 认知翻转(本轮最重要结论)**:
+1. **弃牌其实抓得好**(留泽神牛 32/34 弃牌都记到)— 之前"fold silent 52.5%"基本是 confound 幻觉
+2. **真正丢的是"动筹码的动作"(call/bet/raise)≈ 25%** — 弃牌不动筹码,不在此列
+3. **VPIP 偏移方向也翻转/存疑**:老结论"VPIP 高估 30%"基于被污染的 fold 指标,不可靠;新证据 call/raise 丢 25% → 激进度/入池可能**低估**;漏弃牌推高 vs 漏入池推低,**净方向不确定 → 任何精确 VPIP 偏移数字都不可信**
+
+**→ 可用性结论(跟 [[data-reliability-50-70-percent]] 一致)**:
+- 玩家**风格分类(NIT/LAG 方向)可信** — 三方法都支持
+- **精确 stats(VPIP/AF 数值)垫着 ~25% 筹码动作丢失,只能 directional**
+- **pot-gap ~25%** 是比 fold-capture 干净的真 baseline 指标(后续优化看它,不看 fold-silent)
+
 ### §23.6 风险 / 未决
 
 - "弃牌"渲染位置 8 座是否一致偏移、还是各异 → 标定时观察(若规律偏移可批量算)
