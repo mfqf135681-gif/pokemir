@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR
 from difflib import get_close_matches
 
 import cv2
@@ -1985,6 +1985,47 @@ class PipelineOrchestrator:
             for (sidx, _), text in zip(amount_items, results):
                 self._batched_amount_results[sidx] = text
 
+    def _pre_batch_seat_state_ocr(self, rois):
+        """2026-06-01 spike A:把逐座 timer / fold_text / fold_area OCR 批成 3 次
+        GPU call(原 ~24 次独立调用 = seat_actions 真瓶颈,GPU 异步下被低估)。
+        各 allowlist 不同 → 分 3 组各一次 batch。fold_area 同时存 img(avatar
+        hash / 亮度仍需原图)。BATCH_SEAT_OCR=0 时 noop → 逐座旧路径。
+        """
+        self._batched_timer_results = {}
+        self._batched_fold_text_results = {}
+        self._batched_fold_results = {}  # sidx -> (img, text)
+        if not BATCH_SEAT_OCR:
+            return
+        timer_items, ftxt_items, fold_items = [], [], []
+        for seat_roi in rois.seat_regions:
+            sidx = seat_roi.seat_index
+            if self.tracker.is_skippable_seat(sidx):
+                continue
+            if seat_roi.timer_area is not None and seat_roi.timer_area.width > 0:
+                img = self.capturer.capture_roi(seat_roi.timer_area)
+                if img is not None and img.size > 0:
+                    timer_items.append((sidx, img))
+            if seat_roi.fold_text_area is not None and seat_roi.fold_text_area.width > 0:
+                img = self.capturer.capture_roi(seat_roi.fold_text_area)
+                if img is not None and img.size > 0:
+                    ftxt_items.append((sidx, img))
+            if seat_roi.fold_area is not None and seat_roi.fold_area.width > 0:
+                img = self.capturer.capture_roi(seat_roi.fold_area)
+                if img is not None and img.size > 0:
+                    fold_items.append((sidx, img))
+        if timer_items:
+            texts = self.ocr.read_text_batch([i for _, i in timer_items], allowlist="0123456789s ")
+            for (sidx, _), t in zip(timer_items, texts):
+                self._batched_timer_results[sidx] = t
+        if ftxt_items:
+            texts = self.ocr.read_text_batch([i for _, i in ftxt_items], allowlist="弃牌盖")
+            for (sidx, _), t in zip(ftxt_items, texts):
+                self._batched_fold_text_results[sidx] = t
+        if fold_items:
+            texts = self.ocr.read_text_batch([i for _, i in fold_items], allowlist="")
+            for (sidx, img), t in zip(fold_items, texts):
+                self._batched_fold_results[sidx] = (img, t)
+
     def _process_seat_actions(self, db, rois):
         # NB: iterate using seat_roi.seat_index (NOT enumerate's i) for all
         # tracker state lookups — list-position differs from physical seat_index
@@ -2007,6 +2048,10 @@ class PipelineOrchestrator:
         _t = time.perf_counter()
         self._pre_batch_action_amount_ocr(rois)
         sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
+        # 2026-06-01 spike A:pre-batch 逐座 timer/fold_text/fold_area(BATCH_SEAT_OCR=0 noop)
+        _t = time.perf_counter()
+        self._pre_batch_seat_state_ocr(rois)
+        sub_ms["seat_fold_ocr"] += (time.perf_counter() - _t) * 1000.0
 
         for seat_roi in rois.seat_regions:
             sidx = seat_roi.seat_index
@@ -2057,8 +2102,11 @@ class PipelineOrchestrator:
             timer_handled = False
             if seat_roi.timer_area is not None and seat_roi.timer_area.width > 0:
                 _t = time.perf_counter()
-                timer_img = self.capturer.capture_roi(seat_roi.timer_area)
-                timer_text = self.ocr.read_text(timer_img, allowlist="0123456789s ")
+                if BATCH_SEAT_OCR and sidx in self._batched_timer_results:
+                    timer_text = self._batched_timer_results[sidx]  # spike A: batched
+                else:
+                    timer_img = self.capturer.capture_roi(seat_roi.timer_area)
+                    timer_text = self.ocr.read_text(timer_img, allowlist="0123456789s ")
                 sub_ms["seat_timer_ocr"] += (time.perf_counter() - _t) * 1000.0
                 tm = re.search(r"\b(\d{1,2})\b", timer_text or "") if timer_text else None
                 if tm and 0 <= int(tm.group(1)) <= 60:
@@ -2081,8 +2129,11 @@ class PipelineOrchestrator:
             _fold_via_text = False
             if seat_roi.fold_text_area is not None:
                 _t = time.perf_counter()
-                ftxt_img = self.capturer.capture_roi(seat_roi.fold_text_area)
-                ftxt = self.ocr.read_text(ftxt_img, allowlist="弃牌盖")
+                if BATCH_SEAT_OCR and sidx in self._batched_fold_text_results:
+                    ftxt = self._batched_fold_text_results[sidx]  # spike A: batched
+                else:
+                    ftxt_img = self.capturer.capture_roi(seat_roi.fold_text_area)
+                    ftxt = self.ocr.read_text(ftxt_img, allowlist="弃牌盖")
                 sub_ms["seat_fold_ocr"] += (time.perf_counter() - _t) * 1000.0
                 ftxt = ftxt.strip() if ftxt else ""
                 if ftxt:
@@ -2094,8 +2145,11 @@ class PipelineOrchestrator:
 
             if not _fold_via_text and seat_roi.fold_area is not None:
                 _t = time.perf_counter()
-                fold_img = self.capturer.capture_roi(seat_roi.fold_area)
-                fold_text = self.ocr.read_text(fold_img)
+                if BATCH_SEAT_OCR and sidx in self._batched_fold_results:
+                    fold_img, fold_text = self._batched_fold_results[sidx]  # spike A: batched (img kept for avatar hash)
+                else:
+                    fold_img = self.capturer.capture_roi(seat_roi.fold_area)
+                    fold_text = self.ocr.read_text(fold_img)
                 sub_ms["seat_fold_ocr"] += (time.perf_counter() - _t) * 1000.0
                 ft = fold_text.strip() if fold_text else ""
                 # Bug 3 fix: regex extracts digits even with surrounding noise
