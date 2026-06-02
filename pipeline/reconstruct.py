@@ -194,8 +194,9 @@ def segment_hands(stack_series, community_series, config):
             bounds.add(round(community_series[k][0], 1))
     # 合并相近边界
     merged = []
+    bm = config.get("boundary_merge", 6.0)  # 几秒内的边界信号(公共牌reset/派彩/ante)当一个
     for b in sorted(bounds):
-        if merged and b - merged[-1] <= tol + 1:
+        if merged and b - merged[-1] <= bm:
             continue
         merged.append(b)
     # 构造窗口
