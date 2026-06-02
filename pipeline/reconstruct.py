@@ -79,10 +79,16 @@ def street_at(t, boundaries):
 
 def boundaries_from_community(community_series):
     """[(t, n_cards)] → [(street, t_start)]。单调阈值(首次 n≥3=flop / ≥4=turn / ≥5=river),
-    忽略瞬时回落抖动(某帧板位误读低不影响已过的街)。"""
-    out = [(PREFLOP, community_series[0][0] if community_series else 0.0)]
+    忽略瞬时回落抖动(某帧板位误读低不影响已过的街)。
+    关键:切片开头常带上一手残留的板(段边界 cut 在派彩,早于 board 归零),先跳到
+    首次清板(n≤2 = 真实发牌点)再起算街,否则残留板把 preflop 窗压没、limp 全判 flop。"""
+    if not community_series:
+        return [(PREFLOP, 0.0)]
+    reset_i = next((i for i, (_, n) in enumerate(community_series) if n <= 2), 0)
+    series = community_series[reset_i:]
+    out = [(PREFLOP, series[0][0])]
     for st, thr in ((FLOP, 3), (TURN, 4), (RIVER, 5)):
-        t0 = next((t for (t, n) in community_series if n >= thr), None)
+        t0 = next((t for (t, n) in series if n >= thr), None)
         if t0 is not None:
             out.append((st, t0))
     return out
