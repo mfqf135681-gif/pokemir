@@ -78,16 +78,13 @@ def street_at(t, boundaries):
 
 
 def boundaries_from_community(community_series):
-    """[(t, n_cards)] → [(street, t_start)]。0→preflop 3→flop 4→turn 5→river。"""
-    seen = {}
-    for t, n in community_series:
-        st = {0: PREFLOP, 3: FLOP, 4: TURN, 5: RIVER}.get(n)
-        if st and st not in seen:
-            seen[st] = t
+    """[(t, n_cards)] → [(street, t_start)]。单调阈值(首次 n≥3=flop / ≥4=turn / ≥5=river),
+    忽略瞬时回落抖动(某帧板位误读低不影响已过的街)。"""
     out = [(PREFLOP, community_series[0][0] if community_series else 0.0)]
-    for st in (FLOP, TURN, RIVER):
-        if st in seen:
-            out.append((st, seen[st]))
+    for st, thr in ((FLOP, 3), (TURN, 4), (RIVER, 5)):
+        t0 = next((t for (t, n) in community_series if n >= thr), None)
+        if t0 is not None:
+            out.append((st, t0))
     return out
 
 
