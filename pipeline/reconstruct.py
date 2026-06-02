@@ -114,37 +114,41 @@ def reconstruct(stack_series, community_series, config, bet_reads=None):
 
     # 自愿动作:每座 stack 跌幅(扣掉该座的强制注 baseline 已在轨迹外处理 —
     #   约定:stack_series 的首个平台 = 强制注已扣后的"行动前"持有筹码)
-    cur_bet = {}  # street -> 当前最大单家投入(判 call/raise)
+    tol = config.get("tol", 2.0)
+    # 先收集全部投入事件(跨座),按时间序排 → 才能正确判 call/bet/raise(当前注随时间推进)
+    events = []  # (t, seat, chips, is_allin)
     for s in seats:
-        plats = fuse_plateaus(stack_series.get(s, []), tol=config.get("tol", 2.0))
+        plats = fuse_plateaus(stack_series.get(s, []), tol=tol)
         drops, rises = detect_drops(plats)
+        last_t = plats[-1][0] if plats else None
+        last_v = plats[-1][1] if plats else None
         for (t, chips) in drops:
-            st = street_at(t, boundaries)
-            allin = plats and plats[-1][1] <= config.get("tol", 2.0)  # 末平台≈0 → all-in
-            # 规则推类型
-            mx = cur_bet.get(st, 0)
-            if allin and (t == plats[-1][0]):
-                atype = "all_in"
-            elif chips <= mx + config.get("tol", 2.0):
-                atype = "call"
-            elif mx == 0:
-                atype = "bet"
-            else:
-                atype = "raise"
-            cur_bet[st] = max(mx, chips)
-            act = ChipAction(seat=s, street=st, chips_in=chips, t=t, atype=atype)
-            # 局部恒等式校验(三腿):chips_in ≈ 下注区读数
-            if bet_reads and s in bet_reads:
-                near = [bv for (bt, bv) in bet_reads[s] if abs(bt - t) <= config.get("t_tol", 1.0)]
-                if near:
-                    if min(abs(bv - chips) for bv in near) <= config.get("tol", 2.0):
-                        act.confidence = 1.0
-                    else:
-                        act.confidence = 0.5
-                        res.notes.append(f"seat{s}@{t}: stack跌{chips}≠下注区{near} → 低置信")
-            res.actions.append(act)
+            is_allin = (last_v is not None and last_v <= tol and t == last_t)
+            events.append((t, s, chips, is_allin))
         for (t, amt) in rises:
             res.notes.append(f"seat{s}@{t}: stack 涨 {amt}(派彩/补码,非动作)")
+    events.sort(key=lambda e: e[0])  # 时间序
+    cur_bet = {}  # street -> 当前最大单家投入
+    for (t, s, chips, is_allin) in events:
+        st = street_at(t, boundaries)
+        mx = cur_bet.get(st, 0)
+        if is_allin:
+            atype = "all_in"
+        elif mx == 0:
+            atype = "bet"            # 本街第一个投入 = 下注
+        elif chips <= mx + tol:
+            atype = "call"
+        else:
+            atype = "raise"
+        cur_bet[st] = max(mx, chips)
+        act = ChipAction(seat=s, street=st, chips_in=chips, t=t, atype=atype)
+        if bet_reads and s in bet_reads:  # 局部恒等式三腿校验
+            near = [bv for (bt, bv) in bet_reads[s] if abs(bt - t) <= config.get("t_tol", 1.0)]
+            if near:
+                act.confidence = 1.0 if min(abs(bv - chips) for bv in near) <= tol else 0.5
+                if act.confidence < 1.0:
+                    res.notes.append(f"seat{s}@{t}: stack跌{chips}≠下注区{near} → 低置信")
+        res.actions.append(act)
 
     res.sum_chips = sum(a.chips_in for a in res.actions) + sum(res.forced.values())
     gap = abs(res.sum_chips - res.pot_observed)
