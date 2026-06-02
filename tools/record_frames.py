@@ -25,10 +25,10 @@
 用法(Win PowerShell):
   # 按窗口标题自动定位,10fps 录最多 5 分钟,存 PNG
   .\\.venv\\Scripts\\python.exe tools\\record_frames.py --window-title "WePoker" --fps 10 --duration 300
-  # 显式屏幕绝对坐标(left top width height),排除右侧聊天
-  .\\.venv\\Scripts\\python.exe tools\\record_frames.py --region 100 80 1280 720 --fps 8
-  # 多显示器黑屏时,试不同 output-idx
-  .\\.venv\\Scripts\\python.exe tools\\record_frames.py --window-title "WePoker" --output-idx 1
+  # ★副屏 / 多屏 / dxcam 黑屏 → 用 mss 后端(直接吃窗口全局坐标,含负坐标)
+  .\\.venv\\Scripts\\python.exe tools\\record_frames.py --window-title "WePoker" --backend mss --fps 5 --dedup
+  # 显式屏幕绝对坐标(left top width height)
+  .\\.venv\\Scripts\\python.exe tools\\record_frames.py --region 100 80 1280 720 --fps 8 --backend mss
 """
 
 import argparse
@@ -82,8 +82,11 @@ def main():
     ap.add_argument("--out-dir", type=str, default="data/recordings", help="输出根目录")
     ap.add_argument("--format", choices=["png", "jpg"], default="png",
                     help="png=无损(replay 用,推荐) / jpg=小但有损(OCR 慎用)")
-    ap.add_argument("--output-idx", type=int, default=None, help="DXcam 显示器输出号(多屏黑屏时试 0/1)")
-    ap.add_argument("--device-idx", type=int, default=None, help="DXcam GPU 设备号(多卡时)")
+    ap.add_argument("--backend", choices=["dxcam", "mss"], default="dxcam",
+                    help="dxcam=高帧(默认,但多屏坐标麻烦) / mss=直接用窗口全局坐标,"
+                         "**原生支持副屏+负坐标**,5-10fps 足够 → 副屏/多屏用这个")
+    ap.add_argument("--output-idx", type=int, default=None, help="[dxcam] 显示器输出号(多屏黑屏时试 0/1)")
+    ap.add_argument("--device-idx", type=int, default=None, help="[dxcam] GPU 设备号(多卡时)")
     ap.add_argument("--min-free-gb", type=float, default=5.0, help="剩余磁盘低于此 GB 即停")
     ap.add_argument("--note", type=str, default="", help="录入 manifest 的备注(如牌局/桌型)")
     ap.add_argument("--dedup", action="store_true",
@@ -94,40 +97,69 @@ def main():
     try:
         import cv2
         import numpy as np
-        import dxcam
     except ImportError as e:
-        log.error(f"缺依赖 ({e}). Win venv: pip install dxcam opencv-python numpy")
+        log.error(f"缺依赖 ({e}). Win venv: pip install opencv-python numpy")
         sys.exit(2)
 
-    region = resolve_region(args)
+    region = resolve_region(args)   # (l,t,r,b) 虚拟桌面全局坐标,或 None=全屏
 
     # session 目录:data/recordings/YYYYmmdd_HHMMSS/
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out = Path(args.out_dir) / stamp
     frames_dir = out / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
-    log.info(f"输出: {out.resolve()}")
+    log.info(f"输出: {out.resolve()}  (backend={args.backend})")
 
-    # DXcam 相机(BGR 顺序 → 直接喂 cv2.imwrite 颜色正确)
-    cam_kwargs = {"output_color": "BGR"}
-    if args.output_idx is not None:
-        cam_kwargs["output_idx"] = args.output_idx
-    if args.device_idx is not None:
-        cam_kwargs["device_idx"] = args.device_idx
-    camera = dxcam.create(**cam_kwargs)
-    if camera is None:
-        log.error("dxcam.create 返回 None — 检查 output-idx/device-idx(多屏多卡)。")
-        sys.exit(3)
+    # ── 后端设置:产出 grab_fn() / stop_fn() / probe / interval(mss 手动节拍)──
+    interval = None
+    if args.backend == "mss":
+        try:
+            import mss
+        except ImportError:
+            log.error("缺 mss:pip install mss"); sys.exit(2)
+        if region is None:
+            log.error("mss 后端需要明确区域:给 --window-title 或 --region。"); sys.exit(2)
+        l, t_, r, b = region
+        mon = {"left": l, "top": t_, "width": r - l, "height": b - t_}
+        _sct = mss.mss()
+        # mss.grab → BGRA;取 [:,:,:3] = BGR(与 dxcam BGR 一致,cv2.imwrite 颜色正确)
+        def grab_fn():
+            return np.asarray(_sct.grab(mon))[:, :, :3]
+        def stop_fn():
+            try: _sct.close()
+            except Exception: pass
+        interval = 1.0 / max(args.fps, 0.1)
+        probe = grab_fn()
+    else:  # dxcam
+        try:
+            import dxcam
+        except ImportError:
+            log.error("缺 dxcam:pip install dxcam(或副屏改 --backend mss)"); sys.exit(2)
+        cam_kwargs = {"output_color": "BGR"}
+        if args.output_idx is not None:
+            cam_kwargs["output_idx"] = args.output_idx
+        if args.device_idx is not None:
+            cam_kwargs["device_idx"] = args.device_idx
+        camera = dxcam.create(**cam_kwargs)
+        if camera is None:
+            log.error("dxcam.create 返回 None — 检查 output-idx/device-idx;副屏建议改 --backend mss。")
+            sys.exit(3)
+        probe = camera.grab(region=region) if region else camera.grab()
+        camera.start(region=region, target_fps=int(round(args.fps)), video_mode=True)
+        def grab_fn():
+            return camera.get_latest_frame()   # 阻塞到下一新帧,自带节拍
+        def stop_fn():
+            try: camera.stop(); camera.release()
+            except Exception: pass
 
-    # 黑屏自检(§7.3 已知坑):抓一帧,全黑/读不到 → 大声失败,别录一堆废帧
-    probe = camera.grab(region=region) if region else camera.grab()
+    # 黑屏自检(§7.3 已知坑):全黑/读不到 → 大声失败,别录一堆废帧
     if probe is None:
-        log.error("首帧 None。常见:受保护/硬件加速窗口、output-idx 错。换 --output-idx 再试。")
-        sys.exit(3)
+        log.error("首帧 None。dxcam:受保护窗口/output-idx 错 → 试 --output-idx 或 --backend mss。")
+        stop_fn(); sys.exit(3)
     if float(probe.mean()) < 2.0:
-        log.error(f"首帧近乎全黑(mean={probe.mean():.2f})。多屏/输出号不对的典型症状。"
-                  f"换 --output-idx(0/1/...)再试。")
-        sys.exit(3)
+        log.error(f"首帧近乎全黑(mean={probe.mean():.2f})。多屏/输出号典型症状 → "
+                  f"试 --output-idx(0/1/...)或直接 --backend mss(副屏更稳)。")
+        stop_fn(); sys.exit(3)
     log.info(f"黑屏自检通过 (帧 {probe.shape}, mean={probe.mean():.1f}). 开录…  Ctrl-C 停止。")
 
     # 估算体积 + 磁盘守卫
@@ -138,25 +170,25 @@ def main():
     manifest_path = out / "manifest.jsonl"
     meta = {
         "_meta": True, "stamp": stamp, "region": region, "fps": args.fps,
-        "format": args.format, "note": args.note,
+        "format": args.format, "note": args.note, "backend": args.backend,
         "started_wall": datetime.now(timezone.utc).isoformat(),
         "probe_shape": list(probe.shape), "output_idx": args.output_idx,
         "dedup": args.dedup,
         "tool": "record_frames.py", "task": "T126",
     }
 
-    camera.start(region=region, target_fps=int(round(args.fps)), video_mode=True)
     tick = 0           # 总抓帧数(= tick 数,每 tick 一行 manifest)
     uniq = 0           # 实际写盘的唯一帧数
     prev_hash = None   # 上一帧逐像素哈希(--dedup 用)
     last_file = None   # 上一个已写盘的文件名(重复 tick 指回它)
     t0 = time.perf_counter()
     last_disk_check = t0
+    next_t = t0        # mss 手动节拍用
     try:
         with manifest_path.open("w", encoding="utf-8") as mf:
             mf.write(json.dumps(meta, ensure_ascii=False) + "\n")
             while True:
-                frame = camera.get_latest_frame()  # 阻塞到下一新帧,按 target_fps 节拍
+                frame = grab_fn()                  # dxcam 自带节拍 / mss 在循环尾手动 sleep
                 t = time.perf_counter()
                 if frame is None:
                     continue
@@ -199,13 +231,18 @@ def main():
                     last_disk_check = t
                     if shutil.disk_usage(out).free / 1e9 < args.min_free_gb:
                         log.warning("磁盘低于阈值,停。"); break
+                # mss 手动节拍(dxcam interval=None 跳过,靠 get_latest_frame 阻塞)
+                if interval is not None:
+                    next_t += interval
+                    sleep_s = next_t - time.perf_counter()
+                    if sleep_s > 0:
+                        time.sleep(sleep_s)
+                    else:
+                        next_t = time.perf_counter()   # 落后了,重新对齐
     except KeyboardInterrupt:
         log.info("Ctrl-C,停。")
     finally:
-        try:
-            camera.stop(); camera.release()
-        except Exception:
-            pass
+        stop_fn()
 
     dt = time.perf_counter() - t0
     eff_fps = tick / dt if dt > 0 else 0
@@ -228,7 +265,9 @@ if __name__ == "__main__":
 #   1. pip install dxcam pygetwindow opencv-python numpy 成功
 #   2. 开 WePoker,跑 --window-title "WePoker"(标题对不上就换关键词 / 用 --region)
 #      → 看日志"命中窗口"的坐标是否正确框住牌桌
-#   3. 黑屏自检:若报"近乎全黑" → 依次试 --output-idx 0 / 1 /…(多屏几乎必踩,§7.3)
+#   3. 黑屏自检:dxcam 多屏几乎必踩(§7.3)→ **副屏直接用 --backend mss**(最稳);
+#      或留 dxcam 依次试 --output-idx 0 / 1 /…
+#      [你的环境实测:WePoker 在副屏(负坐标)→ 用 --backend mss]
 #   4. 录 10-20 秒 → 打开 data/recordings/<stamp>/frames/ 抽几张 PNG 看:
 #      - 画面完整、颜色正常(不偏蓝=BGR 对)、牌桌都在框里、聊天区是否需要 --region 排除
 #   5. 看结尾"实测有效 fps":若远低于目标 → 写盘是瓶颈(给 T125 一个早信号)
