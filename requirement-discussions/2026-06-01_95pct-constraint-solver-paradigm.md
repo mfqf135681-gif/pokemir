@@ -369,3 +369,38 @@ A 的 ~1Hz **吻合现 pipeline 已知 ~1Hz tick(OCR-bound)→ bench 可信**。
 ### §7.1/§7.5/§5 更新
 - §7.1「EasyOCR recognize-only 免训练起步」+ §7.5 同条 + §5 step1「recognize-only 起步」:**作为速度杠杆已证伪**(免检测不提速);仍可作免检测的便利,但**高帧提速必须靠轻量模型**。
 - 下一 bench:`bench_cnn`(CardCNN batched 吞吐)= §7.6 速度假设的真检验。
+
+## §13. 关键修正:分类 ≠ 序列识别(2026-06-02,bench_cnn + EasyOCR batch_size 重测 + context7)⭐
+
+实测数据(74 文字区,真实窗口帧,GPU):
+| | 速度 | 性质 |
+|---|---|---|
+| `bench_cnn` CardCNN | **2.7ms/74crop = 0.036ms/crop**(forward)、full 10.4ms→96Hz | **分类器**(定长 rank/suit,一次前向) |
+| EasyOCR recognize bs=74 | **400ms/74 = 5.4ms/crop** → 2.5Hz | **序列识别**(CRNN+RNN+CTC) |
+| PaddleOCR mobile rec(context7) | **4.8ms/crop 标准 / 1.23ms TensorRT** | 序列识别(轻量) |
+
+### 我之前偷换概念(被用户直觉揪出)
+- `bench_cnn` 测的是**分类器**(0.036ms/crop)→ **只代表 A 档类别字段(动作词)**,**不代表读数字**。
+- **读多位数字 = 序列识别**(变长输出)→ ~5ms/crop,比分类重 **~150×**。我拿分类器速度暗示了整体识别速度 = apples-to-oranges。
+
+### 三个实锤
+1. **换轻量模型≈不提速(序列识别)**:PaddleOCR mobile 标准 4.8ms ≈ EasyOCR 5.4ms/crop → **~5ms/crop 对轻量 CRNN 基本与模型无关**。
+2. **batch_size 批不掉**:EasyOCR bs 32→74 = 434→400ms 几乎不变 → ~5ms/crop 的 RNN+CTC 是地板,**不是 GPU 并行度问题**。
+3. **EasyOCR + batch_size 也只到 2.5Hz**(1031→400ms)→ 改善但**仍不够 4-10Hz**。
+
+### 让数字变快的三条路(都不是"换个 CNN")
+| 路 | 速度 | 代价 |
+|---|---|---|
+| (a) **逐位分类**(固定槽/数字检测,0-9 当 10 类) | 分类器级 ~free | 切位/检测 + 字体固定假设(§7.6/§7.7) |
+| (b) **序列识别 + TensorRT** | 4.8→1.23ms/crop(4×)→ 74crop ~91ms ~11Hz | TensorRT-RTX(§7.8) |
+| (c) **规则反推,根本不读** | 0 | §3.1「解不读」—— 最便宜 |
+
+### 修正后的高帧配方
+- **A 档类别(动作词/牌型)** → CNN 分类器,~free(96Hz 实锤)✅
+- **B 档数字** → **(c) 规则反推大多数(§3.1)** + 剩少数自由注额走 **(a) 逐位分类** 或 **(b) TensorRT**
+- **绝不是"全换 CNN"** —— 那只解 A 档。
+
+→ **§3.1「解不读」因此更核心**:序列识别是贵的那部分,**能不读就不读**是高帧关键;真要读的少数数字用逐位分类绕开 CRNN。
+→ **T125 命门收敛**:高帧可行,配方 = 类别分类器(free)+ 数字「少读 + 逐位分类/TensorRT」;EasyOCR/PaddleOCR 整行序列识别(~5ms/crop)是死路,靠的不是换模型。
+
+> ⚠️ **§12 的结论被 §13 修正**:`bench_cnn` 测的是**分类器**(96Hz),只代表 A 档类别字段;数字是**序列识别**(重),不能拿分类器速度外推。EasyOCR 加 batch_size 后到 ~2.5Hz 也仍不够。详 §13。
