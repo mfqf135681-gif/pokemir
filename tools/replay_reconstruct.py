@@ -66,26 +66,28 @@ def read_stack(img, roi, ocr):
     return float(digits) if digits else None
 
 
-def count_community(img, community_rois, cardrec):
-    """数有几张公共牌(CNN recognize_single 非 None)。⚠️ Win-only。"""
+def _white_frac(crop, white_th):
+    """三通道都 > white_th 的像素占比(牌面=大片白;空 felt≈0)。"""
+    if crop is None or crop.size == 0:
+        return 0.0
+    return float((crop.min(axis=2) > white_th).mean())
+
+
+def count_community(img, community_rois, white_th=170, frac_th=0.12):
+    """数公共牌:卡片是大面积白色,空板位是暗 felt → 按白占比判(不用 CNN,稳+快)。"""
     n = 0
     for (l, t, w, h) in community_rois:
-        crop = img[t:t + h, l:l + w]
-        try:
-            if cardrec.recognize_single(crop):
-                n += 1
-        except Exception:
-            pass
+        if _white_frac(img[t:t + h, l:l + w], white_th) > frac_th:
+            n += 1
     return n
 
 
-def build_series_real(session, frames, stack_rois, community_rois, start, end, decimate):
-    """Win 路径:逐帧读 → stack_series / community_series。"""
+def build_series_real(session, frames, stack_rois, community_rois, start, end, decimate,
+                      white_th=170, frac_th=0.12):
+    """Win 路径:逐帧读 → stack_series / community_series。公共牌用白占比(不用 CNN)。"""
     import cv2
-    from recognition.cards import CardRecognizer
     from recognition.ocr import OCREngine
     ocr = OCREngine(gpu=True, name="replay")
-    cardrec = CardRecognizer()
     stack_series = {s: [] for s in stack_rois}
     community_series = []
     fdir = Path(session) / "frames"
@@ -97,7 +99,7 @@ def build_series_real(session, frames, stack_rois, community_rois, start, end, d
             continue
         for s, roi in stack_rois.items():
             stack_series[s].append((t, read_stack(img, roi, ocr)))
-        community_series.append((t, count_community(img, community_rois, cardrec)))
+        community_series.append((t, count_community(img, community_rois, white_th, frac_th)))
     return stack_series, community_series
 
 
@@ -143,6 +145,8 @@ def main():
     ap.add_argument("--truth", help="真值文件(compare_truth 格式)")
     ap.add_argument("--sb", type=float, default=2); ap.add_argument("--bb", type=float, default=4)
     ap.add_argument("--ante", type=float, default=4); ap.add_argument("--pot", type=float, default=0)
+    ap.add_argument("--white-th", type=int, default=170, help="公共牌白像素阈值(三通道都>此=白)")
+    ap.add_argument("--frac-th", type=float, default=0.12, help="白占比>此 = 该板位有牌")
     ap.add_argument("--mock", action="store_true", help="离线自测核(不读帧)")
     ap.add_argument("--dump-stacks", action="store_true",
                     help="只读+打印每座 stack 轨迹(验读取质量,不需真值/不跑 reconstruct)")
@@ -159,9 +163,27 @@ def main():
     print(f"session {args.session}: {len(frames)} 帧, 时间窗 [{args.start},{args.end}], "
           f"{len(stack_rois)} 座 stack ROI")
     stack_series, community_series = build_series_real(
-        args.session, frames, stack_rois, community_rois, args.start, args.end, args.decimate)
+        args.session, frames, stack_rois, community_rois, args.start, args.end, args.decimate,
+        args.white_th, args.frac_th)
 
     if args.dump_stacks:
+        # 校准辅助:抽几帧打印每个板位的白占比(看空板 vs 有牌差多少,定 --frac-th)
+        import cv2
+        fdir = Path(args.session) / "frames"
+        print("\n=== 公共牌板位 白占比 抽样(校准 --frac-th)===")
+        sampled = 0
+        for (i, fn, t) in frames:
+            if t < args.start or t > args.end or (i % max(args.decimate * 20, 20)):
+                continue
+            img = cv2.imread(str(fdir / fn))
+            if img is None:
+                continue
+            fr = [round(_white_frac(img[tt:tt + h, l:l + w], args.white_th), 2)
+                  for (l, tt, w, h) in community_rois]
+            print(f"  t{t:.1f}: 板位白占比 {fr} → 判 {count_community(img, community_rois, args.white_th, args.frac_th)} 张")
+            sampled += 1
+            if sampled >= 6:
+                break
         print("\n=== 每座 stack 轨迹(验读取质量)===")
         for s in sorted(stack_series):
             obs = stack_series[s]
