@@ -154,6 +154,64 @@ def reconstruct(stack_series, community_series, config, bet_reads=None):
     return res
 
 
+# ── 手分段(§15.3:录制跨多手 → 按边界切成一手一窗)──────────────────────
+def segment_hands(stack_series, community_series, config):
+    """检测手边界 → [(t_start, t_end)] 每手窗口。
+    边界信号(真实数据 §15.3):派彩大涨 / 全员 ante 小跌簇 / 公共牌 reset。"""
+    tol = config.get("tol", 2.0)
+    payout_th = config.get("payout_th", max(config.get("bb", 4) * 10, 50))
+    ante = config.get("ante", 0)
+    bounds = set()
+    # 1) 派彩:任一座平台大涨
+    for obs in stack_series.values():
+        plats = fuse_plateaus(obs, tol=tol)
+        for i in range(1, len(plats)):
+            if plats[i][1] - plats[i - 1][1] > payout_th:
+                bounds.add(round(plats[i][0], 1))
+    # 2) ante 簇:相近时间多座各跌 ≈ante
+    if ante > 0:
+        ad = []
+        for obs in stack_series.values():
+            plats = fuse_plateaus(obs, tol=tol)
+            for i in range(1, len(plats)):
+                if abs((plats[i - 1][1] - plats[i][1]) - ante) <= tol:
+                    ad.append(plats[i][0])
+        ad.sort()
+        win = config.get("ante_cluster_win", 2.0)
+        min_n = config.get("min_ante_seats", 3)
+        i = 0
+        while i < len(ad):
+            j = i
+            while j < len(ad) and ad[j] - ad[i] <= win:
+                j += 1
+            if j - i >= min_n:
+                bounds.add(round(ad[i], 1))
+            i = j
+    # 3) 公共牌 reset(n 下降)
+    for k in range(1, len(community_series)):
+        if community_series[k][1] < community_series[k - 1][1]:
+            bounds.add(round(community_series[k][0], 1))
+    # 合并相近边界
+    merged = []
+    for b in sorted(bounds):
+        if merged and b - merged[-1] <= tol + 1:
+            continue
+        merged.append(b)
+    # 构造窗口
+    allt = [t for obs in stack_series.values() for (t, _) in obs] + [t for (t, _) in community_series]
+    if not allt:
+        return []
+    t0, tN = min(allt), max(allt)
+    cuts = sorted(set([t0] + merged + [tN + 0.01]))
+    return [(cuts[i], cuts[i + 1]) for i in range(len(cuts) - 1) if cuts[i + 1] - cuts[i] > 0.5]
+
+
+def slice_series(stack_series, community_series, t0, t1):
+    ss = {s: [(t, v) for (t, v) in obs if t0 <= t < t1] for s, obs in stack_series.items()}
+    cs = [(t, n) for (t, n) in community_series if t0 <= t < t1]
+    return ss, cs
+
+
 # ── 自测:用 §14 Ts2h5h 真值构造 stack 轨迹,验证重建 ──────────────────────
 def _self_test():
     # Ts2h5h:8 座,ante4,SB2,BB4。摊牌2人 all-in213+call213;其余弃(部分limp4)
@@ -195,6 +253,19 @@ def _self_test():
     bad = [a for a in res2.actions if a.confidence < 1.0]
     assert bad, "局部恒等式应抓出 stack≠下注区"
     print(f"✅ 局部恒等式抓出不一致(conf={bad[0].confidence}):{res2.notes[0]}")
+
+    # 手分段自测:2 手(A: seat0 下注后派彩涨到 800;B: t10.2 全员 ante -4)
+    ss2 = {
+        0: [(0, 300), (1, 300), (5, 150), (6, 150), (10, 800), (11, 800)],  # A 下注150 → 派彩 @10
+        1: [(0, 200), (1, 200), (5, 50), (6, 50)],                          # A 下注150
+        2: [(0, 100), (1, 100), (10.2, 96), (11, 96)],                      # B ante -4
+        3: [(0, 120), (1, 120), (10.2, 116), (11, 116)],                    # B ante -4
+        4: [(0, 90), (1, 90), (10.2, 86), (11, 86)],                        # B ante -4
+    }
+    wins = segment_hands(ss2, [], {"bb": 4, "ante": 4, "tol": 2.0})
+    assert len(wins) == 2, wins
+    assert abs(wins[0][1] - 10) <= 1.5, wins  # 边界 ≈10
+    print(f"✅ 手分段:2 手窗口 {[(round(a, 1), round(b, 1)) for a, b in wins]}(派彩涨+全员ante 边界 ≈10)")
 
 
 if __name__ == "__main__":

@@ -175,15 +175,22 @@ def main():
 
     config = {"sb": args.sb, "bb": args.bb, "ante": args.ante, "pot": args.pot,
               "seats": list(stack_rois.keys())}
-    res = reconstruct(stack_series, community_series, config)
-    print("\n重建动作:")
-    for a in sorted(res.actions, key=lambda x: x.t):
-        print(f"  seat{a.seat} {a.street} {a.atype} 投入{a.chips_in:.0f} @t{a.t:.1f}")
-    for n in res.notes:
-        print("  " + n)
+    windows = _recon.segment_hands(stack_series, community_series, config)
+    print(f"\n=== 手分段:检测到 {len(windows)} 手 ===")
+    all_actions = []
+    for hi, (t0, t1) in enumerate(windows, 1):
+        ss, cs = _recon.slice_series(stack_series, community_series, t0, t1)
+        res = reconstruct(ss, cs, config)
+        all_actions.extend(res.actions)
+        print(f"\n--- 手 {hi}  t[{t0:.1f},{t1:.1f}] ---")
+        for a in sorted(res.actions, key=lambda x: x.t):
+            print(f"  seat{a.seat} {a.street} {a.atype} 投入{a.chips_in:.0f} @t{a.t:.1f}")
+        for n in res.notes:
+            if "涨" in n:  # 仅显示派彩/补码提示(守恒 note 在 --pot 0 时无意义)
+                print("  " + n)
     if args.truth:
-        cmp = compare_to_truth(res.actions, args.truth)
-        print(f"\n=== 捕获率(vs 真值)===\n  真值筹码动作 {cmp['true']} | 重建命中 {cmp['matched']} "
+        cmp = compare_to_truth(all_actions, args.truth)
+        print(f"\n=== 捕获率(vs 真值,全手聚合)===\n  真值筹码动作 {cmp['true']} | 命中 {cmp['matched']} "
               f"| 捕获率 {cmp['capture_rate']*100:.0f}%")
         if cmp["missed"]:
             print("  漏:", cmp["missed"])
