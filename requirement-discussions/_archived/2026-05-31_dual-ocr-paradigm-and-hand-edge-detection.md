@@ -1,3 +1,6 @@
+> 🗄️ **已封存(2026-06-02 防污染整治)** — 双OCR架构**被 stack-centric §15 取代,死**;fold-47% 调查的**结论已传 [[data-reliability-50-70-percent]]**(真丢=筹码动作~25%,非弃牌)。
+> 溯源摘要见 **`2026-06-01_95pct-constraint-solver-paradigm.md` §16.3**。本文件只读、保历史链,勿当现行。
+
 # 主题 — 双 OCR paradigm 重设计 + Hand-edge detection + Fold-47% 数据 ground
 
 > **2026-05-31 立**(本 session 用户实操观察 + 数据驱动讨论)

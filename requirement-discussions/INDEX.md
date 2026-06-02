@@ -1,8 +1,9 @@
 # Requirement Discussions INDEX
 
-> 18 份历史讨论按主题归并(**2026-05-27 重构**)
-> 旧 timestamp-prefix 文件已移至 `_archived_pre_restructure/`(git mv 保历史链)
+> 18 份历史讨论按主题归并(**2026-05-27 重构**);2026-06-02 防污染整治再封存 2 份(`_archived/`)
+> 旧 timestamp-prefix 文件已移至 `_archived_pre_restructure/`(05-27 批)+ `_archived/`(06-02 批),均 git mv 保历史链
 > **找完整内容** → 点 archive 链接;**找当前结论** → 看主题文件正文
+> **唯一仍活的 timestamp 文档** = `2026-06-01_95pct-constraint-solver-paradigm.md`(数据质量主线 canonical,活跃维护中)
 
 ---
 
@@ -14,12 +15,12 @@
 | 🟩 基础设施 | 3 | PG + Tailscale + auto-commit 跑通 | [主题-基础设施.md](主题-基础设施.md) |
 | 🟨 识别栈 | 4 | **production-ready**(CNN val 100%) | [主题-识别栈.md](主题-识别栈.md) |
 | 🟧 Path A 执行 | 5 | Step 4 阶段 B accepted | [主题-PathA执行.md](主题-PathA执行.md) |
-| 🟥 数据质量 | 2 | **P0 三件进行中(T3/T4/T5)** | [主题-数据质量.md](主题-数据质量.md) |
+| 🟥 数据质量 | 4 | **底线重设 95% + 约束求解器范式(当前主线)** | [主题-数据质量.md](主题-数据质量.md) |
 | 🟪 产品形态 | 2 | dashboard 骨架就绪 + 异步流跑通 | [主题-产品形态.md](主题-产品形态.md) |
 | ⬜ 项目评价 | 1 | pending：整体工程/产品/风险评估 | [主题-项目评价.md](主题-项目评价.md) |
 | 🟫 DDD 架构 | 1 | **accepted**:Path B 起用 / Path A 不动 / #LR15 全栈触发 | [主题-DDD架构.md](主题-DDD架构.md) |
 
-**20 = 2+3+4+5+2+2+1+1 ✅**(全覆盖,零信息丢失)
+**22 = 4+3+4+5+2+2+1+1 ✅**(全覆盖,零信息丢失;数据质量 2→4 含 06-02 封存的 05-30/05-31)
 
 ---
 
@@ -48,6 +49,10 @@ REQ Mode 启动**第一动作**:
 ---
 
 ## 历史归档说明
+
+**两个归档目录**:
+- `_archived_pre_restructure/` — 05-27 重构封存的 18 份
+- `_archived/` — 06-02 防污染整治封存(`2026-05-30_phase-1-5` 注意力架构死 / `2026-05-31_dual-ocr` 双OCR死);活内容已蒸馏至 95pct doc §16 + memory
 
 `_archived_pre_restructure/` 内 18 份原 timestamp-prefix 文档:
 

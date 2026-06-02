@@ -531,3 +531,41 @@ record 20260602_170343,240s 窗,replay_reconstruct(手分段 + 时间序classify
 - **路A**:对 170343(或新录一段全程含 showdown 的)标真值 → 跑 compare_truth → **拿到第一个真实捕获率数字**(回答 95% 的唯一诚实途径)。
 - **路B**:架构已验,直接进**砖2**(把慢 EasyOCR ~1-2Hz 换成高帧多头数字 CNN + TensorRT)—— 但没有捕获率基线,砖2 优化没有靶子。
 - **倾向 A 先**:先有数字(哪怕 1 手),才知道架构离 95% 有多远、砖2 该优化什么。
+
+---
+
+## §16. 域约束 + 邻接捕获面(2026-06-02 从已封存 05-30/05-31 蒸馏)
+
+> 来源:`_archived/2026-05-30_phase-1-5-attention-mechanism-design.md`(注意力架构本体已被 stack-centric 取代,**死**)
+> + `_archived/2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md`(双OCR架构**死**;fold-47%调查**结论已传 memory**)。
+> 下面只留**仍活、且 canonical/memory 未覆盖**的部分。完整历史见两份归档。
+
+### §16.1 重建必须遵守的 14 个德州/UI 域约束(原 05-30 §3,stress-test verified)
+
+约束求解器(§3)解动作时,这些是**必须 honor 的规则边界**,不是可选:
+
+| # | 约束 | 对重建的含义 |
+|:--|---|---|
+| R1 | **fold 可提前**(online 允许),call/raise/check **必须按行动顺序** | 时序推断只对 voluntary action 成立;fold 可乱序 |
+| R2 | **SB/BB post ≠ voluntary**;post 时 stack 减但不消耗 timer | blind_posting 阶段 stack delta 必须当强制注、非动作(规则锚,不读) |
+| R3 | **skip 5 类**:folded / all_in / sit_out / empty / leaving | all-in 仍在 hand(摊牌亮牌)但不再行动 |
+| R4 | **Multi-pot**:多 all-in → side pot(动态 1-3 个) | 底池锚点(§4 发现2)须按 main+side 分解,接圈梁 D28 |
+| R5 | **sit-out / fold / leave 三分**:sit-out 不发牌无"弃牌"字 / fold 有字 / leave 头像灰 | §15 的 active-player-set 推断须三分,否则 sit-out 被误当 silent fold(47% 虚低的元凶) |
+| R6 | **check 是消极单信号**(stack 0 变、pot 0 变,仅 timer 移走+"让牌"字) | check 不能靠 stack delta 抓,只能靠 active-set + timer |
+| R7 | **BB option auto-check**(preflop 无人 raise),UI 可能不显"让牌" | 圈梁 D22 cover;OCR 看不到信号 |
+| R9 | **showdown**:末街后全 timer 消失但 hand 未结束 | hand_phase 状态机区分 showdown vs between_hands |
+| R10 | **街切换**:每街 timer 重置从 SB 起,公牌 1-3s 动画 | §15 分街锚点(公共牌张数)与此一致 |
+| R11 | **断网 auto fold/check**:timer 走完自动行动,UI 可能显"断线"/灰头像 | — |
+| R12 | 跨手 buy-in stack 增加 ≠ action(R12) | §15 已处理(派彩/补码识别) |
+| R13 | Hero seat 简化(hero 不 silent) | — |
+| R15 | 🔴 **all-in 玩家 stack_area 显胜率"78%"非筹码**(T103 已修:allowlist 加 "%",检测到 % 返 None) | **历史污染源**(影响 T75/T85/T87 旧数据);stack 读取须防 % 当筹码 |
+
+### §16.2 摊牌捕获专项(原 05-30 §12 — 独立于筹码动作的捕获面)
+
+- **问题**(138 摊牌手实测):≥2 玩家亮牌仅 **12%**,平均亮牌 1.06/手 → 真捕获 ~42%,**失 ~58% 摊牌信息**(信息密度最高,画像最致命 bias 源)。
+- **治根**(非 OCR,是 CNN 卡识别调度):throttle 1/s→**4/s/seat** + river 被动→**状态机主动锁定 reach-showdown seat** + 单帧→**多帧 fusion(0.5s 内 3 帧 majority)**。预期 2+ 亮牌 12%→80%+。
+- **关联**:[[long-term-roadmap]] #LR6 摊牌 fixture 持续收集。**未实施**,Phase 后做。
+
+### §16.3 fold-47% 调查的因果终点(原 05-31,结论已在 [[data-reliability-50-70-percent]])
+
+留作溯源,**不重复 memory**:fold-47% 全量调查(1192 手)→ 全干净 ROI 校准只 +0.9pp(50.2%)→ **认知翻转:弃牌其实抓得好(47% 是 sit-out/赢家/timer-噪声 confound 幻觉),真丢的是"动筹码的动作"≈25%(pot-gap 指标)** → 这正是底线重设 95% 的直接因果起点(§1 战略转向)。fold_text 专职 ROI + allowlist 已 banked(code shipped)。Spike A:批处理默认开(tick 3x、丢失 29.4%→18.5%)、多 CUDA stream 受 GIL 反慢、Pattern D fire 0(详 [[phase-1-5-attention-mechanism-design]])。
