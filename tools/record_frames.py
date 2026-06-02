@@ -32,6 +32,7 @@
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import shutil
@@ -85,6 +86,9 @@ def main():
     ap.add_argument("--device-idx", type=int, default=None, help="DXcam GPU 设备号(多卡时)")
     ap.add_argument("--min-free-gb", type=float, default=5.0, help="剩余磁盘低于此 GB 即停")
     ap.add_argument("--note", type=str, default="", help="录入 manifest 的备注(如牌局/桌型)")
+    ap.add_argument("--dedup", action="store_true",
+                    help="跳过写'与上一帧逐像素完全相同'的帧(manifest 仍逐 tick 记录,节拍不失真)。"
+                         "省盘+标注提速;只去精确重复,不碰微差帧(融合/永不渲染地板要那些微差)")
     args = ap.parse_args()
 
     try:
@@ -137,11 +141,15 @@ def main():
         "format": args.format, "note": args.note,
         "started_wall": datetime.now(timezone.utc).isoformat(),
         "probe_shape": list(probe.shape), "output_idx": args.output_idx,
+        "dedup": args.dedup,
         "tool": "record_frames.py", "task": "T126",
     }
 
     camera.start(region=region, target_fps=int(round(args.fps)), video_mode=True)
-    n = 0
+    tick = 0           # 总抓帧数(= tick 数,每 tick 一行 manifest)
+    uniq = 0           # 实际写盘的唯一帧数
+    prev_hash = None   # 上一帧逐像素哈希(--dedup 用)
+    last_file = None   # 上一个已写盘的文件名(重复 tick 指回它)
     t0 = time.perf_counter()
     last_disk_check = t0
     try:
@@ -152,25 +160,40 @@ def main():
                 t = time.perf_counter()
                 if frame is None:
                     continue
-                fname = f"f_{n:06d}.{args.format}"
-                ok = cv2.imwrite(str(frames_dir / fname), frame)
-                if not ok:
-                    log.error(f"写帧失败 {fname}(磁盘满?路径?). 停。")
-                    break
+
+                is_dup = False
+                if args.dedup:
+                    h = hashlib.md5(frame.tobytes()).digest()  # 精确(逐像素)哈希
+                    if h == prev_hash and last_file is not None:
+                        is_dup = True
+                    else:
+                        prev_hash = h
+
+                if is_dup:
+                    fname = last_file          # 不写新文件,manifest 指回上一个唯一帧
+                else:
+                    fname = f"f_{uniq:06d}.{args.format}"
+                    ok = cv2.imwrite(str(frames_dir / fname), frame)
+                    if not ok:
+                        log.error(f"写帧失败 {fname}(磁盘满?路径?). 停。")
+                        break
+                    last_file = fname
+                    uniq += 1
+
                 mf.write(json.dumps({
-                    "i": n, "file": fname,
+                    "i": tick, "file": fname, "dup": is_dup,
                     "t_mono": round(t - t0, 4),
                     "t_wall": datetime.now(timezone.utc).isoformat(),
                 }, ensure_ascii=False) + "\n")
-                n += 1
+                tick += 1
 
-                if n % 50 == 0:
+                if tick % 50 == 0:
                     mf.flush()
-                    log.info(f"  已录 {n} 帧 ({t - t0:.1f}s)")
+                    log.info(f"  tick {tick} / 存 {uniq} 唯一帧 ({t - t0:.1f}s)")
                 # 停止条件
                 if (t - t0) >= args.duration:
                     log.info("到达 --duration,停。"); break
-                if n >= args.max_frames:
+                if tick >= args.max_frames:
                     log.info("到达 --max-frames,停。"); break
                 if (t - last_disk_check) > 10:
                     last_disk_check = t
@@ -185,8 +208,11 @@ def main():
             pass
 
     dt = time.perf_counter() - t0
-    eff_fps = n / dt if dt > 0 else 0
-    log.info(f"完成:{n} 帧 / {dt:.1f}s,实测有效 {eff_fps:.1f} fps(目标 {args.fps}).")
+    eff_fps = tick / dt if dt > 0 else 0
+    dedup_pct = (100 * (1 - uniq / tick)) if (args.dedup and tick) else 0
+    log.info(f"完成:{tick} ticks / 写 {uniq} 唯一帧"
+             + (f"(去重省 {dedup_pct:.0f}%)" if args.dedup else "")
+             + f" / {dt:.1f}s,有效 {eff_fps:.1f} fps(目标 {args.fps}).")
     log.info(f"帧目录: {frames_dir.resolve()}")
     log.info(f"manifest: {manifest_path.resolve()}")
     if eff_fps < args.fps * 0.6:
