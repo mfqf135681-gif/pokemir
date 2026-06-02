@@ -26,13 +26,12 @@
   # 按窗口标题自动定位,10fps 录最多 5 分钟,存 PNG
   .\\.venv\\Scripts\\python.exe tools\\record_frames.py --window-title "WePoker" --fps 10 --duration 300
   # ★副屏 / 多屏 / dxcam 黑屏 → 用 mss 后端(直接吃窗口全局坐标,含负坐标)
-  .\\.venv\\Scripts\\python.exe tools\\record_frames.py --window-title "WePoker" --backend mss --fps 5 --dedup
+  .\\.venv\\Scripts\\python.exe tools\\record_frames.py --window-title "WePoker" --backend mss --fps 5
   # 显式屏幕绝对坐标(left top width height)
   .\\.venv\\Scripts\\python.exe tools\\record_frames.py --region 100 80 1280 720 --fps 8 --backend mss
 """
 
 import argparse
-import hashlib
 import json
 import logging
 import shutil
@@ -89,10 +88,8 @@ def main():
     ap.add_argument("--device-idx", type=int, default=None, help="[dxcam] GPU 设备号(多卡时)")
     ap.add_argument("--min-free-gb", type=float, default=5.0, help="剩余磁盘低于此 GB 即停")
     ap.add_argument("--note", type=str, default="", help="录入 manifest 的备注(如牌局/桌型)")
-    ap.add_argument("--dedup", action="store_true",
-                    help="跳过写'与上一帧逐像素完全相同'的帧(manifest 仍逐 tick 记录,节拍不失真)。"
-                         "省盘+标注提速;只去精确重复,不碰微差帧(融合/永不渲染地板要那些微差)")
     args = ap.parse_args()
+    # NB: 曾有 --dedup(精确去重),实测网页表一直微动→0% 命中,已撤;全帧本就是融合所需。
 
     try:
         import cv2
@@ -121,7 +118,7 @@ def main():
             log.error("mss 后端需要明确区域:给 --window-title 或 --region。"); sys.exit(2)
         l, t_, r, b = region
         mon = {"left": l, "top": t_, "width": r - l, "height": b - t_}
-        _sct = mss.mss()
+        _sct = mss.MSS()
         # mss.grab → BGRA;取 [:,:,:3] = BGR(与 dxcam BGR 一致,cv2.imwrite 颜色正确)
         def grab_fn():
             return np.asarray(_sct.grab(mon))[:, :, :3]
@@ -173,14 +170,10 @@ def main():
         "format": args.format, "note": args.note, "backend": args.backend,
         "started_wall": datetime.now(timezone.utc).isoformat(),
         "probe_shape": list(probe.shape), "output_idx": args.output_idx,
-        "dedup": args.dedup,
         "tool": "record_frames.py", "task": "T126",
     }
 
     tick = 0           # 总抓帧数(= tick 数,每 tick 一行 manifest)
-    uniq = 0           # 实际写盘的唯一帧数
-    prev_hash = None   # 上一帧逐像素哈希(--dedup 用)
-    last_file = None   # 上一个已写盘的文件名(重复 tick 指回它)
     t0 = time.perf_counter()
     last_disk_check = t0
     next_t = t0        # mss 手动节拍用
@@ -193,27 +186,14 @@ def main():
                 if frame is None:
                     continue
 
-                is_dup = False
-                if args.dedup:
-                    h = hashlib.md5(frame.tobytes()).digest()  # 精确(逐像素)哈希
-                    if h == prev_hash and last_file is not None:
-                        is_dup = True
-                    else:
-                        prev_hash = h
-
-                if is_dup:
-                    fname = last_file          # 不写新文件,manifest 指回上一个唯一帧
-                else:
-                    fname = f"f_{uniq:06d}.{args.format}"
-                    ok = cv2.imwrite(str(frames_dir / fname), frame)
-                    if not ok:
-                        log.error(f"写帧失败 {fname}(磁盘满?路径?). 停。")
-                        break
-                    last_file = fname
-                    uniq += 1
+                fname = f"f_{tick:06d}.{args.format}"
+                ok = cv2.imwrite(str(frames_dir / fname), frame)
+                if not ok:
+                    log.error(f"写帧失败 {fname}(磁盘满?路径?). 停。")
+                    break
 
                 mf.write(json.dumps({
-                    "i": tick, "file": fname, "dup": is_dup,
+                    "i": tick, "file": fname,
                     "t_mono": round(t - t0, 4),
                     "t_wall": datetime.now(timezone.utc).isoformat(),
                 }, ensure_ascii=False) + "\n")
@@ -221,7 +201,7 @@ def main():
 
                 if tick % 50 == 0:
                     mf.flush()
-                    log.info(f"  tick {tick} / 存 {uniq} 唯一帧 ({t - t0:.1f}s)")
+                    log.info(f"  已录 {tick} 帧 ({t - t0:.1f}s)")
                 # 停止条件
                 if (t - t0) >= args.duration:
                     log.info("到达 --duration,停。"); break
@@ -246,10 +226,7 @@ def main():
 
     dt = time.perf_counter() - t0
     eff_fps = tick / dt if dt > 0 else 0
-    dedup_pct = (100 * (1 - uniq / tick)) if (args.dedup and tick) else 0
-    log.info(f"完成:{tick} ticks / 写 {uniq} 唯一帧"
-             + (f"(去重省 {dedup_pct:.0f}%)" if args.dedup else "")
-             + f" / {dt:.1f}s,有效 {eff_fps:.1f} fps(目标 {args.fps}).")
+    log.info(f"完成:{tick} 帧 / {dt:.1f}s,有效 {eff_fps:.1f} fps(目标 {args.fps}).")
     log.info(f"帧目录: {frames_dir.resolve()}")
     log.info(f"manifest: {manifest_path.resolve()}")
     if eff_fps < args.fps * 0.6:
