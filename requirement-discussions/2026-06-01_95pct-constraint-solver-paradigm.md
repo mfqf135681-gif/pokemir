@@ -3,7 +3,7 @@
 > **2026-06-01 战略转向后的核心设计串。** 底线从「50-70% directional」重设为
 > **「筹码动作捕获率 95%」**(用户明示愿付架构级代价,见 memory [[data-reliability-50-70-percent]] §0)。
 > 本 doc 沉淀:架构探索(3 个方案)→ 约束求解器综合 → **离线原型实测判决**。
-> 关联:[[主题-数据质量]] · [[phase-1-5-attention-mechanism-design]] · [[ring-beam-inference-design]]
+> 关联:[[主题-数据质量]] · [[ring-beam-inference-design]] · phase-1-5 注意力方案(已封存 `_archived/2026-05-30_*`,其高帧思路被本范式收编)
 
 ---
 
@@ -132,7 +132,7 @@ PokerKit/求解器要跑,需**一整套输入**,不只动作流。各输入的�
 1. **吞吐**:**先用 EasyOCR recognize-only(免训练起步,见 §7.1)+ 批处理** 全量读在 5070 Ti 上扣掉启动开销/GIL **稳定冲到几 Hz**?(不先建 CNN;够快则免训练,不够再上 §7.6 bake-off 的轻量识别器。治"N 小模型不一定快"风险)
 2. **底池可靠性能否 92%→99%**:高帧 + 多帧融合后,底池这一个锚点数能否读到 99%?
 
-> ⚠️ **这两个出数前,3-5 个月的大建一个字别承诺。**(工程量估算:锚定 phase-1-5 的 9.5 周,本范式换掉双 OCR、加求解器 + 数字识别器 + 拆 monolith → 更多,月级,且我 Win 端半盲的长迁移)
+> ⚠️ **这两个出数前,3-5 个月的大建一个字别承诺。**(工程量估算:以已封存 phase-1-5 的 9.5 周历史估算为锚,本范式换掉双 OCR、加求解器 + 数字识别器 + 拆 monolith → 更多,月级,且我 Win 端半盲的长迁移)
 
 ## §6. 风险登记(决策时复查)
 
@@ -568,4 +568,4 @@ record 20260602_170343,240s 窗,replay_reconstruct(手分段 + 时间序classify
 
 ### §16.3 fold-47% 调查的因果终点(原 05-31,结论已在 [[data-reliability-50-70-percent]])
 
-留作溯源,**不重复 memory**:fold-47% 全量调查(1192 手)→ 全干净 ROI 校准只 +0.9pp(50.2%)→ **认知翻转:弃牌其实抓得好(47% 是 sit-out/赢家/timer-噪声 confound 幻觉),真丢的是"动筹码的动作"≈25%(pot-gap 指标)** → 这正是底线重设 95% 的直接因果起点(§1 战略转向)。fold_text 专职 ROI + allowlist 已 banked(code shipped)。Spike A:批处理默认开(tick 3x、丢失 29.4%→18.5%)、多 CUDA stream 受 GIL 反慢、Pattern D fire 0(详 [[phase-1-5-attention-mechanism-design]])。
+留作溯源,**不重复 memory**:fold-47% 全量调查(1192 手)→ 全干净 ROI 校准只 +0.9pp(50.2%)→ **认知翻转:弃牌其实抓得好(47% 是 sit-out/赢家/timer-噪声 confound 幻觉),真丢的是"动筹码的动作"≈25%(pot-gap 指标)** → 这正是底线重设 95% 的直接因果起点(§1 战略转向)。fold_text 专职 ROI + allowlist 已 banked(code shipped)。Spike A:批处理默认开(tick 3x、丢失 29.4%→18.5%)、多 CUDA stream 受 GIL 反慢、Pattern D fire 0(详 `_archived/2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md` §24)。
