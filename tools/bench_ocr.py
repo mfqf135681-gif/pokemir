@@ -15,9 +15,13 @@
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
+
+# 让 `python tools/bench_ocr.py` 能 import 项目根的 recognition/config
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("bench_ocr")

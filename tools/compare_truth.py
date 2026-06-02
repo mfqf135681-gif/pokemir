@@ -22,9 +22,13 @@
 """
 
 import argparse
+import os
 import re
 import sys
 from dataclasses import dataclass, field
+
+# 让 `python tools/compare_truth.py` 能 import 项目根的 storage/config
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── 动作词归一(中/英 → ActionType 值)──────────────────────────────
 _ACT = {
