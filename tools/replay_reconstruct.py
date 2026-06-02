@@ -144,6 +144,8 @@ def main():
     ap.add_argument("--sb", type=float, default=2); ap.add_argument("--bb", type=float, default=4)
     ap.add_argument("--ante", type=float, default=4); ap.add_argument("--pot", type=float, default=0)
     ap.add_argument("--mock", action="store_true", help="离线自测核(不读帧)")
+    ap.add_argument("--dump-stacks", action="store_true",
+                    help="只读+打印每座 stack 轨迹(验读取质量,不需真值/不跑 reconstruct)")
     args = ap.parse_args()
 
     if args.mock:
@@ -158,6 +160,19 @@ def main():
           f"{len(stack_rois)} 座 stack ROI")
     stack_series, community_series = build_series_real(
         args.session, frames, stack_rois, community_rois, args.start, args.end, args.decimate)
+
+    if args.dump_stacks:
+        print("\n=== 每座 stack 轨迹(验读取质量)===")
+        for s in sorted(stack_series):
+            obs = stack_series[s]
+            nn = sum(1 for _, v in obs if v is not None)
+            plats = _recon.fuse_plateaus(obs)
+            print(f"seat{s}: {len(obs)}读/{nn}非空 | 平台 {[(round(t, 1), int(v)) for t, v in plats]}")
+        print("\n判读:平台应是【单调下降的合理筹码值】(每个台阶=一次投入)。"
+              "\n  全 None/乱跳/读不出 → 读取层(OCR/ROI)有问题,先修这个(=砖2 数字CNN要解的)。"
+              "\n  台阶干净 → 架构弱环(读取)过关,reconstruct(已自测)能接上。")
+        return
+
     config = {"sb": args.sb, "bb": args.bb, "ante": args.ante, "pot": args.pot,
               "seats": list(stack_rois.keys())}
     res = reconstruct(stack_series, community_series, config)

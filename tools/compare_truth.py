@@ -67,6 +67,9 @@ def _parse_action(street: str, token: str) -> Action | None:
     token = token.strip()
     if not token:
         return None
+    # 归一 "all in"/"all-in" → allin(用户常带空格)
+    import re as _re
+    token = _re.sub(r"all[\s_-]*in", "allin", token, flags=_re.IGNORECASE)
     parts = token.split()
     if len(parts) < 2:
         return None
@@ -83,7 +86,7 @@ def _parse_action(street: str, token: str) -> Action | None:
     if atype is None:
         return None
     amount = None
-    m = re.search(r"(\d+(?:\.\d+)?)", token)
+    m = re.search(r"(\d+(?:\.\d+)?)", " ".join(parts[1:]))  # 排除位置标签(避免 UTG+1 的"1"被当金额)
     if m:
         amount = float(m.group(1))
     return Action(street=street, pos=pos, type=atype, amount=amount, raw=token)
@@ -112,7 +115,7 @@ def parse_labels(text: str) -> list[LabeledHand]:
         street = street.strip().lower()
         if street not in STREETS:
             continue
-        for tok in rest.split(","):
+        for tok in re.split(r"[,，;；]", rest):
             act = _parse_action(street, tok)
             if act:
                 cur.actions.append(act)
