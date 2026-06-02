@@ -168,9 +168,14 @@ def main():
             nn = sum(1 for _, v in obs if v is not None)
             plats = _recon.fuse_plateaus(obs)
             print(f"seat{s}: {len(obs)}读/{nn}非空 | 平台 {[(round(t, 1), int(v)) for t, v in plats]}")
-        print("\n判读:平台应是【单调下降的合理筹码值】(每个台阶=一次投入)。"
-              "\n  全 None/乱跳/读不出 → 读取层(OCR/ROI)有问题,先修这个(=砖2 数字CNN要解的)。"
-              "\n  台阶干净 → 架构弱环(读取)过关,reconstruct(已自测)能接上。")
+        print("\n=== 公共牌张数 over time(验分街信号)===")
+        prev = None
+        for (t, n) in community_series:
+            if n != prev:
+                print(f"  t{t:.1f}: {n} 张")
+                prev = n
+        print("  (应:每手 0→3→4→5 然后 reset 回 0;若一直 5/3 或乱跳 → 公共牌读取/iscard 误判)")
+        print("\n判读:stack 平台应单调下降(台阶=投入);公共牌应随街 0→3→4→5。")
         return
 
     config = {"sb": args.sb, "bb": args.bb, "ante": args.ante, "pot": args.pot,
