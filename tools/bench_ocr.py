@@ -52,6 +52,8 @@ def main():
     ap.add_argument("--profile", default="party_poker_8", help="ROI profile 名(rois/<name>.json)")
     ap.add_argument("--iters", type=int, default=20, help="每模式迭代次数(取均值)")
     ap.add_argument("--allowlist", default="0123456789.弃跟加让下注牌kK万%", help="测速用合并 allowlist")
+    ap.add_argument("--batch-size", type=int, default=32,
+                    help="识别器 GPU batch_size(EasyOCR 默认 1=不批!§12 重测关键)")
     args = ap.parse_args()
 
     try:
@@ -103,17 +105,18 @@ def main():
     ms_per_roi = bench(lambda: [ocr.read_text(c, allowlist=args.allowlist) for c in crops], args.iters)
     # B 批处理
     ms_batch = bench(lambda: ocr.read_text_batch(crops, allowlist=args.allowlist), args.iters)
-    # C recognize-only 整帧一次(免检测)
+    # C recognize-only 整帧一次(免检测)+ batch_size 批识别器(§12 重测关键)
     ms_recog = bench(lambda: reader.recognize(grey, horizontal_list=hlist, free_list=[],
-                                              detail=0, allowlist=args.allowlist), args.iters)
+                                              detail=0, allowlist=args.allowlist,
+                                              batch_size=args.batch_size), args.iters)
 
     def hz(ms):
         return 1000.0 / ms if ms > 0 else 0
     print("\n========== OCR 吞吐(每帧全 ROI)==========")
-    print(f"ROI 数: {len(rois)}   帧: {W}x{H}")
+    print(f"ROI 数: {len(rois)}   帧: {W}x{H}   batch_size: {args.batch_size}")
     print(f"A 逐ROI readtext(现状)  : {ms_per_roi:8.1f} ms/帧 → {hz(ms_per_roi):5.2f} Hz")
     print(f"B readtext_batched       : {ms_batch:8.1f} ms/帧 → {hz(ms_batch):5.2f} Hz  (×{ms_per_roi/ms_batch:.1f} vs A)")
-    print(f"C recognize-only 整帧一次: {ms_recog:8.1f} ms/帧 → {hz(ms_recog):5.2f} Hz  (×{ms_per_roi/ms_recog:.1f} vs A)")
+    print(f"C recognize-only(bs={args.batch_size}): {ms_recog:8.1f} ms/帧 → {hz(ms_recog):5.2f} Hz  (×{ms_per_roi/ms_recog:.1f} vs A)")
     print("==========================================")
     print("注:C 用单一合并 allowlist 一次读完所有 ROI = 速度上界;真用需按 allowlist 分 2-3 组")
     print("    (仍远少于 A 的逐 ROI),实际介于 B/C 之间。目标看能否冲 4-10Hz。")
