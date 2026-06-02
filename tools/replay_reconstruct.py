@@ -103,6 +103,66 @@ def build_series_real(session, frames, stack_rois, community_rois, start, end, d
     return stack_series, community_series
 
 
+# ── §17 持久信号试验(T129):读 action 词 + amount 下注区,验街内持久 + 可读性 ──
+# 动作词候选字符(弃牌/跟注/让牌/加注/下注/全下/过牌/盖牌);OCR allowlist 收窄抗噪
+_ACTION_ALLOW = "弃牌跟注让加下全过盖"
+
+
+def load_action_rois(profile_path):
+    """→ (action_rois {seat:[l,t,w,h]} 动作词, amount_rois {seat:[..]} 下注区金额)"""
+    p = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+    action_rois, amount_rois = {}, {}
+    for s in p.get("seats", []):
+        si = int(s["seat_index"])
+        if s.get("action"):
+            action_rois[si] = s["action"]
+        if s.get("amount"):
+            amount_rois[si] = s["amount"]
+    return action_rois, amount_rois
+
+
+def read_word(img, roi, ocr, allowlist=_ACTION_ALLOW):
+    """裁动作词 ROI → OCR(收窄 allowlist)→ str|None。⚠️ Win-only。"""
+    l, t, w, h = roi
+    txt = ocr.read_text(img[t:t + h, l:l + w], allowlist=allowlist)
+    txt = "".join(c for c in (txt or "") if c.strip())
+    return txt or None
+
+
+def collapse_changes(series):
+    """[(t, val)] → 只在值变化处留点(None 也算一种值)。纯函数,验"街内持久"。"""
+    out, prev = [], object()  # sentinel ≠ 任何值
+    for t, v in series:
+        if v != prev:
+            out.append((t, v))
+            prev = v
+    return out
+
+
+def build_action_series(session, frames, action_rois, amount_rois, community_rois,
+                        start, end, decimate, white_th=170, frac_th=0.12):
+    """Win 路径:逐帧读 action 词 + amount 下注区 + 公共牌 → 三个时间序列。"""
+    import cv2
+    from recognition.ocr import OCREngine
+    ocr = OCREngine(gpu=True, name="replay")
+    act = {s: [] for s in action_rois}
+    amt = {s: [] for s in amount_rois}
+    community_series = []
+    fdir = Path(session) / "frames"
+    for k, (i, fn, t) in enumerate(frames):
+        if t < start or t > end or (k % decimate):
+            continue
+        img = cv2.imread(str(fdir / fn))
+        if img is None:
+            continue
+        for s, roi in action_rois.items():
+            act[s].append((t, read_word(img, roi, ocr)))
+        for s, roi in amount_rois.items():
+            amt[s].append((t, read_stack(img, roi, ocr)))  # amount=数字,复用 read_stack
+        community_series.append((t, count_community(img, community_rois, white_th, frac_th)))
+    return act, amt, community_series
+
+
 # ── 真值比对(可测)────────────────────────────────────────────────────
 def compare_to_truth(actions, truth_path, tol=2.0):
     """reconstruct 的 ChipAction vs 真值文件(compare_truth 格式)→ 捕获率。
@@ -150,6 +210,8 @@ def main():
     ap.add_argument("--mock", action="store_true", help="离线自测核(不读帧)")
     ap.add_argument("--dump-stacks", action="store_true",
                     help="只读+打印每座 stack 轨迹(验读取质量,不需真值/不跑 reconstruct)")
+    ap.add_argument("--dump-actions", action="store_true",
+                    help="§17/T129:只读+打印每座 action 词 + amount 下注区时间序列(验街内持久+可读性)")
     args = ap.parse_args()
 
     if args.mock:
@@ -158,8 +220,37 @@ def main():
     if not args.session:
         ap.error("给 --session 或 --mock")
 
-    stack_rois, community_rois = load_rois(Path("rois") / f"{args.profile}.json")
+    profile_path = Path("rois") / f"{args.profile}.json"
     meta, frames = load_manifest(args.session)
+
+    if args.dump_actions:
+        action_rois, amount_rois = load_action_rois(profile_path)
+        _, community_rois = load_rois(profile_path)
+        print(f"session {args.session}: {len(frames)} 帧, 窗[{args.start},{args.end}], "
+              f"{len(action_rois)} 座 action ROI / {len(amount_rois)} 座 amount ROI")
+        act, amt, community_series = build_action_series(
+            args.session, frames, action_rois, amount_rois, community_rois,
+            args.start, args.end, args.decimate, args.white_th, args.frac_th)
+        print("\n=== 公共牌张数 over time(街上下文)===")
+        prev = None
+        for (t, n) in community_series:
+            if n != prev:
+                print(f"  t{t:.1f}: {n} 张")
+                prev = n
+        print("\n=== 每座 action 词 + amount 下注区(按值变化折叠;验街内持久)===")
+        for s in sorted(set(act) | set(amt)):
+            aw = collapse_changes(act.get(s, []))
+            am = collapse_changes(amt.get(s, []))
+            na = sum(1 for _, v in act.get(s, []) if v is not None)
+            nm = sum(1 for _, v in amt.get(s, []) if v is not None)
+            print(f"\nseat{s}: action {len(act.get(s,[]))}读/{na}非空 | amount {len(amt.get(s,[]))}读/{nm}非空")
+            print(f"  action 变化: {[(round(t,1), v) for t, v in aw]}")
+            print(f"  amount 变化: {[(round(t,1), (int(v) if v is not None else None)) for t, v in am]}")
+        print("\n判读:① 动作做出后 action 词/amount 应在本街内【保持不变】(持久),街末清/换街变;"
+              "② 全座都应读得出(非空多);③ amount 跳变序列应能复原各街投入。")
+        return
+
+    stack_rois, community_rois = load_rois(profile_path)
     print(f"session {args.session}: {len(frames)} 帧, 时间窗 [{args.start},{args.end}], "
           f"{len(stack_rois)} 座 stack ROI")
     stack_series, community_series = build_series_real(
@@ -245,6 +336,16 @@ def _self_test():
     print(f"✅ self-test 核通过:重建 {len(res.actions)} 动作,对 mock 真值捕获率 "
           f"{cmp['capture_rate']*100:.0f}%(matched {cmp['matched']}/{cmp['true']})")
     print("   (真跑接 Win 录制帧 + OCR/CNN 读 stack;此处仅验编排+比对核)")
+
+    # §17/T129:collapse_changes 折叠逻辑(街内持久=同值连续帧塌成一点)
+    seq = [(0.0, None), (1.0, None), (2.0, "跟注"), (3.0, "跟注"), (4.0, "加注"),
+           (5.0, "加注"), (6.0, None)]  # 模拟:闲置→跟注(持久2帧)→加注(持久2帧)→街末清
+    col = collapse_changes(seq)
+    assert col == [(0.0, None), (2.0, "跟注"), (4.0, "加注"), (6.0, None)], col
+    # amount 同理:本街投入 4→4→58(re-raise)→清
+    amt = collapse_changes([(0, None), (1, 4), (2, 4), (3, 58), (4, 58), (5, None)])
+    assert amt == [(0, None), (1, 4), (3, 58), (5, None)], amt
+    print("✅ collapse_changes 核通过:同值连续帧塌成一点(动作词 + amount 跳变序列)")
 
 
 if __name__ == "__main__":
