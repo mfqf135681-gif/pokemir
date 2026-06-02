@@ -342,3 +342,30 @@ WePoker 有「历史牌局」回放(`resource/Screenshot.png` 实证):每手显�
 - **撤回误判**:`Ts2h5h` SB=4 是 **SB complete(从 2 补到 4)正确**,非误读 —— 提醒「不懂桌规别硬判」。
 - **history 校准闭环验证可用**(守恒双向防错 + flop 指纹对齐有效)→ #LR19 落地基础有了。
 - 净方向:**95% 范式(pot 锚点 + 规则反推漏动作)正是治这个**;ante 漏顺手可修;保险 history 白给。
+
+## §12. T125 首测:OCR 吞吐 —— EasyOCR 到不了高帧 + recognize-only 证伪(2026-06-02)⭐
+
+`tools/bench_ocr.py`,真实窗口帧(1454×1287)+ 74 个 OCR 文字区,3 路径每帧耗时:
+
+| 路径 | ms/帧 | Hz | |
+|---|---:|---:|---|
+| A 逐 ROI readtext(现状) | 980 | **1.02** | 基准 |
+| B readtext_batched | 1260 | 0.79 | **比 A 慢** |
+| C recognize-only 整帧一次 | 1031 | 0.97 | **无提速** |
+
+### 两个假设被数据打脸
+- 🔴 **§7.1「recognize-only 免检测便宜化」证伪**:跳过检测(C)≈ 全量(A)→ **检测不是瓶颈,识别(CRNN)才是**;74 crop 的识别 ~1s,省检测省不掉。**"跳检测就快"错。**
+- 🔴 **批处理(B)更慢**:`readtext_batched` 把所有 crop resize 到最大尺寸×3 → 小区被放大成大图 → 异构尺寸批处理=膨胀。
+
+### 可信度
+A 的 ~1Hz **吻合现 pipeline 已知 ~1Hz tick(OCR-bound)→ bench 可信**。
+
+### 结论 + 方向
+- **EasyOCR 无论哪条路 ≈ 1Hz,到不了 4-10Hz** → **高帧用 EasyOCR 走不通**。
+- **真正提速杠杆没测**:§7.6 轻量识别器(PaddleOCR mobile / 自训小 CNN)—— 能把 74 crop **一次 batched forward** 跑完(单前向 vs 74 次重型 OCR),理论快一个量级。**命门现在窄成:小 CNN batched 跑 74 crop 多少 ms?**
+- 附:74 = 全集,真 pipeline 跳弃牌座位 → 现实 ~2Hz(仍不够)。
+- **价值**:便宜 bench 在建高帧管线前就拆穿"recognize-only 救场"错假设,免得白建。
+
+### §7.1/§7.5/§5 更新
+- §7.1「EasyOCR recognize-only 免训练起步」+ §7.5 同条 + §5 step1「recognize-only 起步」:**作为速度杠杆已证伪**(免检测不提速);仍可作免检测的便利,但**高帧提速必须靠轻量模型**。
+- 下一 bench:`bench_cnn`(CardCNN batched 吞吐)= §7.6 速度假设的真检验。
