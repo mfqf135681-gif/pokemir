@@ -377,6 +377,10 @@ def main():
                     help="T130:只读+打印每座 win_amount(+xx 结算)时间序列(验它能否当手边界,翻牌前结束的手也有)")
     ap.add_argument("--settle-win", type=float, default=2.0,
                     help="A:手末 +xx 前 N 秒的动作判结算噪声、抑制(治 river settlement 假阳;实测 2 最优 Recall98/Prec91;0=关)")
+    ap.add_argument("--win-merge", type=float, default=6.0,
+                    help="T130:+xx 结算聚类合并窗秒(大桌结算散开调大,如 12;默认 6)")
+    ap.add_argument("--win-min", type=float, default=0.0,
+                    help="T130:滤掉 < 此额的小额 +xx 噪声(某些桌 win_amount 误读 +3/+33;真结算远大于此,如 5/10/10 桌用 50)")
     args = ap.parse_args()
 
     if args.mock:
@@ -537,7 +541,7 @@ def main():
         stack_series, bet_series, win_series, community_series, allin_marks = build_truth_series(
             args.session, frames, stack_rois, amount_rois, win_rois, community_rois,
             args.start, args.end, args.decimate, args.white_th, args.frac_th)
-        win_ends = _recon.hand_ends_from_win(win_series)
+        win_ends = _recon.hand_ends_from_win(win_series, merge=args.win_merge, min_win=args.win_min)
         print(f"  +xx 结算手末 {len(win_ends)} 个 → win 权威分段")
     else:
         stack_series, community_series, allin_marks = build_series_real(

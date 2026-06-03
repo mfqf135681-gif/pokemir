@@ -285,11 +285,14 @@ def compare_coverage(stack_actions, bet_actions, tol=2.0, t_tol=3.0):
 
 
 # ── 手分段(§15.3:录制跨多手 → 按边界切成一手一窗)──────────────────────
-def hand_ends_from_win(win_series, merge=6.0):
+def hand_ends_from_win(win_series, merge=6.0, min_win=0.0):
     """win_amount(+xx 结算)非空时刻 → 聚类成手末事件 [t,...]。
     +xx=结算=手末:**普适**(翻牌前结束的手也有,公共牌 reset 标不出),且 stack 误读不会凭空产 +xx。
-    实测(170343)干净标出 12 手含 1 个无公共牌手。返回每簇首个时刻。"""
-    ts = sorted(t for obs in win_series.values() for (t, v) in obs if v is not None)
+    min_win:滤掉 < min_win 的小额 +xx(治某些桌 win_amount ROI 系统误读出 +3/+33 噪声 + 小额边池;
+            真结算赢家拿走的额远大于此,主赢家的大额 +xx 仍标得出手末)。
+    merge:同一结算的多帧/散开(动画+分边池揭示)合并窗;大桌结算散开需调大。
+    实测:170343 干净(merge6/min0);5/10/10 桌噪声大(需 merge~12/min~50)。返回每簇首个时刻。"""
+    ts = sorted(t for obs in win_series.values() for (t, v) in obs if v is not None and v >= min_win)
     if not ts:
         return []
     ends = [ts[0]]
