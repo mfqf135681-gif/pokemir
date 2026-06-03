@@ -121,6 +121,12 @@ def load_action_rois(profile_path):
     return action_rois, amount_rois
 
 
+def load_pot_roi(profile_path):
+    """→ (pot_roi [l,t,w,h]|None, pot_prev_roi |None)。底池=守恒锚,T125 验它读不读得到 99%。"""
+    p = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+    return p.get("pot_size"), p.get("pot_size_previous")
+
+
 def read_word(img, roi, ocr, allowlist=_ACTION_ALLOW):
     """裁动作词 ROI → OCR(收窄 allowlist)→ str|None。⚠️ Win-only。"""
     l, t, w, h = roi
@@ -238,6 +244,8 @@ def main():
                     help="§17/T129:只读+打印每座 action 词 + amount 下注区时间序列(验街内持久+可读性)")
     ap.add_argument("--fuse", action="store_true",
                     help="§17/T129:量 stack∪下注区 融合覆盖(逐手 stack重建 vs 下注区反推 对比;无真值时看相对覆盖+一致性)")
+    ap.add_argument("--dump-pot", action="store_true",
+                    help="T125:只读+打印底池(pot_size)时间序列(验守恒锚读取可靠性,目标 92%→99%)")
     args = ap.parse_args()
 
     if args.mock:
@@ -307,6 +315,39 @@ def main():
         print(f"  **融合并集(天花板代理): {agg['union']}**  ← 比单 stack({agg['n_stack']})多 {agg['union']-agg['n_stack']}")
         print("\n判读:bet_only 高 = 下注区补回 stack 漏的(融合值);both_agree 高 = 两信号互证可靠;"
               "both_disagree 高 = 某信号读错(需查)。⚠️ 无真值=只能看相对覆盖,非绝对捕获率。")
+        return
+
+    if args.dump_pot:
+        import cv2
+        from recognition.ocr import OCREngine
+        pot_roi, pot_prev_roi = load_pot_roi(profile_path)
+        _, community_rois = load_rois(profile_path)
+        if not pot_roi:
+            ap.error("profile 无 pot_size ROI")
+        ocr = OCREngine(gpu=True, name="replay")
+        fdir = Path(args.session) / "frames"
+        pot_series, community_series = [], []
+        for k, (i, fn, t) in enumerate(frames):
+            if t < args.start or t > args.end or (k % args.decimate):
+                continue
+            img = cv2.imread(str(fdir / fn))
+            if img is None:
+                continue
+            pot_series.append((t, read_stack(img, pot_roi, ocr)))
+            community_series.append((t, count_community(img, community_rois, args.white_th, args.frac_th)))
+        nn = sum(1 for _, v in pot_series if v is not None)
+        print(f"session {args.session}: pot ROI {pot_roi} | {len(pot_series)}读/{nn}非空")
+        print("\n=== 公共牌张数 over time(手/街上下文)===")
+        prev = None
+        for (t, n) in community_series:
+            if n != prev:
+                print(f"  t{t:.1f}: {n} 张")
+                prev = n
+        print("\n=== 底池 pot_size over time(按值变化折叠)===")
+        for (t, v) in collapse_changes(pot_series):
+            print(f"  t{t:.1f}: {int(v) if v is not None else None}")
+        print("\n判读(守恒锚可靠性):① 手内底池应【单调升】(每动作加注),手末派彩后 reset(对齐公共牌归零);"
+              "② 非空率应高、无乱跳/垃圾值;③ 若手内出现下降(非手末)或读空 → 锚点不稳,99% 有风险。")
         return
 
     stack_rois, community_rois = load_rois(profile_path)
