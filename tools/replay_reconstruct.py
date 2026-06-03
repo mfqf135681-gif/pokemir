@@ -375,6 +375,8 @@ def main():
                     help="T125:只读+打印底池(pot_size)时间序列(验守恒锚读取可靠性,目标近 99 percent)")
     ap.add_argument("--dump-win", action="store_true",
                     help="T130:只读+打印每座 win_amount(+xx 结算)时间序列(验它能否当手边界,翻牌前结束的手也有)")
+    ap.add_argument("--settle-win", type=float, default=0.0,
+                    help="A:手末 +xx 前 N 秒的动作判结算噪声、抑制(治 river settlement 假阳;0=关,试 2-3 调)")
     args = ap.parse_args()
 
     if args.mock:
@@ -581,6 +583,11 @@ def main():
         ss, cs = _recon.slice_series(stack_series, community_series, t0, t1)
         am = {s: [t for t in allin_marks.get(s, []) if t0 <= t < t1] for s in allin_marks}
         res = reconstruct(ss, cs, config, allin_marks=am)
+        if args.settle_win > 0:  # A:抑制手末 +xx 前 N 秒的结算噪声(river settlement)
+            n0 = len(res.actions)
+            res.actions = [a for a in res.actions if a.t <= t1 - args.settle_win]
+            if len(res.actions) < n0:
+                res.notes.append(f"结算窗抑制 {n0 - len(res.actions)} 笔(手末 {t1:.0f} 前 {args.settle_win}s)")
         all_actions.extend(res.actions)
         bet_cands = []
         if bet_series:  # §19 下注区 call-to 候选(融合比对用)
