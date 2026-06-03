@@ -26,10 +26,11 @@ PREFLOP, FLOP, TURN, RIVER = "preflop", "flop", "turn", "river"
 class ChipAction:
     seat: int
     street: str
-    chips_in: float          # 本次投入(= stack 跌幅)
+    chips_in: float          # 本次投入(= stack 跌幅,增量)
     t: float
     atype: str = "?"         # 规则推:call/bet/raise/all_in
     confidence: float = 1.0  # 局部恒等式对上=1.0,缺校验<1
+    to_amount: float = 0.0   # 该座本街累计投入(call-to/raise-to,= 用户标注口径)
 
 
 @dataclass
@@ -133,22 +134,30 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
         for (t, amt) in rises:
             res.notes.append(f"seat{s}@{t}: stack 涨 {amt}(派彩/补码,非动作)")
 
-    # 🔧 BUG1 修:ante 排除 —— 手起始全员各跌≈ante 的【最早同时簇】= 强制 ante(已在 res.forced),
-    #    不计自愿动作(否则每人 -ante 被误判 limp,虚增 + 吞掉真 limp 可分辨性)。
+    # 🔧 BUG1+精度修:强制注簇排除 —— 手起始的强制投入(已在 res.forced),不计自愿。
+    #    含 ante(各≈ante)+ SB 合并(ante+sb)+ BB 合并(ante+bb)。
+    #    关键:BB 一次扣 ante+bb(如 4+4=8),ante 簇只排≈ante → 8 漏排 → 误判"bet 8"假阳(§19.6)。
     ante_marks = set()  # {(seat, round(t,1))}
     if ante > 0:
-        ad = sorted((t, s) for (t, s, c, _) in raw if abs(c - ante) <= tol)
-        if ad:
+        forced_amts = [ante]
+        if config.get("sb", 0):
+            forced_amts.append(ante + config["sb"])   # SB 合并 = ante + 小盲
+        if config.get("bb", 0):
+            forced_amts.append(ante + config["bb"])    # BB 合并 = ante + 大盲
+        ante_ts = sorted(t for (t, s, c, _) in raw if abs(c - ante) <= tol)
+        if ante_ts:
             win = config.get("ante_cluster_win", 2.0)
             min_n = config.get("min_ante_seats", 3)
-            t0 = ad[0][0]
-            cluster = [(t, s) for (t, s) in ad if t - t0 <= win]
-            if len(cluster) >= min_n:  # 够多座同时 -ante = ante 簇(非零散 limp)
-                ante_marks = {(s, round(t, 1)) for (t, s) in cluster}
-                res.notes.append(f"ante 簇排除 {len(ante_marks)} 笔(@t≈{t0:.1f},各≈{ante})→ 计强制注非自愿")
+            t0 = ante_ts[0]
+            if sum(1 for t in ante_ts if t - t0 <= win) >= min_n:  # 确认 ante 簇(够多座 ~ante)
+                # 排除手起始窗内所有强制注金额(ante / ante+sb / ante+bb)
+                ante_marks = {(s, round(t, 1)) for (t, s, c, _) in raw
+                              if t0 <= t <= t0 + win and any(abs(c - fa) <= tol for fa in forced_amts)}
+                res.notes.append(f"强制注簇排除 {len(ante_marks)} 笔(@t≈{t0:.1f},含 ante{ante}/SB{ante+config.get('sb',0)}/BB{ante+config.get('bb',0)})")
     events = [(t, s, c, a) for (t, s, c, a) in raw if (s, round(t, 1)) not in ante_marks]
     events.sort(key=lambda e: e[0])  # 时间序
     cur_bet = {}  # street -> 当前最大单家投入
+    contrib = {}  # (seat, street) -> 该座本街累计投入(算 call-to/raise-to)
     for (t, s, chips, is_allin) in events:
         st = street_at(t, boundaries)
         mx = cur_bet.get(st, 0)
@@ -161,7 +170,9 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
         else:
             atype = "raise"
         cur_bet[st] = max(mx, chips)
-        act = ChipAction(seat=s, street=st, chips_in=chips, t=t, atype=atype)
+        contrib[(s, st)] = contrib.get((s, st), 0.0) + chips  # 累计 → call-to
+        act = ChipAction(seat=s, street=st, chips_in=chips, t=t, atype=atype,
+                         to_amount=contrib[(s, st)])
         if bet_reads and s in bet_reads:  # 局部恒等式三腿校验
             near = [bv for (bt, bv) in bet_reads[s] if abs(bt - t) <= config.get("t_tol", 1.0)]
             if near:
@@ -184,7 +195,8 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
                     continue  # 该座该时刻已有动作
                 st = street_at(tm, boundaries)
                 res.actions.append(ChipAction(seat=s, street=st, chips_in=prior[-1][1],
-                                              t=tm, atype="all_in", confidence=0.7))
+                                              t=tm, atype="all_in", confidence=0.7,
+                                              to_amount=prior[-1][1]))
                 res.notes.append(f"seat{s}@{tm:.1f}: 胜率%标记 → all-in 反解投入≈{prior[-1][1]:.0f}")
 
     res.sum_chips = sum(a.chips_in for a in res.actions) + sum(res.forced.values())
@@ -464,6 +476,18 @@ def _self_test():
     wins_w = segment_hands(ss_w, [], {"win_ends": [26, 68, 110], "tol": 2.0})
     assert len(wins_w) == 4 and wins_w[0][1] == 26, wins_w  # [0,26][26,68][68,110][110,120]
     print(f"✅ T130 win-分段:结算 {ends} → {len(wins_w)} 手窗 {[(round(a),round(b)) for a,b in wins_w]}")
+
+    # 精度修:BB 合并强制注(ante+bb=8)排除 + to_amount(call-to 口径)
+    ss_bb = {
+        0: [(0, 100), (0.5, 100), (1, 96), (1.5, 96)],   # ante 4
+        1: [(0, 100), (0.5, 100), (1, 96), (1.5, 96)],   # ante 4
+        2: [(0, 100), (0.5, 100), (1, 96), (1.5, 96)],   # ante 4
+        3: [(0, 200), (0.5, 200), (1, 192), (1.5, 192), (5, 140), (5.5, 140)],  # BB ante+bb=8@1 + raise52@5
+    }
+    res_bb = reconstruct(ss_bb, [(0, 0)], {"ante": 4, "sb": 2, "bb": 4, "tol": 2, "pot": 0, "seats": [0, 1, 2, 3]})
+    acts_bb = [(a.seat, round(a.chips_in), round(a.to_amount)) for a in res_bb.actions]
+    assert acts_bb == [(3, 52, 52)], acts_bb  # BB 的 8(ante+bb)排除,只留真 raise 52;to_amount=52
+    print(f"✅ 精度修:BB 合并post(8)排除,仅留真动作 + to_amount {acts_bb}")
 
 
 if __name__ == "__main__":

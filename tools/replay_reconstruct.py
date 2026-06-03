@@ -319,7 +319,9 @@ def compare_per_hand(machine_hands, truth_path, tol=2.0):
         stack_acts, bet_cands = machine_hands[i] if i < len(machine_hands) else ([], [])
         tchips = [(a.street, a.amount) for a in (thands[i].actions if i < len(thands) else [])
                   if a.type in CHIP_ACTIONS and a.amount is not None]
-        cands = [(a.street, a.chips_in) for a in stack_acts] + list(bet_cands)
+        # recall:truth(call-to 口径)匹配 机器 call-to(to_amount)∪ 增量 ∪ 下注区 call-to
+        cands = ([(a.street, a.to_amount) for a in stack_acts]
+                 + [(a.street, a.chips_in) for a in stack_acts] + list(bet_cands))
         used = [False] * len(cands)
         matched = 0
         for (st, amt) in tchips:
@@ -330,7 +332,8 @@ def compare_per_hand(machine_hands, truth_path, tol=2.0):
                     break
             else:
                 miss.append((i + 1, st, amt))
-        macts = [(a.street, a.chips_in) for a in stack_acts]
+        # precision:机器动作(按 call-to 口径=to_amount)匹配 truth
+        macts = [(a.street, a.to_amount) for a in stack_acts]
         tused = [False] * len(tchips)
         prec = 0
         for (st, amt) in macts:
