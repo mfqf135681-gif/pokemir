@@ -161,6 +161,62 @@ def reconstruct(stack_series, community_series, config, bet_reads=None):
     return res
 
 
+# ── §17/T129 融合:下注区 amount 当独立第二信号 ──────────────────────────
+def actions_from_bets(bet_reads, community_series, config):
+    """下注区 amount(每座本街【累计】投入)→ 用街内增量反推动作,**独立于 stack**。
+    amount 在街内单调升,增量=本次 chips_in;街切换基线归零;某值需出现≥2 次(滤单帧误读)。
+    返回 [(t, seat, street, chips_in)]。"""
+    from collections import Counter
+    boundaries = boundaries_from_community(community_series)
+    tol = config.get("tol", 2.0)
+    out = []
+    for s, series in bet_reads.items():
+        by_street = {}
+        for (t, v) in sorted(series):
+            if v is None:
+                continue
+            st = street_at(t, boundaries)
+            by_street.setdefault(st, []).append((t, float(v)))
+        for st, vals in by_street.items():
+            counts = Counter(round(v) for _, v in vals)
+            seen = 0.0
+            for (t, v) in vals:
+                if v > seen + tol and counts[round(v)] >= 2:  # 街内累计新高 + 持久≥2
+                    out.append((t, s, st, v - seen))
+                    seen = v
+    out.sort(key=lambda e: e[0])
+    return out
+
+
+def compare_coverage(stack_actions, bet_actions, tol=2.0, t_tol=3.0):
+    """stack 派生动作 vs 下注区派生动作,按 (seat, street, ~t) 匹配 → 覆盖+一致性统计。
+    无真值时的天花板代理:union=两信号并集;agree=都抓到且金额合;*_only=互补恢复量。"""
+    sa = [(a.seat, a.street, a.t, a.chips_in) for a in stack_actions]
+    ba = list(bet_actions)  # (t, seat, street, chips)
+    used = [False] * len(ba)
+    agree = dis = stack_only = 0
+    for (s, st, t, c) in sa:
+        hit, best_dt = -1, 1e9  # 同街多动作:按【最近时间】配,不是窗口内第一个
+        for j, (bt, bs, bst, bc) in enumerate(ba):
+            if used[j] or bs != s or bst != st:
+                continue
+            dt = abs(bt - t)
+            if dt <= t_tol and dt < best_dt:
+                hit, best_dt = j, dt
+        if hit >= 0:
+            used[hit] = True
+            if abs(ba[hit][3] - c) <= tol:
+                agree += 1
+            else:
+                dis += 1
+        else:
+            stack_only += 1
+    bet_only = sum(1 for j in range(len(ba)) if not used[j])
+    return {"both_agree": agree, "both_disagree": dis, "stack_only": stack_only,
+            "bet_only": bet_only, "n_stack": len(sa), "n_bet": len(ba),
+            "union": agree + dis + stack_only + bet_only}
+
+
 # ── 手分段(§15.3:录制跨多手 → 按边界切成一手一窗)──────────────────────
 def segment_hands(stack_series, community_series, config):
     """检测手边界 → [(t_start, t_end)] 每手窗口。
@@ -274,6 +330,23 @@ def _self_test():
     assert len(wins) == 2, wins
     assert abs(wins[0][1] - 10) <= 1.5, wins  # 边界 ≈10
     print(f"✅ 手分段:2 手窗口 {[(round(a, 1), round(b, 1)) for a, b in wins]}(派彩涨+全员ante 边界 ≈10)")
+
+    # §17/T129 融合自测:下注区 amount 累计序列 → 反推动作 + 覆盖对比
+    comm = [(0, 0), (5, 3)]  # preflop→flop@5
+    bet_reads = {
+        # seat1:preflop 累计 4(limp)→58(re-raise 到 58);flop 累计 28。每值出现≥2 次。
+        1: [(0, None), (1, 4), (2, 4), (3, 58), (4, 58), (6, 28), (7, 28), (8, None)],
+    }
+    bacts = actions_from_bets(bet_reads, comm, {"tol": 2.0})
+    # 期望:preflop 4(增量4)、preflop 54(58-4)、flop 28
+    incs = sorted(round(c) for (_, _, _, c) in bacts)
+    assert incs == [4, 28, 54], (incs, bacts)
+    # 覆盖对比:stack 只抓到 preflop-54 + flop-28(漏了 preflop-4)→ 应 bet_only=1
+    fake_stack = [ChipAction(seat=1, street="preflop", chips_in=54, t=3.0),
+                  ChipAction(seat=1, street="flop", chips_in=28, t=6.0)]
+    cov = compare_coverage(fake_stack, bacts, tol=2.0, t_tol=3.0)
+    assert cov["both_agree"] == 2 and cov["bet_only"] == 1 and cov["stack_only"] == 0, cov
+    print(f"✅ 融合核:下注区反推动作 {incs};覆盖对比 {cov}(下注区补回 stack 漏的 1 个=bet_only)")
 
 
 if __name__ == "__main__":

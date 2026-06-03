@@ -163,6 +163,30 @@ def build_action_series(session, frames, action_rois, amount_rois, community_roi
     return act, amt, community_series
 
 
+def build_fuse_series(session, frames, stack_rois, amount_rois, community_rois,
+                      start, end, decimate, white_th=170, frac_th=0.12):
+    """一遍读 stack + amount下注区 + 公共牌 → 三序列(--fuse:量 stack∪下注区 覆盖)。"""
+    import cv2
+    from recognition.ocr import OCREngine
+    ocr = OCREngine(gpu=True, name="replay")
+    stack_series = {s: [] for s in stack_rois}
+    bet_series = {s: [] for s in amount_rois}
+    community_series = []
+    fdir = Path(session) / "frames"
+    for k, (i, fn, t) in enumerate(frames):
+        if t < start or t > end or (k % decimate):
+            continue
+        img = cv2.imread(str(fdir / fn))
+        if img is None:
+            continue
+        for s, roi in stack_rois.items():
+            stack_series[s].append((t, read_stack(img, roi, ocr)))
+        for s, roi in amount_rois.items():
+            bet_series[s].append((t, read_stack(img, roi, ocr)))
+        community_series.append((t, count_community(img, community_rois, white_th, frac_th)))
+    return stack_series, bet_series, community_series
+
+
 # ── 真值比对(可测)────────────────────────────────────────────────────
 def compare_to_truth(actions, truth_path, tol=2.0):
     """reconstruct 的 ChipAction vs 真值文件(compare_truth 格式)→ 捕获率。
@@ -212,6 +236,8 @@ def main():
                     help="只读+打印每座 stack 轨迹(验读取质量,不需真值/不跑 reconstruct)")
     ap.add_argument("--dump-actions", action="store_true",
                     help="§17/T129:只读+打印每座 action 词 + amount 下注区时间序列(验街内持久+可读性)")
+    ap.add_argument("--fuse", action="store_true",
+                    help="§17/T129:量 stack∪下注区 融合覆盖(逐手 stack重建 vs 下注区反推 对比;无真值时看相对覆盖+一致性)")
     args = ap.parse_args()
 
     if args.mock:
@@ -248,6 +274,39 @@ def main():
             print(f"  amount 变化: {[(round(t,1), (int(v) if v is not None else None)) for t, v in am]}")
         print("\n判读:① 动作做出后 action 词/amount 应在本街内【保持不变】(持久),街末清/换街变;"
               "② 全座都应读得出(非空多);③ amount 跳变序列应能复原各街投入。")
+        return
+
+    if args.fuse:
+        stack_rois, community_rois = load_rois(profile_path)
+        _, amount_rois = load_action_rois(profile_path)
+        print(f"session {args.session}: {len(frames)} 帧, 窗[{args.start},{args.end}], "
+              f"stack {len(stack_rois)} 座 / amount {len(amount_rois)} 座")
+        stack_series, bet_series, community_series = build_fuse_series(
+            args.session, frames, stack_rois, amount_rois, community_rois,
+            args.start, args.end, args.decimate, args.white_th, args.frac_th)
+        config = {"sb": args.sb, "bb": args.bb, "ante": args.ante, "pot": args.pot,
+                  "seats": list(stack_rois.keys())}
+        windows = _recon.segment_hands(stack_series, community_series, config)
+        agg = {k: 0 for k in ("both_agree", "both_disagree", "stack_only", "bet_only", "n_stack", "n_bet", "union")}
+        print(f"\n=== 融合覆盖对比({len(windows)} 手:stack 重建 vs 下注区反推)===")
+        for hi, (t0, t1) in enumerate(windows, 1):
+            ss, cs = _recon.slice_series(stack_series, community_series, t0, t1)
+            bs = {s: [(t, v) for (t, v) in bet_series.get(s, []) if t0 <= t < t1] for s in bet_series}
+            res = reconstruct(ss, cs, config)
+            bacts = _recon.actions_from_bets(bs, cs, config)
+            cov = _recon.compare_coverage(res.actions, bacts)
+            for k in agg:
+                agg[k] += cov[k]
+            print(f"  手{hi} t[{t0:.0f},{t1:.0f}]: stack {cov['n_stack']} / 下注区 {cov['n_bet']} "
+                  f"| 都中{cov['both_agree']} 不合{cov['both_disagree']} 仅stack{cov['stack_only']} 仅下注区{cov['bet_only']}")
+        print(f"\n=== 全手聚合 ===")
+        print(f"  stack 单独抓到: {agg['n_stack']}")
+        print(f"  下注区单独抓到: {agg['n_bet']}")
+        print(f"  两者都中且金额合: {agg['both_agree']}  | 都中但金额不合: {agg['both_disagree']}")
+        print(f"  仅 stack(下注区漏): {agg['stack_only']}  | 仅下注区(stack 漏): {agg['bet_only']}")
+        print(f"  **融合并集(天花板代理): {agg['union']}**  ← 比单 stack({agg['n_stack']})多 {agg['union']-agg['n_stack']}")
+        print("\n判读:bet_only 高 = 下注区补回 stack 漏的(融合值);both_agree 高 = 两信号互证可靠;"
+              "both_disagree 高 = 某信号读错(需查)。⚠️ 无真值=只能看相对覆盖,非绝对捕获率。")
         return
 
     stack_rois, community_rois = load_rois(profile_path)
