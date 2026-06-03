@@ -7,98 +7,74 @@
 # 视频:.\.venv\Scripts\python.exe tools\frames_to_video.py --session data\recordings\20260602_170343 --fps 4
 # ─────────────────────────────────────────────────────────────────────────
 
-# hand 1   [≈0-25s]  录像开头已在翻牌
+# hand 1   [≈0-25s]  公共牌：As Js Qd
 preflop:
+flop:下注 132, 跟注 132 , 
+turn:
+river:下注 128, 跟注 128，
+
+# hand 2   [≈25-67s] 公共牌：Qc 3c kc
+preflop:跟注 4,  allin 128, 跟注 128,
 flop:
 turn:
 river:
 
-# hand 2   [≈25-67s]
-preflop:
+# hand 3   [≈67-111s] 公共牌：6d Ts 6h
+preflop:加注 26, allin 44, allin 192, 
 flop:
 turn:
 river:
 
-# hand 3   [≈67-111s]
-preflop:
+# hand 4   [≈111-161s] 公共牌：5d 2c 7c
+preflop:加注 24, 跟注 24, 
+flop:下注 28, 跟注 28, 
+turn:
+river:下注 70, 加注210, allin 228, 跟注 228,
+
+# hand 5   [≈161-182s] 公共牌：As Tc Td
+preflop:跟注 4, 跟注 4, 跟注 4, 跟注 4, 加注 58,跟注 58, 跟注 58
+flop:
+turn:下注 74, 跟注 74,
+river:allin 152, allin 118，
+
+# hand 6   [≈182-228s]  公共牌：Qs Th 6d
+preflop:跟注 4, 跟注 4, 加注 60, allin 30, 
 flop:
 turn:
 river:
 
-# hand 4   [≈111-161s]
-preflop:
+# hand 7   [≈228-249s]  公共牌：9h 5d 4h
+preflop:跟注 4, 跟注 4, 跟注 4, 跟注 4, 
+flop:下注 62, 跟注 62, allin 91, 跟注 91, 跟注 91,
+turn:
+river:下注 162,
+
+# hand 8   [≈249-257s]  公共牌：4d Tc Qc
+preflop:跟注 4, 跟注 4, 跟注 4, 跟注 4,
+flop:下注 52, 
+turn:
+river:
+
+# hand 9   [≈257-301s] 公共牌：无
+preflop:加注 32, 
 flop:
 turn:
 river:
 
-# hand 5   [≈161-182s]
-preflop:
+# hand 10  [≈301-380s] 公共牌：9d Ad 9s
+preflop:跟注 4,加注 34, allin 207, 跟注 207,
 flop:
 turn:
 river:
 
-# hand 6   [≈182-228s]  ⚠️这手可能跨到 hand7 窗(preflop 在此、转河在下窗)
-preflop:
+# hand 11  [≈380-414s] 公共牌：Qs 9s 6h
+preflop:跟注 4, 跟注 4, 跟注 4, 
 flop:
-turn:
+turn:下注 16,
 river:
 
-# hand 7   [≈228-249s]  flop = A♠ T♣ T♦(若是 hand6 的续:把转/河填这里)
-preflop:
-flop:
-turn:
-river:
-
-# hand 8   [≈249-257s]  (机器判空窗;真有动作就填)
-preflop:
-flop:
-turn:
-river:
-
-# hand 9   [≈257-301s]
-preflop:
-flop:
-turn:
-river:
-
-# hand 10  [≈301-380s]
-preflop:
-flop:
-turn:
-river:
-
-# hand 11  [≈380-414s]
-preflop:
-flop:
-turn:
-river:
-
-# hand 12  [≈414-440s]
-preflop:
-flop:
-turn:
-river:
-
-# hand 13  [≈440-488s]
-preflop:
-flop:
-turn:
-river:
-
-# hand 14  [≈488-531s]
-preflop:
-flop:
-turn:
-river:
-
-# hand 15  [≈531-592s]
-preflop:
-flop:
-turn:
-river:
-
-# hand 16  [≈592-600s]  录像结尾
-preflop:
-flop:
+# hand 12  [≈414-440s] 公共牌：Ad 6d 2s
+preflop:加注 32, 跟注 32, 跟注 32,
+flop:下注 66, allin 198 ,跟注 198
 turn:
 river:

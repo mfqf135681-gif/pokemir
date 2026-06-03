@@ -1,0 +1,80 @@
+# ── 170343 全 16 手真值(A:按手对齐 → recall + 精度)──────────────────────
+# ⚠️ 为测【精度/假阳率】必须无偏:动作留空、你【独立】按视频填,别看机器输出。
+#   只标动筹码的:跟/加/下注/全下;大小盲/ante/弃/过【不标】(见前约定)。
+#   按【时间窗】填 —— 一手若跨两个窗(preflop 在前窗、转河在后窗),就各填各窗看到的。
+#   格式:  街: 动作 金额, ...   位置不用写。某手真没筹码动作=留空即可。
+#   ★ 全 16 手都标 → 精度才准;只标前几手 → 只能算 recall。累了可分次。
+# 视频:.\.venv\Scripts\python.exe tools\frames_to_video.py --session data\recordings\20260602_170343 --fps 4
+# ─────────────────────────────────────────────────────────────────────────
+
+# hand 1     公共牌：
+preflop:跟注 2, allin 30, 
+flop:
+turn:
+river:
+
+# hand 2    公共牌：6c Ts 2c
+preflop:加注 27, 跟注 27, 跟注 27,
+flop:下注 120, allin 60, allin 58
+turn:
+river:
+
+# hand 3    公共牌：6c Jh Kc
+preflop:跟注 2, 加注29, allin 30, 加注 66, allin 46, all 255, allin 214
+flop:
+turn:
+river:
+
+# hand 4    公共牌：Ah Td 9h
+preflop:下注 40, 加注 208, allin 159,
+flop:
+turn:
+river:
+
+# hand 5    公共牌：9h 5d 4h
+preflop:加注 14, 跟注 14, 跟注 14, 跟注 14,
+flop:下注 29, 跟注 29,
+turn:
+river:
+
+# hand 6     公共牌：Qh 5s 7s
+preflop: 加注 16, 跟注 16, 跟注 16,
+flop:
+turn:下注 22
+river:
+
+# hand 7     公共牌：6c 7h Qs
+preflop: 加注 10, 跟注 10, 跟注 10, 跟注 10, 跟注 10,
+flop:下注 33, 加注 188, allin 84,
+turn:
+river:
+
+# hand 8     公共牌：8s Kh 7c
+preflop: 加注 16, 跟注 16, 跟注 16,
+flop:下注 33, 跟注 33, 跟注 33,
+turn:allin 33, 加注 111,
+river:
+
+# hand 9    公共牌：无
+preflop: 加注 24, 
+flop:
+turn:
+river:
+
+# hand 10   公共牌：无
+preflop: 跟注 2, 跟注 2, 加注 30, 
+flop:
+turn:
+river:
+
+# hand 11   公共牌：As 3c 4d
+preflop: 跟注 2, 跟注 2, 跟注 2, 跟注 2, 
+flop:下注 14, 跟注 14, 跟注 14,
+turn:allin 78, 跟注 78, allin 98,  跟注 98,
+river:
+
+# hand 12   公共牌：Jh 4s 8c
+preflop: 跟注 2, 跟注 2, 跟注 2, 加注 20, 跟注 20, 跟注 20, 跟注 20,
+flop:allin 94, allin 178,
+turn:
+river:
