@@ -302,10 +302,39 @@ def hand_ends_from_win(win_series, merge=6.0, min_win=0.0):
     return ends
 
 
+def hand_starts_from_button(button_series, merge=3.0):
+    """button-seat 变到【新非None座】= 新手开始(D 纯白高对比、亮度检测、不 OCR)。
+    实测(段2)最干净的切手信号:catch 所有手含无翻牌手(公共牌漏)、不吃 OCR 垃圾(+xx 漏)。
+    忽略 None 过渡(发牌瞬间按钮短暂消失);merge 防同一移座多帧重复。返回 hand-start 时刻。"""
+    starts, last = [], None
+    for (t, s) in sorted(button_series):
+        if s is None:
+            continue
+        if s != last:
+            if not starts or t - starts[-1] > merge:
+                starts.append(t)
+            last = s
+    return starts
+
+
 def segment_hands(stack_series, community_series, config):
     """检测手边界 → [(t_start, t_end)] 每手窗口。
-    **优先 win_ends(+xx 结算,权威)**:config["win_ends"] 给定则直接按它切(治过度切分 + 翻牌前手)。
-    否则回退信号(§15.3):派彩大涨 / 全员 ante 小跌簇 / 公共牌 reset。"""
+    **优先 hand_starts(D 按钮移座,实测最干净)** → config["hand_starts"]。
+    次选 win_ends(+xx 结算;某些桌 OCR 垃圾/边池散开,见 §19.11)。
+    再回退信号(§15.3):派彩大涨 / 全员 ante 小跌簇 / 公共牌 reset。"""
+    allt0 = [t for obs in stack_series.values() for (t, _) in obs] + [t for (t, _) in community_series]
+    hand_starts = config.get("hand_starts")
+    if hand_starts:
+        t0 = min(allt0) if allt0 else 0.0
+        t1 = max(allt0) if allt0 else 0.0
+        bm = config.get("boundary_merge", 6.0)
+        # hand-start 作边界:窗 = 相邻 start 之间;首窗从 t0 起
+        bounds = [t0]
+        for s in sorted(hand_starts):
+            if t0 < s < t1 and s - bounds[-1] > bm:
+                bounds.append(s)
+        bounds.append(t1)
+        return [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
     win_ends = config.get("win_ends")
     if win_ends:
         allt = [t for obs in stack_series.values() for (t, _) in obs] + [t for (t, _) in community_series]
@@ -491,6 +520,15 @@ def _self_test():
     acts_bb = [(a.seat, round(a.chips_in), round(a.to_amount)) for a in res_bb.actions]
     assert acts_bb == [(3, 52, 52)], acts_bb  # BB 的 8(ante+bb)排除,只留真 raise 52;to_amount=52
     print(f"✅ 精度修:BB 合并post(8)排除,仅留真动作 + to_amount {acts_bb}")
+
+    # T132 按钮切手:button-seat 移座 → hand-start(忽略 None 过渡)
+    btn = [(0, 6), (1, None), (5, 7), (6, 7), (10, None), (11, 0), (20, 0), (21, None), (22, 1)]
+    starts = hand_starts_from_button(btn, merge=3.0)
+    assert starts == [0, 5, 11, 22], starts  # 6→7→0→1 四手起点(None 不算、同座不重复、间隔>merge)
+    ss_b = {0: [(0, 100), (30, 96)]}
+    wins_b = segment_hands(ss_b, [], {"hand_starts": [0, 2, 11, 22], "tol": 2.0, "boundary_merge": 1.0})
+    assert len(wins_b) == 4, wins_b  # 4 手窗
+    print(f"✅ T132 按钮切手:button移座 {starts} → {len(wins_b)} 手窗")
 
 
 if __name__ == "__main__":
