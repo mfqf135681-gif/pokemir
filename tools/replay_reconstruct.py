@@ -214,14 +214,15 @@ def build_fuse_series(session, frames, stack_rois, amount_rois, community_rois,
     return stack_series, bet_series, community_series
 
 
-def build_truth_series(session, frames, stack_rois, amount_rois, community_rois,
+def build_truth_series(session, frames, stack_rois, amount_rois, win_rois, community_rois,
                        start, end, decimate, white_th=170, frac_th=0.12):
-    """§19 --truth 融合:一遍读 stack(+all-in 标记) + 下注区 amount + 公共牌。"""
+    """§19/T130 --truth:一遍读 stack(+all-in 标记) + 下注区 amount + win_amount(+xx) + 公共牌。"""
     import cv2
     from recognition.ocr import OCREngine
     ocr = OCREngine(gpu=True, name="replay")
     stack_series = {s: [] for s in stack_rois}
     bet_series = {s: [] for s in amount_rois}
+    win_series = {s: [] for s in win_rois}
     allin_marks = {s: [] for s in stack_rois}
     community_series = []
     fdir = Path(session) / "frames"
@@ -238,8 +239,10 @@ def build_truth_series(session, frames, stack_rois, amount_rois, community_rois,
                 allin_marks[s].append(t)
         for s, roi in amount_rois.items():
             bet_series[s].append((t, read_stack(img, roi, ocr)))
+        for s, roi in win_rois.items():
+            win_series[s].append((t, read_stack(img, roi, ocr)))
         community_series.append((t, count_community(img, community_rois, white_th, frac_th)))
-    return stack_series, bet_series, community_series, allin_marks
+    return stack_series, bet_series, win_series, community_series, allin_marks
 
 
 # ── 真值比对(可测)────────────────────────────────────────────────────
@@ -516,12 +519,15 @@ def main():
     stack_rois, community_rois = load_rois(profile_path)
     print(f"session {args.session}: {len(frames)} 帧, 时间窗 [{args.start},{args.end}], "
           f"{len(stack_rois)} 座 stack ROI")
-    bet_series = {}
-    if args.truth:  # §19 融合比对:同时读下注区(call-to 候选 + 补 all-in)
+    bet_series, win_ends = {}, None
+    if args.truth:  # §19 融合 + T130 win 分段:读下注区 + win_amount(+xx 手边界)
         _, amount_rois = load_action_rois(profile_path)
-        stack_series, bet_series, community_series, allin_marks = build_truth_series(
-            args.session, frames, stack_rois, amount_rois, community_rois,
+        win_rois = load_win_rois(profile_path)
+        stack_series, bet_series, win_series, community_series, allin_marks = build_truth_series(
+            args.session, frames, stack_rois, amount_rois, win_rois, community_rois,
             args.start, args.end, args.decimate, args.white_th, args.frac_th)
+        win_ends = _recon.hand_ends_from_win(win_series)
+        print(f"  +xx 结算手末 {len(win_ends)} 个 → win 权威分段")
     else:
         stack_series, community_series, allin_marks = build_series_real(
             args.session, frames, stack_rois, community_rois, args.start, args.end, args.decimate,
@@ -563,6 +569,8 @@ def main():
 
     config = {"sb": args.sb, "bb": args.bb, "ante": args.ante, "pot": args.pot,
               "seats": list(stack_rois.keys())}
+    if win_ends:  # T130:+xx 结算当权威手边界
+        config["win_ends"] = win_ends
     windows = _recon.segment_hands(stack_series, community_series, config)
     print(f"\n=== 手分段:检测到 {len(windows)} 手 ===")
     all_actions, all_bet_cands, machine_hands = [], [], []

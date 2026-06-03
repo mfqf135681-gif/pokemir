@@ -273,9 +273,36 @@ def compare_coverage(stack_actions, bet_actions, tol=2.0, t_tol=3.0):
 
 
 # ── 手分段(§15.3:录制跨多手 → 按边界切成一手一窗)──────────────────────
+def hand_ends_from_win(win_series, merge=6.0):
+    """win_amount(+xx 结算)非空时刻 → 聚类成手末事件 [t,...]。
+    +xx=结算=手末:**普适**(翻牌前结束的手也有,公共牌 reset 标不出),且 stack 误读不会凭空产 +xx。
+    实测(170343)干净标出 12 手含 1 个无公共牌手。返回每簇首个时刻。"""
+    ts = sorted(t for obs in win_series.values() for (t, v) in obs if v is not None)
+    if not ts:
+        return []
+    ends = [ts[0]]
+    for t in ts[1:]:
+        if t - ends[-1] > merge:
+            ends.append(t)
+    return ends
+
+
 def segment_hands(stack_series, community_series, config):
     """检测手边界 → [(t_start, t_end)] 每手窗口。
-    边界信号(真实数据 §15.3):派彩大涨 / 全员 ante 小跌簇 / 公共牌 reset。"""
+    **优先 win_ends(+xx 结算,权威)**:config["win_ends"] 给定则直接按它切(治过度切分 + 翻牌前手)。
+    否则回退信号(§15.3):派彩大涨 / 全员 ante 小跌簇 / 公共牌 reset。"""
+    win_ends = config.get("win_ends")
+    if win_ends:
+        allt = [t for obs in stack_series.values() for (t, _) in obs] + [t for (t, _) in community_series]
+        t0 = min(allt) if allt else 0.0
+        t1 = max(allt) if allt else 0.0
+        bm = config.get("boundary_merge", 6.0)
+        bounds = [t0]
+        for e in sorted(win_ends):
+            if t0 < e < t1 and e - bounds[-1] > bm:
+                bounds.append(e)
+        bounds.append(t1)
+        return [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
     tol = config.get("tol", 2.0)
     payout_th = config.get("payout_th", max(config.get("bb", 4) * 10, 50))
     ante = config.get("ante", 0)
@@ -428,6 +455,15 @@ def _self_test():
     vals = sorted(v for (_, v) in cands)
     assert vals == [4.0, 58.0], vals  # call-to 候选 = 4 和 58(非增量 54)
     print(f"✅ §19 call-to 候选:{cands}(含 58=跟到额,治增量假象 + 补 all-in)")
+
+    # T130 win-分段:+xx 结算时刻 → 手末 → 切手(治过度切分 + 翻牌前手)
+    win_series = {0: [(10, None), (26, 1330), (26.5, 1330)], 1: [(68, 1117)], 4: [(110, None), (110, 192)]}
+    ends = hand_ends_from_win(win_series, merge=6.0)
+    assert ends == [26, 68, 110], ends  # 3 个结算事件
+    ss_w = {0: [(0, 100), (90, 96)], 1: [(0, 100), (120, 96)]}
+    wins_w = segment_hands(ss_w, [], {"win_ends": [26, 68, 110], "tol": 2.0})
+    assert len(wins_w) == 4 and wins_w[0][1] == 26, wins_w  # [0,26][26,68][68,110][110,120]
+    print(f"✅ T130 win-分段:结算 {ends} → {len(wins_w)} 手窗 {[(round(a),round(b)) for a,b in wins_w]}")
 
 
 if __name__ == "__main__":
