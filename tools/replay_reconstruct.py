@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.join(_ROOT, "pipeline"))
 # standalone 导入 reconstruct.py,绕开 pipeline/__init__(它拉 detector→imagehash)
 import reconstruct as _recon  # noqa: E402
 reconstruct = _recon.reconstruct
+import solver as _solver  # noqa: E402  砖2 守恒/合法性求解器
 
 
 # ── 可测核:profile ROI 提取 ──────────────────────────────────────────
@@ -434,6 +435,8 @@ def main():
                     help="--dump-signals:win phash 变化阈值(hamming>此=视觉突变,默认12/64)")
     ap.add_argument("--settle-win", type=float, default=2.0,
                     help="结算抑制(settle_guard):首个派彩 rise 前 N 秒起判结算噪声、抑制(锚真实结算点,非窗末;治 river settlement 假阳;0=关)")
+    ap.add_argument("--solve", action="store_true",
+                    help="砖2:reconstruct 后过守恒/合法性求解器(裁自加/重复读/全下后行动幻影 → 提 precision)")
     ap.add_argument("--win-merge", type=float, default=6.0,
                     help="T130:+xx 结算聚类合并窗秒(大桌结算散开调大,如 12;默认 6)")
     ap.add_argument("--win-min", type=float, default=0.0,
@@ -698,6 +701,11 @@ def main():
         am = {s: [t for t in allin_marks.get(s, []) if t0 <= t < t1] for s in allin_marks}
         # 结算抑制已下沉到 reconstruct(锚首派彩 rise,非窗末 t1)→ config["settle_guard"]
         res = reconstruct(ss, cs, config, allin_marks=am)
+        if args.solve:  # 砖2:合法性求解器裁幻影
+            sr = _solver.solve_hand(res.actions, config)
+            for a, why in sr.dropped:
+                res.notes.append(f"求解器裁:seat{a.seat} {a.street} to{a.to_amount:.0f} @t{a.t:.1f} — {why}")
+            res.actions = sr.kept
         all_actions.extend(res.actions)
         bet_cands = []
         if bet_series:  # §19 下注区 call-to 候选(融合比对用)
@@ -709,7 +717,7 @@ def main():
         for a in sorted(res.actions, key=lambda x: x.t):
             print(f"  seat{a.seat} {a.street} {a.atype} 投入{a.chips_in:.0f} @t{a.t:.1f}")
         for n in res.notes:
-            if any(k in n for k in ("涨", "ante", "胜率", "all-in")):  # 派彩/ante排除/all-in反解
+            if any(k in n for k in ("涨", "ante", "胜率", "all-in", "求解器")):  # 派彩/ante排除/all-in反解/求解器裁决
                 print("  " + n)
     if args.truth:
         cmp = compare_to_truth(all_actions, args.truth)
