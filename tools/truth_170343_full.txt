@@ -1,0 +1,104 @@
+# ── 170343 全 16 手真值(A:按手对齐 → recall + 精度)──────────────────────
+# ⚠️ 为测【精度/假阳率】必须无偏:动作留空、你【独立】按视频填,别看机器输出。
+#   只标动筹码的:跟/加/下注/全下;大小盲/ante/弃/过【不标】(见前约定)。
+#   按【时间窗】填 —— 一手若跨两个窗(preflop 在前窗、转河在后窗),就各填各窗看到的。
+#   格式:  街: 动作 金额, ...   位置不用写。某手真没筹码动作=留空即可。
+#   ★ 全 16 手都标 → 精度才准;只标前几手 → 只能算 recall。累了可分次。
+# 视频:.\.venv\Scripts\python.exe tools\frames_to_video.py --session data\recordings\20260602_170343 --fps 4
+# ─────────────────────────────────────────────────────────────────────────
+
+# hand 1   [≈0-25s]  录像开头已在翻牌
+preflop:
+flop:
+turn:
+river:
+
+# hand 2   [≈25-67s]
+preflop:
+flop:
+turn:
+river:
+
+# hand 3   [≈67-111s]
+preflop:
+flop:
+turn:
+river:
+
+# hand 4   [≈111-161s]
+preflop:
+flop:
+turn:
+river:
+
+# hand 5   [≈161-182s]
+preflop:
+flop:
+turn:
+river:
+
+# hand 6   [≈182-228s]  ⚠️这手可能跨到 hand7 窗(preflop 在此、转河在下窗)
+preflop:
+flop:
+turn:
+river:
+
+# hand 7   [≈228-249s]  flop = A♠ T♣ T♦(若是 hand6 的续:把转/河填这里)
+preflop:
+flop:
+turn:
+river:
+
+# hand 8   [≈249-257s]  (机器判空窗;真有动作就填)
+preflop:
+flop:
+turn:
+river:
+
+# hand 9   [≈257-301s]
+preflop:
+flop:
+turn:
+river:
+
+# hand 10  [≈301-380s]
+preflop:
+flop:
+turn:
+river:
+
+# hand 11  [≈380-414s]
+preflop:
+flop:
+turn:
+river:
+
+# hand 12  [≈414-440s]
+preflop:
+flop:
+turn:
+river:
+
+# hand 13  [≈440-488s]
+preflop:
+flop:
+turn:
+river:
+
+# hand 14  [≈488-531s]
+preflop:
+flop:
+turn:
+river:
+
+# hand 15  [≈531-592s]
+preflop:
+flop:
+turn:
+river:
+
+# hand 16  [≈592-600s]  录像结尾
+preflop:
+flop:
+turn:
+river:

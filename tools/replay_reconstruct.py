@@ -296,6 +296,52 @@ def compare_to_truth_fused(stack_actions, bet_candidates, truth_path, tol=2.0):
     return {"true": len(true_chips), "matched": matched, "missed": missed, "capture_rate": rate}
 
 
+def compare_per_hand(machine_hands, truth_path, tol=2.0):
+    """A:按手对齐(无跨手巧合)→ recall + precision。
+    machine_hands: [(stack_actions, bet_cands), ...] 按机器手序;truth 按 # hand 序 1:1 对齐。
+    recall=真值被(stack增量∪下注区call-to)命中;precision=机器 stack 动作命中真值(假阳率=1-它)。"""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from compare_truth import parse_labels, CHIP_ACTIONS
+    thands = parse_labels(Path(truth_path).read_text(encoding="utf-8"))
+    n = max(len(machine_hands), len(thands))
+    rows, miss, false_pos = [], [], []
+    agg_true = agg_match = agg_machine = agg_prec = 0
+    for i in range(n):
+        stack_acts, bet_cands = machine_hands[i] if i < len(machine_hands) else ([], [])
+        tchips = [(a.street, a.amount) for a in (thands[i].actions if i < len(thands) else [])
+                  if a.type in CHIP_ACTIONS and a.amount is not None]
+        cands = [(a.street, a.chips_in) for a in stack_acts] + list(bet_cands)
+        used = [False] * len(cands)
+        matched = 0
+        for (st, amt) in tchips:
+            for j, (cst, cv) in enumerate(cands):
+                if not used[j] and cst == st and abs(cv - amt) <= tol:
+                    used[j] = True
+                    matched += 1
+                    break
+            else:
+                miss.append((i + 1, st, amt))
+        macts = [(a.street, a.chips_in) for a in stack_acts]
+        tused = [False] * len(tchips)
+        prec = 0
+        for (st, amt) in macts:
+            for j, (tst, tv) in enumerate(tchips):
+                if not tused[j] and tst == st and abs(tv - amt) <= tol:
+                    tused[j] = True
+                    prec += 1
+                    break
+            else:
+                false_pos.append((i + 1, st, round(amt)))
+        rows.append({"hand": i + 1, "n_true": len(tchips), "matched": matched, "n_machine": len(macts)})
+        agg_true += len(tchips)
+        agg_match += matched
+        agg_machine += len(macts)
+        agg_prec += prec
+    return {"rows": rows, "agg_true": agg_true, "agg_match": agg_match,
+            "agg_machine": agg_machine, "agg_match_prec": agg_prec,
+            "per_hand_miss": miss, "per_hand_false": false_pos}
+
+
 def main():
     ap = argparse.ArgumentParser(description="砖1b 回放重建 + 捕获率(T127)")
     ap.add_argument("--session"); ap.add_argument("--profile", default="party_poker_8")
@@ -471,15 +517,18 @@ def main():
               "seats": list(stack_rois.keys())}
     windows = _recon.segment_hands(stack_series, community_series, config)
     print(f"\n=== 手分段:检测到 {len(windows)} 手 ===")
-    all_actions, all_bet_cands = [], []
+    all_actions, all_bet_cands, machine_hands = [], [], []
     for hi, (t0, t1) in enumerate(windows, 1):
         ss, cs = _recon.slice_series(stack_series, community_series, t0, t1)
         am = {s: [t for t in allin_marks.get(s, []) if t0 <= t < t1] for s in allin_marks}
         res = reconstruct(ss, cs, config, allin_marks=am)
         all_actions.extend(res.actions)
+        bet_cands = []
         if bet_series:  # §19 下注区 call-to 候选(融合比对用)
             bs = {s: [(t, v) for (t, v) in bet_series.get(s, []) if t0 <= t < t1] for s in bet_series}
-            all_bet_cands.extend(_recon.bet_callto_candidates(bs, cs, config))
+            bet_cands = _recon.bet_callto_candidates(bs, cs, config)
+            all_bet_cands.extend(bet_cands)
+        machine_hands.append((res.actions, bet_cands))  # A:按手对齐用
         print(f"\n--- 手 {hi}  t[{t0:.1f},{t1:.1f}] ---")
         for a in sorted(res.actions, key=lambda x: x.t):
             print(f"  seat{a.seat} {a.street} {a.atype} 投入{a.chips_in:.0f} @t{a.t:.1f}")
@@ -489,15 +538,24 @@ def main():
     if args.truth:
         cmp = compare_to_truth(all_actions, args.truth)
         fus = compare_to_truth_fused(all_actions, all_bet_cands, args.truth)
-        print(f"\n=== 捕获率(vs 真值,全手聚合)===")
+        print(f"\n=== 捕获率(vs 真值,全局聚合 — 跨手巧合可能偏高)===")
         print(f"  真值筹码动作 {cmp['true']}")
-        print(f"  ① stack-only:  命中 {cmp['matched']} | 捕获率 {cmp['capture_rate']*100:.0f}%")
-        print(f"  ② 融合(stack增量 ∪ 下注区call-to):命中 {fus['matched']} | 捕获率 {fus['capture_rate']*100:.0f}%"
-              f"  ← 治 call-to口径 + 补 all-in")
-        if fus["missed"]:
-            print("  融合后仍漏(真信号缺口):", fus["missed"])
-        if cmp["extra"]:
-            print("  stack 多/假:", cmp["extra"])
+        print(f"  ① stack-only 全局:  命中 {cmp['matched']} | {cmp['capture_rate']*100:.0f}%")
+        print(f"  ② 融合全局:命中 {fus['matched']} | {fus['capture_rate']*100:.0f}%")
+        # A:按手对齐(去跨手巧合)→ recall + 精度
+        ph = compare_per_hand(machine_hands, args.truth)
+        print(f"\n=== ⭐ A:按手对齐(无跨手巧合)===")
+        summ = ", ".join(f"#{r['hand']}真{r['n_true']}/中{r['matched']}/机{r['n_machine']}"
+                         for r in ph["rows"] if r["n_true"] or r["n_machine"])
+        print(f"  每手: {summ}")
+        rc = ph['agg_match'] / ph['agg_true'] if ph['agg_true'] else float('nan')
+        pr = ph['agg_match_prec'] / ph['agg_machine'] if ph['agg_machine'] else float('nan')
+        print(f"  ★ Recall(真值被抓): {ph['agg_match']}/{ph['agg_true']} = {rc*100:.0f}%")
+        print(f"  ★ Precision(机器动作为真): {ph['agg_match_prec']}/{ph['agg_machine']} = {pr*100:.0f}%  ← 假阳率=1-此值")
+        if ph['per_hand_miss']:
+            print(f"  按手仍漏: {ph['per_hand_miss']}")
+        if ph['per_hand_false']:
+            print(f"  按手假阳(机器有/真值无): {ph['per_hand_false']}")
 
 
 def _self_test():
