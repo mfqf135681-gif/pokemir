@@ -245,7 +245,7 @@ def main():
     ap.add_argument("--fuse", action="store_true",
                     help="§17/T129:量 stack∪下注区 融合覆盖(逐手 stack重建 vs 下注区反推 对比;无真值时看相对覆盖+一致性)")
     ap.add_argument("--dump-pot", action="store_true",
-                    help="T125:只读+打印底池(pot_size)时间序列(验守恒锚读取可靠性,目标 92%→99%)")
+                    help="T125:只读+打印底池(pot_size)时间序列(验守恒锚读取可靠性,目标近 99 percent)")
     args = ap.parse_args()
 
     if args.mock:
