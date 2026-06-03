@@ -148,6 +148,29 @@ def load_win_rois(profile_path):
     return {int(s["seat_index"]): s["win_amount"] for s in p.get("seats", []) if s.get("win_amount")}
 
 
+def load_button_rois(profile_path):
+    """→ {seat: button_indicator ROI}。切手信号:D 按钮(纯白高对比)移座 = 新手开始。"""
+    p = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+    return {int(s["seat_index"]): s["button_indicator"] for s in p.get("seats", []) if s.get("button_indicator")}
+
+
+def _avg_hash(crop):
+    """8x8 average-hash → 64-bit int(感知哈希,测 ROI 视觉变化;不 OCR)。⚠️ Win-only(cv2)。"""
+    import cv2
+    if crop is None or crop.size == 0:
+        return 0
+    g = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), (8, 8))
+    m = float(g.mean())
+    bits = 0
+    for v in g.flatten():
+        bits = (bits << 1) | (1 if float(v) > m else 0)
+    return bits
+
+
+def _hamming(a, b):
+    return bin(a ^ b).count("1")
+
+
 def read_word(img, roi, ocr, allowlist=_ACTION_ALLOW):
     """裁动作词 ROI → OCR(收窄 allowlist)→ str|None。⚠️ Win-only。"""
     l, t, w, h = roi
@@ -375,6 +398,10 @@ def main():
                     help="T125:只读+打印底池(pot_size)时间序列(验守恒锚读取可靠性,目标近 99 percent)")
     ap.add_argument("--dump-win", action="store_true",
                     help="T130:只读+打印每座 win_amount(+xx 结算)时间序列(验它能否当手边界,翻牌前结束的手也有)")
+    ap.add_argument("--dump-signals", action="store_true",
+                    help="T132:三信号切手验证 — D按钮移座(亮度) + win phash变化 + 公共牌reset 时间线对比(全程不OCR)")
+    ap.add_argument("--hash-th", type=int, default=12,
+                    help="--dump-signals:win phash 变化阈值(hamming>此=视觉突变,默认12/64)")
     ap.add_argument("--settle-win", type=float, default=2.0,
                     help="A:手末 +xx 前 N 秒的动作判结算噪声、抑制(治 river settlement 假阳;实测 2 最优 Recall98/Prec91;0=关)")
     ap.add_argument("--win-merge", type=float, default=6.0,
@@ -529,6 +556,53 @@ def main():
         print(f"\n=== 所有 +xx 出现时刻(排序;应≈每手末一簇)===\n  {sorted(set(all_win))}")
         print("\n判读:① +xx 是否每手末出现一次(含翻牌前结束的手)→ 能否当权威手边界;"
               "② 是否持久够中等帧抓到(非空帧数);③ 有无手内乱出/漏出。")
+        return
+
+    if args.dump_signals:
+        import cv2
+        btn_rois = load_button_rois(profile_path)
+        win_rois = load_win_rois(profile_path)
+        _, community_rois = load_rois(profile_path)
+        fdir = Path(args.session) / "frames"
+        btn_series = []          # (t, button_seat|None)
+        win_prev, win_spikes = {}, {s: [] for s in win_rois}  # 每座 phash 突变时刻
+        community_series = []
+        for k, (i, fn, t) in enumerate(frames):
+            if t < args.start or t > args.end or (k % args.decimate):
+                continue
+            img = cv2.imread(str(fdir / fn))
+            if img is None:
+                continue
+            # D 按钮:白占比最高的座(纯白高对比)
+            best_s, best_wf = None, 0.0
+            for s, (l, tt, w, h) in btn_rois.items():
+                wf = _white_frac(img[tt:tt + h, l:l + w], args.white_th)
+                if wf > best_wf:
+                    best_s, best_wf = s, wf
+            btn_series.append((t, best_s if best_wf > args.frac_th else None))
+            # win phash 突变
+            for s, (l, tt, w, h) in win_rois.items():
+                hsh = _avg_hash(img[tt:tt + h, l:l + w])
+                if s in win_prev and _hamming(hsh, win_prev[s]) > args.hash_th:
+                    win_spikes[s].append(round(t, 1))
+                win_prev[s] = hsh
+            community_series.append((t, count_community(img, community_rois, args.white_th, args.frac_th)))
+        print(f"\n=== ① D 按钮移座(切手 start 信号)===")
+        for (t, s) in collapse_changes(btn_series):
+            print(f"  t{t:.1f}: button → seat{s}")
+        print(f"\n=== ② win phash 突变时刻(切手 end / +xx 出现,不 OCR)===")
+        allspk = sorted(t for ss in win_spikes.values() for t in ss)
+        print(f"  各座: {[(s, win_spikes[s]) for s in sorted(win_spikes) if win_spikes[s]]}")
+        print(f"  合并时刻: {sorted(set(allspk))}")
+        print(f"\n=== ③ 公共牌 reset(→0)时刻 ===")
+        resets, prev = [], None
+        for (t, n) in community_series:
+            if prev is not None and n == 0 and prev != 0:
+                resets.append(round(t, 1))
+            prev = n
+        print(f"  {resets}")
+        print("\n判读:三条时间线应**互相印证**(每手末≈一个 D移座 + 一个 win突变 + 一个公共牌reset);"
+              "看哪条最干净、哪条补哪条的洞(D漏的same-seat / 公共牌漏的无翻牌手 / win的OCR无关因用phash)。")
         return
 
     stack_rois, community_rois = load_rois(profile_path)
