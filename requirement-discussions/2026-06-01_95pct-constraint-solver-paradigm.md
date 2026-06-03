@@ -623,3 +623,10 @@ T129 在 170343 实跑 `--dump-actions` + `--fuse`,结论:
 - ② **all-in 识别**:`read_stack_ex` 侦测 stack 区 '%' → `allin_marks` → reconstruct 反解金额=标记前最后 stack(`--truth` 路径已接;%检测 Win 验)。
 **意义**:truth 把"模糊 ~75-80%"变成**两个有名有姓、可修的洞**——这正是路A 的价值,远超 59% 这个数本身。**待 Win 重跑 `--truth` 看 59% 往哪走**(假阳应大降;all-in 看 % 是否落在 stack ROI 内可恢复)。
 **caveat**:n=1;truth 有 hand4/5 误并 + 用户标注口径;all-in 恢复依赖 % 真在 stack ROI。
+
+### §19.1 修复后重跑 + 融合比对工具(2026-06-02)
+两 bug 重跑 `--truth`:
+- **① ante 修 ✅**:每手打印 `ante 簇排除 N 笔`,假阳 **28→7**(精度大涨)。但**捕获率仍 59%**(ante 是假阳=不在 true 分母,修它提精度不提召回)。
+- **② all-in % 修 ❌ 未触发**:无 `胜率%标记` 打印 → **胜率% 不在 stack ROI 区域**(在别处);all-in(44/192/152/74/228)仍漏。BUG2 这条赌输(但"%不在stack框"是有用信息)。
+- **③ 揪出测量假象 `call-to vs 增量`**:`多/假` 的 `call54/raise124` 对照 `漏` 的 `call58/raise128` **差恰好 4** —— 同一动作两种记法(机器=本次增量、用户标=跟到总额),被算成"漏+多"。→ **59% 是低估**。
+**对策(本轮 build,逻辑层自测过)**:`bet_callto_candidates`(下注区累计 call-to 值)+ `compare_to_truth_fused`(truth 匹配 **stack增量 OR 下注区call-to** 任一)→ `--truth` 现报 **①stack-only ②融合** 两率。融合应同时:**治 call-to 口径假象 + 补 all-in**(all-in 钱在下注区显示,即使 stack 显%)。待 Win 重跑看融合率。

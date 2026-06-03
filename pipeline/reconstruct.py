@@ -222,6 +222,27 @@ def actions_from_bets(bet_reads, community_series, config):
     return out
 
 
+def bet_callto_candidates(bet_reads, community_series, config):
+    """下注区 amount 的【累计 call-to 值】(非增量),作真值比对候选 —— 匹配用户"跟到X/加到X"口径。
+    每座每街:持久≥2 帧的稳定值。返回 [(street, callto)]。治 §19 call-to vs 增量假象 + 补 all-in
+    (all-in 推的钱在注区显示,即使 stack 显%)。"""
+    from collections import Counter
+    boundaries = boundaries_from_community(community_series)
+    tol = config.get("tol", 2.0)
+    out = []
+    for s, series in bet_reads.items():
+        by_street = {}
+        for (t, v) in sorted(series):
+            if v is None:
+                continue
+            by_street.setdefault(street_at(t, boundaries), []).append(round(float(v)))
+        for st, vals in by_street.items():
+            for val, c in Counter(vals).items():
+                if c >= 2 and val > tol:  # 持久(滤单帧误读)且非零
+                    out.append((st, float(val)))
+    return out
+
+
 def compare_coverage(stack_actions, bet_actions, tol=2.0, t_tol=3.0):
     """stack 派生动作 vs 下注区派生动作,按 (seat, street, ~t) 匹配 → 覆盖+一致性统计。
     无真值时的天花板代理:union=两信号并集;agree=都抓到且金额合;*_only=互补恢复量。"""
@@ -400,6 +421,13 @@ def _self_test():
     ai = [(a.atype, round(a.chips_in)) for a in res_ai.actions]
     assert ("all_in", 300) in ai, ai
     print(f"✅ BUG2 all-in 标记:胜率%标记 → 反解 all-in {ai}")
+
+    # §19 call-to 候选:下注区累计 4→58(seat 先 limp 后跟到58)→ 候选含 58(匹配用户"跟到58"口径)
+    cands = bet_callto_candidates(
+        {6: [(0, None), (1, 4), (2, 4), (3, 58), (4, 58)]}, [(0, 0)], {"tol": 2.0})
+    vals = sorted(v for (_, v) in cands)
+    assert vals == [4.0, 58.0], vals  # call-to 候选 = 4 和 58(非增量 54)
+    print(f"✅ §19 call-to 候选:{cands}(含 58=跟到额,治增量假象 + 补 all-in)")
 
 
 if __name__ == "__main__":

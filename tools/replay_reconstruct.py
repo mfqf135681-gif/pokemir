@@ -208,6 +208,34 @@ def build_fuse_series(session, frames, stack_rois, amount_rois, community_rois,
     return stack_series, bet_series, community_series
 
 
+def build_truth_series(session, frames, stack_rois, amount_rois, community_rois,
+                       start, end, decimate, white_th=170, frac_th=0.12):
+    """§19 --truth 融合:一遍读 stack(+all-in 标记) + 下注区 amount + 公共牌。"""
+    import cv2
+    from recognition.ocr import OCREngine
+    ocr = OCREngine(gpu=True, name="replay")
+    stack_series = {s: [] for s in stack_rois}
+    bet_series = {s: [] for s in amount_rois}
+    allin_marks = {s: [] for s in stack_rois}
+    community_series = []
+    fdir = Path(session) / "frames"
+    for k, (i, fn, t) in enumerate(frames):
+        if t < start or t > end or (k % decimate):
+            continue
+        img = cv2.imread(str(fdir / fn))
+        if img is None:
+            continue
+        for s, roi in stack_rois.items():
+            v, is_ai = read_stack_ex(img, roi, ocr)
+            stack_series[s].append((t, v))
+            if is_ai:
+                allin_marks[s].append(t)
+        for s, roi in amount_rois.items():
+            bet_series[s].append((t, read_stack(img, roi, ocr)))
+        community_series.append((t, count_community(img, community_rois, white_th, frac_th)))
+    return stack_series, bet_series, community_series, allin_marks
+
+
 # ── 真值比对(可测)────────────────────────────────────────────────────
 def compare_to_truth(actions, truth_path, tol=2.0):
     """reconstruct 的 ChipAction vs 真值文件(compare_truth 格式)→ 捕获率。
@@ -240,6 +268,32 @@ def compare_to_truth(actions, truth_path, tol=2.0):
     rate = matched / len(true_chips) if true_chips else float("nan")
     return {"true": len(true_chips), "matched": matched, "missed": missed,
             "extra": extra, "capture_rate": rate}
+
+
+def compare_to_truth_fused(stack_actions, bet_candidates, truth_path, tol=2.0):
+    """§19 融合捕获率:truth 金额匹配 stack增量 OR 下注区call-to(任一对上即命中)。
+    治两病:① call-to vs 增量口径假象(下注区=call-to=用户口径)② all-in 漏(注区显 all-in 钱)。"""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from compare_truth import parse_labels, CHIP_ACTIONS
+    hands = parse_labels(Path(truth_path).read_text(encoding="utf-8"))
+    true_chips = [(a.street, a.amount) for h in hands for a in h.actions
+                  if a.type in CHIP_ACTIONS and a.amount is not None]
+    cands = [(a.street, a.chips_in) for a in stack_actions] + list(bet_candidates)
+    used = [False] * len(cands)
+    matched, missed = 0, []
+    for (st, amt) in true_chips:
+        hit = -1
+        for j, (cst, cv) in enumerate(cands):
+            if not used[j] and cst == st and abs(cv - amt) <= tol:
+                hit = j
+                break
+        if hit >= 0:
+            used[hit] = True
+            matched += 1
+        else:
+            missed.append((st, amt))
+    rate = matched / len(true_chips) if true_chips else float("nan")
+    return {"true": len(true_chips), "matched": matched, "missed": missed, "capture_rate": rate}
 
 
 def main():
@@ -368,9 +422,16 @@ def main():
     stack_rois, community_rois = load_rois(profile_path)
     print(f"session {args.session}: {len(frames)} 帧, 时间窗 [{args.start},{args.end}], "
           f"{len(stack_rois)} 座 stack ROI")
-    stack_series, community_series, allin_marks = build_series_real(
-        args.session, frames, stack_rois, community_rois, args.start, args.end, args.decimate,
-        args.white_th, args.frac_th)
+    bet_series = {}
+    if args.truth:  # §19 融合比对:同时读下注区(call-to 候选 + 补 all-in)
+        _, amount_rois = load_action_rois(profile_path)
+        stack_series, bet_series, community_series, allin_marks = build_truth_series(
+            args.session, frames, stack_rois, amount_rois, community_rois,
+            args.start, args.end, args.decimate, args.white_th, args.frac_th)
+    else:
+        stack_series, community_series, allin_marks = build_series_real(
+            args.session, frames, stack_rois, community_rois, args.start, args.end, args.decimate,
+            args.white_th, args.frac_th)
 
     if args.dump_stacks:
         # 校准辅助:抽几帧打印每个板位的白占比(看空板 vs 有牌差多少,定 --frac-th)
@@ -410,12 +471,15 @@ def main():
               "seats": list(stack_rois.keys())}
     windows = _recon.segment_hands(stack_series, community_series, config)
     print(f"\n=== 手分段:检测到 {len(windows)} 手 ===")
-    all_actions = []
+    all_actions, all_bet_cands = [], []
     for hi, (t0, t1) in enumerate(windows, 1):
         ss, cs = _recon.slice_series(stack_series, community_series, t0, t1)
         am = {s: [t for t in allin_marks.get(s, []) if t0 <= t < t1] for s in allin_marks}
         res = reconstruct(ss, cs, config, allin_marks=am)
         all_actions.extend(res.actions)
+        if bet_series:  # §19 下注区 call-to 候选(融合比对用)
+            bs = {s: [(t, v) for (t, v) in bet_series.get(s, []) if t0 <= t < t1] for s in bet_series}
+            all_bet_cands.extend(_recon.bet_callto_candidates(bs, cs, config))
         print(f"\n--- 手 {hi}  t[{t0:.1f},{t1:.1f}] ---")
         for a in sorted(res.actions, key=lambda x: x.t):
             print(f"  seat{a.seat} {a.street} {a.atype} 投入{a.chips_in:.0f} @t{a.t:.1f}")
@@ -424,12 +488,16 @@ def main():
                 print("  " + n)
     if args.truth:
         cmp = compare_to_truth(all_actions, args.truth)
-        print(f"\n=== 捕获率(vs 真值,全手聚合)===\n  真值筹码动作 {cmp['true']} | 命中 {cmp['matched']} "
-              f"| 捕获率 {cmp['capture_rate']*100:.0f}%")
-        if cmp["missed"]:
-            print("  漏:", cmp["missed"])
+        fus = compare_to_truth_fused(all_actions, all_bet_cands, args.truth)
+        print(f"\n=== 捕获率(vs 真值,全手聚合)===")
+        print(f"  真值筹码动作 {cmp['true']}")
+        print(f"  ① stack-only:  命中 {cmp['matched']} | 捕获率 {cmp['capture_rate']*100:.0f}%")
+        print(f"  ② 融合(stack增量 ∪ 下注区call-to):命中 {fus['matched']} | 捕获率 {fus['capture_rate']*100:.0f}%"
+              f"  ← 治 call-to口径 + 补 all-in")
+        if fus["missed"]:
+            print("  融合后仍漏(真信号缺口):", fus["missed"])
         if cmp["extra"]:
-            print("  多/假:", cmp["extra"])
+            print("  stack 多/假:", cmp["extra"])
 
 
 def _self_test():
