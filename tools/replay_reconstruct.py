@@ -420,7 +420,7 @@ def main():
         for a in sorted(res.actions, key=lambda x: x.t):
             print(f"  seat{a.seat} {a.street} {a.atype} 投入{a.chips_in:.0f} @t{a.t:.1f}")
         for n in res.notes:
-            if "涨" in n:  # 仅显示派彩/补码提示(守恒 note 在 --pot 0 时无意义)
+            if any(k in n for k in ("涨", "ante", "胜率", "all-in")):  # 派彩/ante排除/all-in反解
                 print("  " + n)
     if args.truth:
         cmp = compare_to_truth(all_actions, args.truth)
