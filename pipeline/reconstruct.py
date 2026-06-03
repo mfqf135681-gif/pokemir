@@ -123,6 +123,7 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
     tol = config.get("tol", 2.0)
     # 先收集全部投入事件(跨座),按时间序排 → 才能正确判 call/bet/raise(当前注随时间推进)
     raw = []  # (t, seat, chips, is_allin)
+    rise_ts = []  # 派彩 rise 时刻(结算锚:首个 rise = 本手结算开始,§19.12)
     for s in seats:
         plats = fuse_plateaus(stack_series.get(s, []), tol=tol)
         drops, rises = detect_drops(plats)
@@ -132,6 +133,7 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
             is_allin = (last_v is not None and last_v <= tol and t == last_t)
             raw.append((t, s, chips, is_allin))
         for (t, amt) in rises:
+            rise_ts.append(t)
             res.notes.append(f"seat{s}@{t}: stack 涨 {amt}(派彩/补码,非动作)")
 
     # 🔧 BUG1+精度修:强制注簇排除 —— 手起始的强制投入(已在 res.forced),不计自愿。
@@ -146,13 +148,21 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
             forced_amts.append(ante + config["bb"])    # BB 合并 = ante + 大盲
         ante_ts = sorted(t for (t, s, c, _) in raw if abs(c - ante) <= tol)
         if ante_ts:
-            win = config.get("ante_cluster_win", 2.0)
+            win = config.get("ante_cluster_win", 2.0)       # 检测窗:确认有 ante 簇
+            sim_win = config.get("ante_sim_win", 1.0)        # 排除窗:只剔【同时刻】那批
             min_n = config.get("min_ante_seats", 3)
             t0 = ante_ts[0]
             if sum(1 for t in ante_ts if t - t0 <= win) >= min_n:  # 确认 ante 簇(够多座 ~ante)
-                # 排除手起始窗内所有强制注金额(ante / ante+sb / ante+bb)
-                ante_marks = {(s, round(t, 1)) for (t, s, c, _) in raw
-                              if t0 <= t <= t0 + win and any(abs(c - fa) <= tol for fa in forced_amts)}
+                # 🔧 §19.12 ante==BB 死结:1/2/2 桌 ante=BB=limp=2,旧 t0+win 窗把紧跟的 limp
+                #   误当 ante 剔掉 → recall 崩。修:antes 同帧齐跌、limp 逐个轮流(晚>sim_win),
+                #   排除窗收到 sim_win + 每座只剔【最早】一笔(ante 每座仅一次,后续同额=limp 应留)。
+                seen_seat = set()
+                ante_marks = set()
+                for (t, s, c, _) in sorted(raw, key=lambda e: e[0]):
+                    if t0 <= t <= t0 + sim_win and s not in seen_seat \
+                            and any(abs(c - fa) <= tol for fa in forced_amts):
+                        ante_marks.add((s, round(t, 1)))
+                        seen_seat.add(s)
                 res.notes.append(f"强制注簇排除 {len(ante_marks)} 笔(@t≈{t0:.1f},含 ante{ante}/SB{ante+config.get('sb',0)}/BB{ante+config.get('bb',0)})")
     events = [(t, s, c, a) for (t, s, c, a) in raw if (s, round(t, 1)) not in ante_marks]
     events.sort(key=lambda e: e[0])  # 时间序
@@ -187,7 +197,11 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
         t_tol = config.get("t_tol", 1.0)
         for s, ts in allin_marks.items():
             plats = fuse_plateaus(stack_series.get(s, []), tol=tol)
-            for tm in ts:
+            for tm in sorted(ts):
+                # 🔧 一座一手只 all-in 一次:%标记跨多帧持续 → 旧 t_tol 去重漏(标记间隔>t_tol),
+                #   同手同座产 524×3 假阳。改:该座已有 all-in 即跳(全下后不再行动)。
+                if any(a.seat == s and a.atype == "all_in" for a in res.actions):
+                    continue
                 prior = [(t, v) for (t, v) in plats if t <= tm + t_tol]
                 if not prior or prior[-1][1] <= tol:
                     continue  # 无前置 stack 或已≈0(归零型 all-in 已被 is_allin 抓)
@@ -198,6 +212,17 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
                                               t=tm, atype="all_in", confidence=0.7,
                                               to_amount=prior[-1][1]))
                 res.notes.append(f"seat{s}@{tm:.1f}: 胜率%标记 → all-in 反解投入≈{prior[-1][1]:.0f}")
+
+    # 🔧 §19.12 结算抑制:首个派彩 rise = 本手结算开始 → 其前 settle_guard 秒起的"动作"判结算
+    #   噪声(showdown 揭示期的 stack 抖动/重复%标记),抑制。锚到 rise(真实结算点),
+    #   不再靠窗末 t1(按钮 seg 后 t1=下一手起点,离结算>2s → 旧 settle-win 失准、precision 回归)。
+    settle_guard = config.get("settle_guard", 2.0)
+    if rise_ts and settle_guard >= 0:
+        cutoff = min(rise_ts) - settle_guard
+        n0 = len(res.actions)
+        res.actions = [a for a in res.actions if a.t < cutoff]
+        if len(res.actions) < n0:
+            res.notes.append(f"结算抑制 {n0 - len(res.actions)} 笔(首派彩 {min(rise_ts):.1f} 前 {settle_guard}s 起判结算噪声)")
 
     res.sum_chips = sum(a.chips_in for a in res.actions) + sum(res.forced.values())
     gap = abs(res.sum_chips - res.pot_observed)
@@ -520,6 +545,33 @@ def _self_test():
     acts_bb = [(a.seat, round(a.chips_in), round(a.to_amount)) for a in res_bb.actions]
     assert acts_bb == [(3, 52, 52)], acts_bb  # BB 的 8(ante+bb)排除,只留真 raise 52;to_amount=52
     print(f"✅ 精度修:BB 合并post(8)排除,仅留真动作 + to_amount {acts_bb}")
+
+    # §19.12 ① ante==BB 死结:ante=BB=10,limp10 紧跟(@2.5,在旧 win=2 窗内但晚于 sim_win)
+    #   → 旧码误剔 limp,新码(sim_win+每座一笔)保留。
+    ss_knot = {
+        0: [(0, 200), (0.5, 200), (1, 190), (1.5, 190), (2.5, 180), (3, 180)],  # ante10@1 + limp10@2.5
+        1: [(0, 200), (0.5, 200), (1, 190), (1.5, 190)],
+        2: [(0, 200), (0.5, 200), (1, 190), (1.5, 190)],
+        3: [(0, 200), (0.5, 200), (1, 190), (1.5, 190)],
+    }
+    res_k = reconstruct(ss_knot, [(0, 0)], {"ante": 10, "bb": 10, "tol": 2.0, "pot": 0, "seats": [0, 1, 2, 3]})
+    volk = [(a.seat, round(a.chips_in)) for a in res_k.actions]
+    assert volk == [(0, 10)], volk  # 4 笔 ante 同时刻剔除,seat0 晚到的 limp10 保留
+    print(f"✅ §19.12① ante==BB:同时刻簇剔 ante、保留紧跟 limp {volk}")
+
+    # §19.12 ② all-in 去重:%标记跨多帧(5/6.5/8,间隔>t_tol)→ 同座只产 1 笔 all-in(治 524×3)
+    res_dd = reconstruct({0: [(0, 300), (1, 300), (2, 300)]}, [(0, 0)],
+                         {"tol": 2.0, "pot": 0, "seats": [0]}, allin_marks={0: [5.0, 6.5, 8.0]})
+    ndd = [a for a in res_dd.actions if a.atype == "all_in"]
+    assert len(ndd) == 1, ndd
+    print(f"✅ §19.12② all-in 去重:3 帧%标记 → 1 笔 all-in(投入{ndd[0].chips_in:.0f})")
+
+    # §19.12 ③ 结算抑制:bet100@2(真)+ 噪声 drop50@7 + 派彩 rise@8 → cutoff=8-2=6,噪声删、bet 留
+    ss_settle = {0: [(0, 300), (1, 300), (2, 200), (3, 200), (7, 150), (7.5, 150), (8, 500), (9, 500)]}
+    res_s = reconstruct(ss_settle, [(0, 0)], {"tol": 2.0, "pot": 0, "seats": [0], "settle_guard": 2.0})
+    acts_s = [(round(a.chips_in), round(a.t)) for a in res_s.actions]
+    assert acts_s == [(100, 2)], acts_s  # 首派彩@8 前 2s 起判结算噪声 → 删 @7,留 @2
+    print(f"✅ §19.12③ 结算抑制:锚首派彩,删结算期噪声 drop,留真 bet {acts_s}")
 
     # T132 按钮切手:button-seat 移座 → hand-start(忽略 None 过渡)
     btn = [(0, 6), (1, None), (5, 7), (6, 7), (10, None), (11, 0), (20, 0), (21, None), (22, 1)]

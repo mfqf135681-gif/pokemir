@@ -408,7 +408,7 @@ def main():
     ap.add_argument("--hash-th", type=int, default=12,
                     help="--dump-signals:win phash 变化阈值(hamming>此=视觉突变,默认12/64)")
     ap.add_argument("--settle-win", type=float, default=2.0,
-                    help="A:手末 +xx 前 N 秒的动作判结算噪声、抑制(治 river settlement 假阳;实测 2 最优 Recall98/Prec91;0=关)")
+                    help="结算抑制(settle_guard):首个派彩 rise 前 N 秒起判结算噪声、抑制(锚真实结算点,非窗末;治 river settlement 假阳;0=关)")
     ap.add_argument("--win-merge", type=float, default=6.0,
                     help="T130:+xx 结算聚类合并窗秒(大桌结算散开调大,如 12;默认 6)")
     ap.add_argument("--win-min", type=float, default=0.0,
@@ -662,7 +662,7 @@ def main():
         return
 
     config = {"sb": args.sb, "bb": args.bb, "ante": args.ante, "pot": args.pot,
-              "seats": list(stack_rois.keys())}
+              "seats": list(stack_rois.keys()), "settle_guard": args.settle_win}
     if hand_starts:  # T132:D 按钮移座当权威切手边界
         config["hand_starts"] = hand_starts
     windows = _recon.segment_hands(stack_series, community_series, config)
@@ -671,12 +671,8 @@ def main():
     for hi, (t0, t1) in enumerate(windows, 1):
         ss, cs = _recon.slice_series(stack_series, community_series, t0, t1)
         am = {s: [t for t in allin_marks.get(s, []) if t0 <= t < t1] for s in allin_marks}
+        # 结算抑制已下沉到 reconstruct(锚首派彩 rise,非窗末 t1)→ config["settle_guard"]
         res = reconstruct(ss, cs, config, allin_marks=am)
-        if args.settle_win > 0:  # A:抑制手末 +xx 前 N 秒的结算噪声(river settlement)
-            n0 = len(res.actions)
-            res.actions = [a for a in res.actions if a.t <= t1 - args.settle_win]
-            if len(res.actions) < n0:
-                res.notes.append(f"结算窗抑制 {n0 - len(res.actions)} 笔(手末 {t1:.0f} 前 {args.settle_win}s)")
         all_actions.extend(res.actions)
         bet_cands = []
         if bet_series:  # §19 下注区 call-to 候选(融合比对用)
