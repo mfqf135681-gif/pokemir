@@ -69,6 +69,20 @@ def resolve_region(args):
     return None  # 全屏(不推荐:更易碰 R-3 + 体积大)
 
 
+def prompt_stakes(args):
+    """开录前确认桌规级别(小盲/大盲/ante)→ 写进 manifest,回放自动用(治"这段啥级别?"的痛)。
+    CLI 全给则直接用;否则交互输入(你看着桌面填):小盲 → 大盲 → 有无 ante(有→额/无→0)。"""
+    if args.sb is not None and args.bb is not None and args.ante is not None:
+        return args.sb, args.bb, args.ante
+    print("\n=== 桌规级别(写进 manifest,回放自动用)===")
+    sb = float(input("  小盲 SB = ").strip())
+    bb = float(input("  大盲 BB = ").strip())
+    ans = input("  有 ante 吗? (y/n) ").strip().lower()
+    ante = float(input("  ante 额 = ").strip()) if ans.startswith("y") else 0.0
+    print(f"  → SB={sb} / BB={bb} / ante={ante}{'(无 ante)' if ante == 0 else ''}\n")
+    return sb, bb, ante
+
+
 def main():
     ap = argparse.ArgumentParser(description="录 WePoker 窗口为无损帧序列 + manifest(T126)")
     src = ap.add_argument_group("捕获区域(二选一,都不给=全屏)")
@@ -88,6 +102,9 @@ def main():
     ap.add_argument("--device-idx", type=int, default=None, help="[dxcam] GPU 设备号(多卡时)")
     ap.add_argument("--min-free-gb", type=float, default=5.0, help="剩余磁盘低于此 GB 即停")
     ap.add_argument("--note", type=str, default="", help="录入 manifest 的备注(如牌局/桌型)")
+    ap.add_argument("--sb", type=float, default=None, help="小盲(不给则开录前交互输入,写进 manifest 供回放自动用)")
+    ap.add_argument("--bb", type=float, default=None, help="大盲(同上)")
+    ap.add_argument("--ante", type=float, default=None, help="ante 额(无则 0;不给则交互问有无)")
     args = ap.parse_args()
     # NB: 曾有 --dedup(精确去重),实测网页表一直微动→0% 命中,已撤;全帧本就是融合所需。
 
@@ -164,10 +181,13 @@ def main():
     log.info(f"剩余磁盘 {free_gb:.1f} GB;{args.fps:.0f}fps × {args.duration:.0f}s ≈ "
              f"{int(args.fps * args.duration)} 帧(png 约 1-2MB/帧)。低于 {args.min_free_gb}GB 自动停。")
 
+    sb, bb, ante = prompt_stakes(args)  # 桌规级别 → manifest(回放自动用)
+
     manifest_path = out / "manifest.jsonl"
     meta = {
         "_meta": True, "stamp": stamp, "region": region, "fps": args.fps,
         "format": args.format, "note": args.note, "backend": args.backend,
+        "sb": sb, "bb": bb, "ante": ante,
         "started_wall": datetime.now(timezone.utc).isoformat(),
         "probe_shape": list(probe.shape), "output_idx": args.output_idx,
         "tool": "record_frames.py", "task": "T126",

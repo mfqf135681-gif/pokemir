@@ -360,8 +360,8 @@ def main():
     ap.add_argument("--start", type=float, default=0); ap.add_argument("--end", type=float, default=1e9)
     ap.add_argument("--decimate", type=int, default=1, help="每 N 帧处理一帧(提速,默认全用)")
     ap.add_argument("--truth", help="真值文件(compare_truth 格式)")
-    ap.add_argument("--sb", type=float, default=2); ap.add_argument("--bb", type=float, default=4)
-    ap.add_argument("--ante", type=float, default=4); ap.add_argument("--pot", type=float, default=0)
+    ap.add_argument("--sb", type=float, default=None); ap.add_argument("--bb", type=float, default=None)
+    ap.add_argument("--ante", type=float, default=None); ap.add_argument("--pot", type=float, default=0)
     ap.add_argument("--white-th", type=int, default=170, help="公共牌白像素阈值(三通道都>此=白)")
     ap.add_argument("--frac-th", type=float, default=0.12, help="白占比>此 = 该板位有牌")
     ap.add_argument("--mock", action="store_true", help="离线自测核(不读帧)")
@@ -387,6 +387,12 @@ def main():
 
     profile_path = Path("rois") / f"{args.profile}.json"
     meta, frames = load_manifest(args.session)
+    # 桌规级别:CLI 优先,否则读 manifest(record_frames 开录时存),再否则默认 2/4/4
+    args.sb = args.sb if args.sb is not None else meta.get("sb", 2)
+    args.bb = args.bb if args.bb is not None else meta.get("bb", 4)
+    args.ante = args.ante if args.ante is not None else meta.get("ante", 4)
+    print(f"  桌规:SB={args.sb} / BB={args.bb} / ante={args.ante}"
+          f"{'(manifest)' if meta.get('sb') is not None else '(默认/CLI)'}")
 
     if args.dump_actions:
         action_rois, amount_rois = load_action_rois(profile_path)
