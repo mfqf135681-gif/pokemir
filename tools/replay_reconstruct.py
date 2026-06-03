@@ -66,6 +66,17 @@ def read_stack(img, roi, ocr):
     return float(digits) if digits else None
 
 
+def read_stack_ex(img, roi, ocr):
+    """BUG2/R15:读 stack,若命中 '%'(all-in 显胜率,筹码被盖)→ (None, True);否则 (float|None, False)。
+    allowlist 含 % 以侦测;⚠️ 单用途 stack ROI 才可这样收窄(见 ocr-allowlist 红线)。Win-only。"""
+    l, t, w, h = roi
+    txt = ocr.read_text(img[t:t + h, l:l + w], allowlist="0123456789%") or ""
+    if "%" in txt:
+        return None, True
+    digits = "".join(c for c in txt if c.isdigit())
+    return (float(digits) if digits else None), False
+
+
 def _white_frac(crop, white_th):
     """三通道都 > white_th 的像素占比(牌面=大片白;空 felt≈0)。"""
     if crop is None or crop.size == 0:
@@ -89,6 +100,7 @@ def build_series_real(session, frames, stack_rois, community_rois, start, end, d
     from recognition.ocr import OCREngine
     ocr = OCREngine(gpu=True, name="replay")
     stack_series = {s: [] for s in stack_rois}
+    allin_marks = {s: [] for s in stack_rois}  # BUG2:stack 区显胜率% 的时刻 → all-in
     community_series = []
     fdir = Path(session) / "frames"
     for k, (i, fn, t) in enumerate(frames):
@@ -98,9 +110,12 @@ def build_series_real(session, frames, stack_rois, community_rois, start, end, d
         if img is None:
             continue
         for s, roi in stack_rois.items():
-            stack_series[s].append((t, read_stack(img, roi, ocr)))
+            v, is_ai = read_stack_ex(img, roi, ocr)
+            stack_series[s].append((t, v))
+            if is_ai:
+                allin_marks[s].append(t)
         community_series.append((t, count_community(img, community_rois, white_th, frac_th)))
-    return stack_series, community_series
+    return stack_series, community_series, allin_marks
 
 
 # ── §17 持久信号试验(T129):读 action 词 + amount 下注区,验街内持久 + 可读性 ──
@@ -353,7 +368,7 @@ def main():
     stack_rois, community_rois = load_rois(profile_path)
     print(f"session {args.session}: {len(frames)} 帧, 时间窗 [{args.start},{args.end}], "
           f"{len(stack_rois)} 座 stack ROI")
-    stack_series, community_series = build_series_real(
+    stack_series, community_series, allin_marks = build_series_real(
         args.session, frames, stack_rois, community_rois, args.start, args.end, args.decimate,
         args.white_th, args.frac_th)
 
@@ -398,7 +413,8 @@ def main():
     all_actions = []
     for hi, (t0, t1) in enumerate(windows, 1):
         ss, cs = _recon.slice_series(stack_series, community_series, t0, t1)
-        res = reconstruct(ss, cs, config)
+        am = {s: [t for t in allin_marks.get(s, []) if t0 <= t < t1] for s in allin_marks}
+        res = reconstruct(ss, cs, config, allin_marks=am)
         all_actions.extend(res.actions)
         print(f"\n--- 手 {hi}  t[{t0:.1f},{t1:.1f}] ---")
         for a in sorted(res.actions, key=lambda x: x.t):

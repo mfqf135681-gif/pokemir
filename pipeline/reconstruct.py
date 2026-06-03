@@ -94,12 +94,14 @@ def boundaries_from_community(community_series):
     return out
 
 
-def reconstruct(stack_series, community_series, config, bet_reads=None):
+def reconstruct(stack_series, community_series, config, bet_reads=None, allin_marks=None):
     """
     stack_series: {seat: [(t, stack_val|None), ...]}  每座 stack 时间序列
     community_series: [(t, n_community_cards), ...]
     config: {"sb":2,"bb":4,"ante":4,"pot":470,"sb_seat":i,"bb_seat":j,"seats":[...]}
     bet_reads: optional {seat: [(t, bet_area_val), ...]} 下注区读数(局部恒等式校验)
+    allin_marks: optional {seat: [t, ...]} 读取层标记的 all-in 时刻(stack 区显胜率%)
+                 → 该座 all-in,金额=标记前最后已知 stack(治 R15:%盖筹码致 all-in 漏抓)
     """
     res = ReconResult(pot_observed=float(config.get("pot", 0)))
     boundaries = boundaries_from_community(community_series)
@@ -119,7 +121,7 @@ def reconstruct(stack_series, community_series, config, bet_reads=None):
     #   约定:stack_series 的首个平台 = 强制注已扣后的"行动前"持有筹码)
     tol = config.get("tol", 2.0)
     # 先收集全部投入事件(跨座),按时间序排 → 才能正确判 call/bet/raise(当前注随时间推进)
-    events = []  # (t, seat, chips, is_allin)
+    raw = []  # (t, seat, chips, is_allin)
     for s in seats:
         plats = fuse_plateaus(stack_series.get(s, []), tol=tol)
         drops, rises = detect_drops(plats)
@@ -127,9 +129,24 @@ def reconstruct(stack_series, community_series, config, bet_reads=None):
         last_v = plats[-1][1] if plats else None
         for (t, chips) in drops:
             is_allin = (last_v is not None and last_v <= tol and t == last_t)
-            events.append((t, s, chips, is_allin))
+            raw.append((t, s, chips, is_allin))
         for (t, amt) in rises:
             res.notes.append(f"seat{s}@{t}: stack 涨 {amt}(派彩/补码,非动作)")
+
+    # 🔧 BUG1 修:ante 排除 —— 手起始全员各跌≈ante 的【最早同时簇】= 强制 ante(已在 res.forced),
+    #    不计自愿动作(否则每人 -ante 被误判 limp,虚增 + 吞掉真 limp 可分辨性)。
+    ante_marks = set()  # {(seat, round(t,1))}
+    if ante > 0:
+        ad = sorted((t, s) for (t, s, c, _) in raw if abs(c - ante) <= tol)
+        if ad:
+            win = config.get("ante_cluster_win", 2.0)
+            min_n = config.get("min_ante_seats", 3)
+            t0 = ad[0][0]
+            cluster = [(t, s) for (t, s) in ad if t - t0 <= win]
+            if len(cluster) >= min_n:  # 够多座同时 -ante = ante 簇(非零散 limp)
+                ante_marks = {(s, round(t, 1)) for (t, s) in cluster}
+                res.notes.append(f"ante 簇排除 {len(ante_marks)} 笔(@t≈{t0:.1f},各≈{ante})→ 计强制注非自愿")
+    events = [(t, s, c, a) for (t, s, c, a) in raw if (s, round(t, 1)) not in ante_marks]
     events.sort(key=lambda e: e[0])  # 时间序
     cur_bet = {}  # street -> 当前最大单家投入
     for (t, s, chips, is_allin) in events:
@@ -152,6 +169,23 @@ def reconstruct(stack_series, community_series, config, bet_reads=None):
                 if act.confidence < 1.0:
                     res.notes.append(f"seat{s}@{t}: stack跌{chips}≠下注区{near} → 低置信")
         res.actions.append(act)
+
+    # 🔧 BUG2 修:all-in 识别 —— 读取层标记某座 stack 区显胜率%(筹码被盖)→ all-in。
+    #    金额 = 标记前最后已知 stack(他把剩余全推);若该座该街已有动作捕获则跳过(防重复)。
+    if allin_marks:
+        t_tol = config.get("t_tol", 1.0)
+        for s, ts in allin_marks.items():
+            plats = fuse_plateaus(stack_series.get(s, []), tol=tol)
+            for tm in ts:
+                prior = [(t, v) for (t, v) in plats if t <= tm + t_tol]
+                if not prior or prior[-1][1] <= tol:
+                    continue  # 无前置 stack 或已≈0(归零型 all-in 已被 is_allin 抓)
+                if any(a.seat == s and abs(a.t - tm) <= t_tol for a in res.actions):
+                    continue  # 该座该时刻已有动作
+                st = street_at(tm, boundaries)
+                res.actions.append(ChipAction(seat=s, street=st, chips_in=prior[-1][1],
+                                              t=tm, atype="all_in", confidence=0.7))
+                res.notes.append(f"seat{s}@{tm:.1f}: 胜率%标记 → all-in 反解投入≈{prior[-1][1]:.0f}")
 
     res.sum_chips = sum(a.chips_in for a in res.actions) + sum(res.forced.values())
     gap = abs(res.sum_chips - res.pot_observed)
@@ -347,6 +381,25 @@ def _self_test():
     cov = compare_coverage(fake_stack, bacts, tol=2.0, t_tol=3.0)
     assert cov["both_agree"] == 2 and cov["bet_only"] == 1 and cov["stack_only"] == 0, cov
     print(f"✅ 融合核:下注区反推动作 {incs};覆盖对比 {cov}(下注区补回 stack 漏的 1 个=bet_only)")
+
+    # BUG1 ante 排除:4 座 @t1 各 -4(ante 簇)+ seat0 @t5 真 limp -4 → 簇排除、limp 留
+    ss_ante = {
+        0: [(0, 100), (0.5, 100), (1, 96), (1.5, 96), (5, 92), (5.5, 92)],  # ante@1 + limp@5
+        1: [(0, 100), (0.5, 100), (1, 96), (1.5, 96)],
+        2: [(0, 100), (0.5, 100), (1, 96), (1.5, 96)],
+        3: [(0, 100), (0.5, 100), (1, 96), (1.5, 96)],
+    }
+    res_a = reconstruct(ss_ante, [(0, 0)], {"ante": 4, "tol": 2.0, "pot": 0, "seats": [0, 1, 2, 3]})
+    vol = [(a.seat, round(a.chips_in), round(a.t)) for a in res_a.actions]
+    assert vol == [(0, 4, 5)], vol  # 只剩 seat0 的真 limp,4 笔 ante 被排除
+    print(f"✅ BUG1 ante 排除:4 笔 ante 簇剔除,仅留真 limp {vol}")
+
+    # BUG2 all-in 标记:seat0 stack 稳 300,读取层标记 @t5(显胜率%)→ all-in 反解 300
+    res_ai = reconstruct({0: [(0, 300), (1, 300)]}, [(0, 0)],
+                         {"tol": 2.0, "pot": 0, "seats": [0]}, allin_marks={0: [5.0]})
+    ai = [(a.atype, round(a.chips_in)) for a in res_ai.actions]
+    assert ("all_in", 300) in ai, ai
+    print(f"✅ BUG2 all-in 标记:胜率%标记 → 反解 all-in {ai}")
 
 
 if __name__ == "__main__":
