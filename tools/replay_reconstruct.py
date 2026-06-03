@@ -340,7 +340,7 @@ def compare_per_hand(machine_hands, truth_path, tol=2.0):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from compare_truth import parse_labels, CHIP_ACTIONS
     thands = parse_labels(Path(truth_path).read_text(encoding="utf-8"))
-    n = max(len(machine_hands), len(thands))
+    n = len(thands)  # 只比到真值手数为止:机器多切的未标手忽略(不污染 precision;--end 可直接 9999)
     rows, miss, false_pos = [], [], []
     agg_true = agg_match = agg_machine = agg_prec = 0
     for i in range(n):
