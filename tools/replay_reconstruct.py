@@ -333,6 +333,31 @@ def compare_to_truth_fused(stack_actions, bet_candidates, truth_path, tol=2.0):
     return {"true": len(true_chips), "matched": matched, "missed": missed, "capture_rate": rate}
 
 
+def categorize_false_pos(false_pos, miss, sb=None, tol=2.0):
+    """假阳归类(诊断求解器值不值得造):
+      ① amount_misread:同手同街有未配对漏抓 → 同一动作金额读错(规则求解器修不了,要 OCR)
+      ② sb_complete:preflop 且 ≈SB → SB 补齐半强制语义(可规则识别)
+      ③ phantom:无对应漏抓的多余动作 → 真幻影(规则/守恒可拒,求解器主战场)
+    返回 {bucket: [(hand,street,amt[,paired_miss])]}。"""
+    miss_by_hs = {}
+    for (h, st, amt) in miss:
+        miss_by_hs.setdefault((h, st), []).append(amt)
+    used = set()  # ((h,st), idx) 已配对的漏抓
+    cats = {"amount_misread": [], "sb_complete": [], "phantom": []}
+    for (h, st, amt) in false_pos:
+        key = (h, st)
+        avail = [k for k in range(len(miss_by_hs.get(key, []))) if (key, k) not in used]
+        if avail:
+            best = min(avail, key=lambda k: abs(miss_by_hs[key][k] - amt))
+            used.add((key, best))
+            cats["amount_misread"].append((h, st, amt, miss_by_hs[key][best]))
+        elif st == "preflop" and sb and abs(amt - sb) <= tol + 1:
+            cats["sb_complete"].append((h, st, amt))
+        else:
+            cats["phantom"].append((h, st, amt))
+    return cats
+
+
 def compare_per_hand(machine_hands, truth_path, tol=2.0):
     """A:按手对齐(无跨手巧合)→ recall + precision。
     machine_hands: [(stack_actions, bet_cands), ...] 按机器手序;truth 按 # hand 序 1:1 对齐。
@@ -707,6 +732,17 @@ def main():
             print(f"  按手仍漏: {ph['per_hand_miss']}")
         if ph['per_hand_false']:
             print(f"  按手假阳(机器有/真值无): {ph['per_hand_false']}")
+            # 假阳归类:量出 71% 里求解器够得着(phantom)vs 够不着(OCR金额错)
+            cats = categorize_false_pos(ph['per_hand_false'], ph['per_hand_miss'], sb=args.sb, tol=2.0)
+            nf = len(ph['per_hand_false'])
+            print(f"\n  === 假阳归类(诊断:求解器值不值得造)===")
+            print(f"  ① OCR金额读错(有对应漏抓,规则修不了→需OCR): {len(cats['amount_misread'])}/{nf}")
+            for (h, st, amt, pm) in cats['amount_misread']:
+                print(f"      手{h} {st}: 机器{amt} ↔ 真值{pm:.0f}(同一动作读偏)")
+            print(f"  ② SB补齐半强制(规则可识别): {len(cats['sb_complete'])}/{nf}  {cats['sb_complete']}")
+            print(f"  ③ 真幻影(无对应漏抓,规则/守恒可拒→求解器主战场): {len(cats['phantom'])}/{nf}")
+            for (h, st, amt) in cats['phantom']:
+                print(f"      手{h} {st}: {amt}")
 
 
 def _self_test():
