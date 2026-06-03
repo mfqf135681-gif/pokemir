@@ -375,8 +375,8 @@ def main():
                     help="T125:只读+打印底池(pot_size)时间序列(验守恒锚读取可靠性,目标近 99 percent)")
     ap.add_argument("--dump-win", action="store_true",
                     help="T130:只读+打印每座 win_amount(+xx 结算)时间序列(验它能否当手边界,翻牌前结束的手也有)")
-    ap.add_argument("--settle-win", type=float, default=0.0,
-                    help="A:手末 +xx 前 N 秒的动作判结算噪声、抑制(治 river settlement 假阳;0=关,试 2-3 调)")
+    ap.add_argument("--settle-win", type=float, default=2.0,
+                    help="A:手末 +xx 前 N 秒的动作判结算噪声、抑制(治 river settlement 假阳;实测 2 最优 Recall98/Prec91;0=关)")
     args = ap.parse_args()
 
     if args.mock:
