@@ -142,6 +142,12 @@ def load_pot_roi(profile_path):
     return p.get("pot_size"), p.get("pot_size_previous")
 
 
+def load_win_rois(profile_path):
+    """→ {seat: win_amount ROI}。T130:'+xx' 结算=手边界(普适,翻牌前结束的手也有)。"""
+    p = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+    return {int(s["seat_index"]): s["win_amount"] for s in p.get("seats", []) if s.get("win_amount")}
+
+
 def read_word(img, roi, ocr, allowlist=_ACTION_ALLOW):
     """裁动作词 ROI → OCR(收窄 allowlist)→ str|None。⚠️ Win-only。"""
     l, t, w, h = roi
@@ -361,6 +367,8 @@ def main():
                     help="§17/T129:量 stack∪下注区 融合覆盖(逐手 stack重建 vs 下注区反推 对比;无真值时看相对覆盖+一致性)")
     ap.add_argument("--dump-pot", action="store_true",
                     help="T125:只读+打印底池(pot_size)时间序列(验守恒锚读取可靠性,目标近 99 percent)")
+    ap.add_argument("--dump-win", action="store_true",
+                    help="T130:只读+打印每座 win_amount(+xx 结算)时间序列(验它能否当手边界,翻牌前结束的手也有)")
     args = ap.parse_args()
 
     if args.mock:
@@ -463,6 +471,46 @@ def main():
             print(f"  t{t:.1f}: {int(v) if v is not None else None}")
         print("\n判读(守恒锚可靠性):① 手内底池应【单调升】(每动作加注),手末派彩后 reset(对齐公共牌归零);"
               "② 非空率应高、无乱跳/垃圾值;③ 若手内出现下降(非手末)或读空 → 锚点不稳,99% 有风险。")
+        return
+
+    if args.dump_win:
+        import cv2
+        from recognition.ocr import OCREngine
+        win_rois = load_win_rois(profile_path)
+        _, community_rois = load_rois(profile_path)
+        if not win_rois:
+            ap.error("profile 无 win_amount ROI")
+        ocr = OCREngine(gpu=True, name="replay")
+        fdir = Path(args.session) / "frames"
+        win_series = {s: [] for s in win_rois}
+        community_series = []
+        for k, (i, fn, t) in enumerate(frames):
+            if t < args.start or t > args.end or (k % args.decimate):
+                continue
+            img = cv2.imread(str(fdir / fn))
+            if img is None:
+                continue
+            for s, roi in win_rois.items():
+                win_series[s].append((t, read_stack(img, roi, ocr)))
+            community_series.append((t, count_community(img, community_rois, args.white_th, args.frac_th)))
+        print(f"session {args.session}: {len(win_rois)} 座 win_amount ROI")
+        print("\n=== 公共牌张数 over time(手边界参照)===")
+        prev = None
+        for (t, n) in community_series:
+            if n != prev:
+                print(f"  t{t:.1f}: {n} 张")
+                prev = n
+        print("\n=== 每座 win_amount(+xx 结算)出现时刻(按值变化折叠)===")
+        all_win = []
+        for s in sorted(win_series):
+            ch = [(round(t, 1), int(v)) for (t, v) in collapse_changes(win_series[s]) if v is not None]
+            nn = sum(1 for _, v in win_series[s] if v is not None)
+            if ch or nn:
+                print(f"  seat{s}: {nn}帧非空 | 出现: {ch}")
+                all_win.extend(t for (t, _) in ch)
+        print(f"\n=== 所有 +xx 出现时刻(排序;应≈每手末一簇)===\n  {sorted(set(all_win))}")
+        print("\n判读:① +xx 是否每手末出现一次(含翻牌前结束的手)→ 能否当权威手边界;"
+              "② 是否持久够中等帧抓到(非空帧数);③ 有无手内乱出/漏出。")
         return
 
     stack_rois, community_rois = load_rois(profile_path)
