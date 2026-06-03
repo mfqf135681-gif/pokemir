@@ -70,25 +70,20 @@ def _parse_action(street: str, token: str) -> Action | None:
     # 归一 "all in"/"all-in" → allin(用户常带空格)
     import re as _re
     token = _re.sub(r"all[\s_-]*in", "allin", token, flags=_re.IGNORECASE)
-    parts = token.split()
-    if len(parts) < 2:
-        return None
-    pos = parts[0]
-    # 动作词可能是 parts[1];金额(若有)是末尾的数字
-    word = parts[1]
-    atype = _ACT.get(word)
-    if atype is None:
-        # 容错:整段里找已知动作词
-        for w, a in _ACT.items():
-            if w in token:
-                atype = a
-                break
+    # 动作词:子串匹配、长词优先('加注'先于'加'),不靠空格 → 容 '加注210'(用户漏空格)。
+    #   位置标签可选(用户标注约定"位置不用写";仍兼容旧 'CO 加 6' 格式)。
+    atype = None; wpos = -1; wlen = 0
+    for w in sorted(_ACT, key=len, reverse=True):
+        i = token.find(w)
+        if i >= 0:
+            atype, wpos, wlen = _ACT[w], i, len(w)
+            break
     if atype is None:
         return None
-    amount = None
-    m = re.search(r"(\d+(?:\.\d+)?)", " ".join(parts[1:]))  # 排除位置标签(避免 UTG+1 的"1"被当金额)
-    if m:
-        amount = float(m.group(1))
+    # 金额 = 动作词【之后】的第一个数字(排除前面位置标签如 UTG+1 的"1")
+    m = re.search(r"(\d+(?:\.\d+)?)", token[wpos + wlen:])
+    amount = float(m.group(1)) if m else None
+    pos = token[:wpos].strip() or None
     return Action(street=street, pos=pos, type=atype, amount=amount, raw=token)
 
 
