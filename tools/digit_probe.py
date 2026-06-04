@@ -31,16 +31,28 @@ def _col_ink(gray, ink_th):
     return (gray > ink_th).astype(np.uint8).sum(axis=0).tolist()
 
 
-def _match_char(glyph, templates, score_th):
+_CANON = (24, 16)  # 统一画布 (高,宽) — 字形/模板都缩到此再比,公平且聚焦形状
+
+
+def _binprep(im, ink_th):
+    """缩到统一画布 + 二值化(浅字深底:>ink_th=前景)→ 聚焦形状,去灰阶/背景干扰。"""
     import cv2
     import numpy as np
+    r = cv2.resize(im, (_CANON[1], _CANON[0]))
+    return (r > ink_th).astype(np.float32)
+
+
+def _match_char(glyph, templates, score_th, ink_th=150):
+    """二值化 + 统一尺寸 + 去均值归一相关。比灰度+各自resize 对形近数字(5/6、8/3)判别强。"""
+    import numpy as np
+    gb = _binprep(glyph, ink_th)
+    gf = gb - gb.mean()
+    gn = float(np.linalg.norm(gf)) or 1.0
     best, best_s = "?", -1.0
     for ch, tmpl in templates.items():
-        g = cv2.resize(glyph, (tmpl.shape[1], tmpl.shape[0])).astype(np.float32)
-        tf = tmpl.astype(np.float32)
-        g -= g.mean(); tf -= tf.mean()
-        denom = float(np.linalg.norm(g) * np.linalg.norm(tf)) or 1.0
-        s = float((g * tf).sum() / denom)
+        tb = _binprep(tmpl, ink_th)
+        tf = tb - tb.mean()
+        s = float((gf * tf).sum() / (gn * (float(np.linalg.norm(tf)) or 1.0)))
         if s > best_s:
             best, best_s = ch, s
     return best if best_s >= score_th else "?"
@@ -113,7 +125,7 @@ def main():
 
     def tmpl_read(g):
         digits, _ = digit_ocr.parse_number(
-            cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], templates, args.score_th))
+            cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], templates, args.score_th, args.ink_th))
         return digits
 
     # ── ② 自检:harvest 帧里 --seat 那座回读 == 真值 ──
