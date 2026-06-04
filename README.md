@@ -142,7 +142,7 @@ phash 当独立 key 不行(跨侧名字渲染镜像,hamming 跨人/同人重叠)
 | **`pipeline/`** | 核心管线(4942 行) | `orchestrator.py`(实时主循环,~2800 行) · `reconstruct.py`(§15 砖1:stack序列→动作) · `solver.py`(砖2:裁幻影) · `digit_ocr.py`(模板数字识别核) · `conservation.py`(守恒判级) · `detector.py`(状态机/手边界) · `state/`(SeatLifecycle/HandPhase,**未接入**) · `io/`(异步 DB/diag 队列,**未接入**) |
 | **`recognition/`** | 识别层(Win) | `ocr.py`(OCREngine,EasyOCR 包装,gpu/allowlist/batch) · `cards.py`(CardRecognizer:CNN→SmolVLM→色彩+OCR 三级) · `cnn_classifier.py`(自训 CNN,rank/suit/iscard 三头) · `vision.py`(SmolVLM-256M 备用) · `actions.py`(动作文本解析) |
 | **`capture/`** | 截屏 + ROI | `screen.py`(ScreenCapturer,mss) · `roi.py`(ROIManager/TableROIs/SeatROI,读 JSON) |
-| **`rois/`** | ROI 配置 | `party_poker_8.json` / `_9.json`(每座 stack/action/amount/fold_area/id/cards/timer/win_amount/button_indicator/card_marker;表级 pot_size)。8座=hero坐下,9座=观战(hero卡 null)。**几何上左右座近乎镜像(轴 x≈727)、各 ROI 可由 card_marker 锚 + 偏移模板参数化派生**(见 `tools/roi_derive.py`),仅中柱座 s0/s4 + amount 需手框 |
+| **`rois/`** | ROI 配置 | `party_poker_8.json` / `_9.json`(每座 stack/action/amount/fold_area/id/cards/timer/win_amount/button_indicator/card_marker;表级 pot_size)。8座=hero坐下,9座=观战(hero卡 null)。**左右座严格镜像(轴 x≈727)→ 各 ROI 由 card_marker 锚 + 单左模板镜像派生**(`tools/roi_derive.py`,列座 11 字段尺寸全统一;已验证派生 vs 生产守恒读数逐手等价、零回归)。仅中柱座 s0/s4 几个框需手框 |
 | **`models/`** | 模型权重 | `card_cnn.pth`(自训,~1MB) · `easyocr/`(~120MB,craft+中英) |
 | **`events/`** | 领域模型 + 推断 | `models.py`(ActionType/Street/Position 枚举,Hand/ActionEvent 数据类) · `normalizer.py`(`infer_action_from_delta`/`compute_confidence` 从 stack/pot delta 推动作+物理矛盾兜底) · `diag.py`(诊断遥测) |
 | **`storage/`** | ORM + 仓储 | `models.py`(SQLAlchemy 表) · `database.py`(engine/session,读 `DB_DSN_SYNC`) · `repository.py`(Hand/ActionEvent CRUD) |
@@ -206,6 +206,7 @@ phash 当独立 key 不行(跨侧名字渲染镜像,hamming 跨人/同人重叠)
 | §15 reconstruct / solver(砖1/砖2) | ✅ 纯逻辑自测过;⚠️ **未接入 live**(`STACK_PROBE` 是预留钩子,默认关) |
 | 数字识别配方(digit_ocr) | ✅ 离线验证(stack~100%/amount~94%);⚠️ **未接入 live**,生产仍用 EasyOCR |
 | 守恒对比夹具(conservation + `--write-db`) | ✅ 本 session 建成,与 DB 视图 100% 同口径,闭环(Win 跑→写库→Claude 读) |
+| ROI 参数化模型(`roi_derive`,镜像派生) | ✅ 验证:列座 11 字段尺寸全统一+严格镜像;`party_poker_8_derived` 守恒读数与生产**逐手 bit 等价**(零回归,确认规整安全)。**本质=几何干净/可迁移,非提捕获率**。⚠️ 中柱 s0/s4 的 amount/id/fold_area/button 待 Win 重框;`_derived` 待替换生产 |
 | 卡牌 CNN | 可用;⚠️ **报识别率看 val 不看 pytest**(pytest 含训练集虚高、val 才是真泛化),摊牌小卡域偏弱 |
 | dashboard | 部分(replay/profile/labeling/settings 可用,coach/live 占位) |
 | api / hud / stats | Phase 4-5 占位 |

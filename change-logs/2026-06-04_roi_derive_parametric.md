@@ -28,6 +28,10 @@ card_marker 锚重框的思路,推广到其余 ROI。
   **81 字段派生、7 超阈保留原值**(仅中柱 s0/s4 的 amount/id/fold_area/button);amount 列座统一 77×25;
   card_marker(锚)/结构未动。注:amount s7 位置残差 21px(强制拉到镜像对称点,Win 须核仍盖住下注数)。
 - roi_config.py 加 `--frame`(--verify 叠录制帧)+ 画框计数/分辨率告警自诊断 + verify+frame 跳选窗:ast 语法 + 3.14 help 检查通过。
+- **Win 实测(用户)**:① 实时观战逐元素 `--verify --element` 叠框肉眼核,列座统一框、位置 OK;
+  ② replay 同 session(170343)派生 profile vs 生产(run_label derived vs solve)→ **34 手守恒
+  chip_movement/status 逐手 bit 等价(全 delta=0)**,OK 率均 47.1% → **规整化读数零回归,确认安全**。
+  注:守恒只读 stack,故此对比证 stack ROI 等价;amount/id 等靠 ① 的肉眼核覆盖。
 
 ## §5 红线
 - **R-7(改 ROI 须重跑 profile 验证)**:命中。**本轮只产出 `party_poker_8_derived.json`,
@@ -48,6 +52,10 @@ card_marker 锚重框的思路,推广到其余 ROI。
 5. 不退步 → 改名 `party_poker_8_derived.json` → `party_poker_8.json`(替换生产,正式触发 R-7 完成)。
 6. 泛化:同法生成 `party_poker_9` / `_seated` 变体(参数化模型最大红利)。
 
-## §8 后续
-- party_poker_9 / seated 变体用同引擎重生成。
-- amount 中柱座(s0/s4)若 Win 重框后仍漂,查"下注显示位置是否随金额位数浮动"(可能本就非定框)。
+## §8 收口 + 后续
+**收口判定**:派生 vs 生产守恒逐手等价(零回归)+ 用户实时眼验通过 → **规整化达成目标
+(几何干净/可迁移)且安全,可替换生产**。本质=清理几何,非提捕获率(捕获率瓶颈在 §15 重建,非 ROI)。
+- **待办(用户 Win)**:`Move-Item` 替换生产 `party_poker_8.json` ← `_derived.json`(留 backup)+ git 提交;
+  中柱 s0/s4 那 7 个离群框(amount/id/fold_area/button)可顺手重框,不做亦不劣于现状。
+- party_poker_9 / seated 变体用同引擎重生成(参数化模型最大红利)。
+- amount 中柱(s0/s4)若重框后仍漂,查"下注显示位置是否随金额位数浮动"(可能本就非定框)。
