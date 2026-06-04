@@ -441,7 +441,7 @@ def main():
     ap.add_argument("--dump-active", action="store_true",
                     help="活跃集验证:每座 card_marker(牌背)对标准参考 phash 的 hamming → 在手区间(不OCR);看在手 vs 弃/空 分不分得开")
     ap.add_argument("--marker-ref-seat", type=int, default=None,
-                    help="--dump-active:取哪座当标准牌背参考(默认最小座);该座在 ref-t 须在手")
+                    help="(已弃用:改为每座对自己参考,此参数忽略)")
     ap.add_argument("--marker-ref-t", type=float, default=None,
                     help="--dump-active:参考帧时刻秒(默认首帧);挑该 ref-seat 明确在手的帧")
     ap.add_argument("--active-th", type=int, default=8,
@@ -669,27 +669,27 @@ def main():
                 continue
             for s, (l, tt, w, h) in marker_rois.items():
                 per_seat_hash[s].append((t, _avg_hash(img[tt:tt + h, l:l + w])))
-        ref_seat = args.marker_ref_seat if args.marker_ref_seat is not None else min(marker_rois)
-        if not per_seat_hash.get(ref_seat):
-            print(f"ERROR: ref-seat {ref_seat} 无数据(检查 --marker-ref-seat / 该座有无 card_marker)")
-            return
-        ref_t = args.marker_ref_t if args.marker_ref_t is not None else per_seat_hash[ref_seat][0][0]
-        ref_hash = min(per_seat_hash[ref_seat], key=lambda th: abs(th[0] - ref_t))[1]
-        print(f"\n=== 活跃集(card_marker 牌背 对标准参考 phash,不OCR)===")
-        print(f"  标准参考: seat{ref_seat} @t≈{ref_t:.1f}  | th={args.active_th}(hamming≤th=在手)")
-        # 后处理纯函数(_hamming + active_intervals,Linux 可验逻辑)
+        # per-seat 参考:每座取【自己】在 ref-t 的 hash 当基准(免疫按座渲染差/框差;牌背仍 player-independent)
+        ref_t = args.marker_ref_t
+        if ref_t is None:
+            anyseat = min((s for s in per_seat_hash if per_seat_hash[s]), default=None)
+            ref_t = per_seat_hash[anyseat][0][0] if anyseat is not None else 0.0
+        print(f"\n=== 活跃集(card_marker 牌背,【每座对自己】参考 phash,不OCR)===")
+        print(f"  per-seat 参考帧 @t≈{ref_t:.1f}(须挑【刚发完牌、各座都在手】的 preflop 帧)| th={args.active_th}")
         for s in sorted(per_seat_hash):
-            samples = [(t, _hamming(h, ref_hash)) for (t, h) in per_seat_hash[s]]
-            hams = [hm for (_, hm) in samples]
-            if not hams:
+            if not per_seat_hash[s]:
                 continue
+            ref_hash_s = min(per_seat_hash[s], key=lambda th: abs(th[0] - ref_t))[1]
+            samples = [(t, _hamming(h, ref_hash_s)) for (t, h) in per_seat_hash[s]]
+            hams = [hm for (_, hm) in samples]
             ivs = _active.active_intervals(samples, th=args.active_th, min_run=2)
             med = sorted(hams)[len(hams) // 2]
             n_in = sum(1 for hm in hams if hm <= args.active_th)
             print(f"  seat{s}: hamming[min{min(hams)}/中{med}/max{max(hams)}] 在手{n_in}/{len(hams)}帧"
                   f" | 在手区间 {[(round(a, 1), round(b, 1)) for a, b in ivs]}")
-        print("\n判读:在手座 hamming 应稳定【低】(贴牌背参考)、弃/空座【高】;看 min↔max 是否两极(bimodal)、gap 在哪 → 定 th。")
-        print("  ⚠️ 摊牌时 marker 被显牌占 → hamming 飙高,在手区间止于摊牌(下注街内有效=正常)。")
+        print("\n判读:每座对自己参考 → 在手段 hamming≈0、弃/空/摊牌段高,应两极(bimodal)。")
+        print("  ⚠️ 某座若【全程低】= 它在 ref-t 其实没在手(参考误取成弃/空态)→ 换 --marker-ref-t 到刚发牌帧。")
+        print("  ⚠️ 摊牌时 marker 被显牌占 → 在手区间止于摊牌(下注街内有效)。")
         return
 
     stack_rois, community_rois = load_rois(profile_path)
