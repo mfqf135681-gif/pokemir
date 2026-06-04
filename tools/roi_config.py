@@ -383,7 +383,14 @@ def main():
                 capturer.select_monitor(1)
             img = capturer.capture()
             img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-        _draw_rois(img_bgr, data, element_filter=args.element)
+        fh, fw = img_bgr.shape[:2]
+        res = data.get("resolution")
+        if res and (fw, fh) != (res[0], res[1]):
+            print(f"⚠️ 帧尺寸 {fw}x{fh} ≠ profile resolution {res[0]}x{res[1]} "
+                  f"→ ROI 坐标按 {res[0]}x{res[1]} 框的,会错位/出界!这才是看不到框的根因。")
+        stat = _draw_rois(img_bgr, data, element_filter=args.element)
+        print(f"  _draw_rois: 画出 {stat['drawn']} 个框, {stat['offcanvas']} 个在画布外"
+              f"{'(element=' + args.element + ')' if args.element else ''}")
         title_suffix = f" — element={args.element}" if args.element else ""
         cv2.imshow(f"ROI Preview — {data.get('window_title', args.name)}{title_suffix} (press any key)", img_bgr)
         cv2.waitKey(0)
@@ -737,11 +744,18 @@ def _draw_rois(img: np.ndarray, data: dict, element_filter: str | None = None):
         "win_amount":       ("win_amount", "+WIN"),
     }
 
+    H, W = img.shape[:2]
+    stat = {"drawn": 0, "offcanvas": 0}
+
     def draw_rect(tup, color, label=""):
         if tup is None:
             return
         x, y, w, h = tup
+        if x >= W or y >= H or x + w <= 0 or y + h <= 0:  # 完全在画布外
+            stat["offcanvas"] += 1
+            return
         cv2.rectangle(img, (x, y), (x + w, y + h), color, 2)
+        stat["drawn"] += 1
         if label:
             cv2.putText(img, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
@@ -767,6 +781,7 @@ def _draw_rois(img: np.ndarray, data: dict, element_filter: str | None = None):
             else:
                 label = short_label.format(idx) if s.get(key) else ""
             draw_rect(s.get(key), color, label)
+    return stat
 
 
 def _find_poker_windows() -> list[dict]:
