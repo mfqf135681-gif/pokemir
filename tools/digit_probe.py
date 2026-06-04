@@ -155,11 +155,19 @@ def main():
     import cv2
 
     prof = json.loads((Path(_ROOT) / "rois" / f"{args.profile}.json").read_text(encoding="utf-8"))
-    seat_rois = {s["seat_index"]: s[args.field] for s in prof["seats"] if s.get(args.field)}
-    # 模板从 --field(如 stack)建,但 scan/bootstrap/validate 实际读 --read-field(如 amount)
-    # → 测"字体一致,stack 模板直接读下注区"假设,零新采集。默认 read_field = field。
-    read_rois = ({s["seat_index"]: s[args.read_field] for s in prof["seats"] if s.get(args.read_field)}
-                 if args.read_field else seat_rois)
+
+    def _rois_for(field):
+        """座级字段 → {seat:roi};顶层表级 ROI(如 pot_size)→ {0:roi} 当伪座0。"""
+        if not field:
+            return {}
+        sr = {s["seat_index"]: s[field] for s in prof["seats"] if s.get(field)}
+        if not sr and isinstance(prof.get(field), list):  # 表级单 ROI(底池等)
+            sr = {0: prof[field]}
+        return sr
+
+    seat_rois = _rois_for(args.field)
+    # 模板从 --field 建,scan/bootstrap/validate 实际读 --read-field(测跨区,如 stack模板读amount/pot)
+    read_rois = _rois_for(args.read_field) if args.read_field else seat_rois
     icon_right = {int(x) for x in args.icon_right_seats.split(",") if x.strip()}
     fdir = Path(args.session) / "frames"                       # 读取(scan/validate)的目标录像
     hdir = Path(args.harvest_session) / "frames" if args.harvest_session else fdir  # 采模板的录像
