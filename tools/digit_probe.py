@@ -208,8 +208,9 @@ def main():
         frames_all = [json.loads(x) for x in mlines[1:] if x.strip()]
         tgt = args.read_field or args.field
         skip = {"", "10"}  # 空 + ante;只看真下注
-        print(f"\n=== 扫 {tgt} 真下注(每{args.scan}帧,≥{args.min_hit_cells}格,过滤空/10;读值+格数)===")
+        print(f"\n=== 扫 {tgt} 真下注(每{args.scan}帧,≥{args.min_hit_cells}格,过滤空/10,去重连续同值)===")
         hits = 0
+        last = {}  # seat -> 上次显示值(去重:同座连续相同只报一次,值变了才再报)
         for k, d in enumerate(frames_all):
             if k % args.scan:
                 continue
@@ -219,19 +220,21 @@ def main():
                 if roi is None:
                     continue
                 g = gray_roi(d["file"], roi)
-                if g is None:
-                    continue
-                c = cells_of(g)
-                if len(c) < args.min_hit_cells:
-                    continue
-                r, _ = digit_ocr.parse_number(
-                    c, lambda cc: _match_char(g[:, cc[0]:cc[1] + 1], pool, args.score_th))
-                if r not in skip:
-                    seats_hit.append(f"s{s}={r or '空'}({len(c)})")
+                cur = ""
+                if g is not None:
+                    c = cells_of(g)
+                    if len(c) >= args.min_hit_cells:
+                        r, _ = digit_ocr.parse_number(
+                            c, lambda cc: _match_char(g[:, cc[0]:cc[1] + 1], pool, args.score_th))
+                        if r not in skip:
+                            cur = f"{r or '空'}({len(c)})"
+                if cur and cur != last.get(s):
+                    seats_hit.append(f"s{s}={cur}")
+                last[s] = cur
             if seats_hit:
                 print(f"  {d['file']} t={d.get('t_mono', 0):.0f}: {' '.join(seats_hit)}")
                 hits += 1
-        print(f"\n真下注帧 {hits} 个(格式 sX=工具读值(切格数))。翻图核对这几个值对不对——尤其图标有没有污染。")
+        print(f"\n不同的真下注 {hits} 个(已去重连续同值;格式 sX=工具读值(切格数))。翻图核对值对不对——尤其图标污染。")
         return
 
     # ── bootstrap:pool 现有模板读全 8 座(起步用,用户翻图只报错)→ 纠错后建 per-seat ──
