@@ -69,6 +69,8 @@ def main():
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--seat", type=int, default=0)
     ap.add_argument("--field", default="stack")
+    ap.add_argument("--read-field", default="",
+                    help="模板从 --field 建,但 scan/bootstrap/validate 实际读此区(测 stack 模板跨区读 amount)")
     ap.add_argument("--harvest", default="",
                     help='多座采模板:"帧=v0,v1,…,v7; 帧2=…"(一帧里 seats 0..N 的 stack 真值,同字体凑 0-9)')
     ap.add_argument("--harvest-file", default="",
@@ -124,6 +126,10 @@ def main():
 
     prof = json.loads((Path(_ROOT) / "rois" / f"{args.profile}.json").read_text(encoding="utf-8"))
     seat_rois = {s["seat_index"]: s[args.field] for s in prof["seats"] if s.get(args.field)}
+    # 模板从 --field(如 stack)建,但 scan/bootstrap/validate 实际读 --read-field(如 amount)
+    # → 测"字体一致,stack 模板直接读下注区"假设,零新采集。默认 read_field = field。
+    read_rois = ({s["seat_index"]: s[args.read_field] for s in prof["seats"] if s.get(args.read_field)}
+                 if args.read_field else seat_rois)
     fdir = Path(args.session) / "frames"
 
     import numpy as np
@@ -166,14 +172,15 @@ def main():
     if args.scan > 0:
         mlines = (Path(args.session) / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
         frames_all = [json.loads(x) for x in mlines[1:] if x.strip()]
-        print(f"\n=== 扫 --field {args.field} 非空帧(每{args.scan}帧;格式 sX(切格数))===")
+        tgt = args.read_field or args.field
+        print(f"\n=== 扫 {tgt} 非空帧(每{args.scan}帧;格式 sX(切格数))===")
         hits = 0
         for k, d in enumerate(frames_all):
             if k % args.scan:
                 continue
             seats_hit = []
             for s in range(8):
-                roi = seat_rois.get(s)
+                roi = read_rois.get(s)
                 if roi is None:
                     continue
                 g = gray_roi(d["file"], roi)
@@ -212,30 +219,18 @@ def main():
         miss = sorted(set("0123456789") - set(seat_tpls[si]))
         print(f"  seat{si}: 有 {sorted(seat_tpls[si])}  缺 {miss}")
 
-    def read_seat(fn, s):
-        """用 seat s 自己的模板读该帧该座 → 数字串('空'=无墨/读空,'NA'=无ROI/无模板)。"""
-        roi = seat_rois.get(s)
-        tpl = seat_tpls.get(s)
-        if roi is None or not tpl:
-            return "NA"
-        g = gray_roi(fn, roi)
-        if g is None:
-            return "NA"
-        digits, _ = digit_ocr.parse_number(
-            cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], tpl, args.score_th))
-        return digits or "空"
-
     # ── bootstrap:pool 现有模板读全 8 座(起步用,用户翻图只报错)→ 纠错后建 per-seat ──
     if args.bootstrap:
         pool = {}
         for s in sorted(seat_tpls):  # seat6 全 0-9 → 先 pool 进来
             for ch, gl in seat_tpls[s].items():
                 pool.setdefault(ch, gl)
-        print(f"\n=== bootstrap 读全8座(pooled模板{sorted(pool)};跨座+normalize起步,必有错)===")
+        tgt = args.read_field or args.field
+        print(f"\n=== bootstrap 读全8座 {tgt}(pooled模板{sorted(pool)};跨座+normalize起步,必有错)===")
         for fn, _ in harvest:
             cols = []
             for s in range(8):
-                roi = seat_rois.get(s)
+                roi = read_rois.get(s)
                 if roi is None:
                     cols.append(f"s{s}=NA"); continue
                 g = gray_roi(fn, roi)
@@ -261,11 +256,12 @@ def main():
         cand = [d for d in frames_all if d["file"] not in hv]
         picks = random.Random(args.seed).sample(cand, min(args.validate, len(cand)))
         picks.sort(key=lambda d: d["file"])
-        print(f"\n=== 留出验证(seed={args.seed},{len(picks)} 随机非harvest帧×全8座,pool模板{sorted(pool_tpl)})===")
+        tgt = args.read_field or args.field
+        print(f"\n=== 留出验证(seed={args.seed},{len(picks)} 随机非harvest帧×全8座 {tgt},pool模板{sorted(pool_tpl)})===")
         for d in picks:
             cols = []
             for s in range(8):
-                roi = seat_rois.get(s)
+                roi = read_rois.get(s)
                 if roi is None:
                     cols.append(f"s{s}=NA"); continue
                 g = gray_roi(d["file"], roi)
