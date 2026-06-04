@@ -61,11 +61,18 @@ def resolve_region(args):
             log.error(f"找不到标题含 '{args.window_title}' 的窗口。开着 WePoker 吗?或用 --region。")
             sys.exit(2)
         if len(wins) > 1:
-            log.info(f"标题含 '{args.window_title}' 的窗口有 {len(wins)} 个(用 --window-idx 选,默认0):")
+            print(f"标题含 '{args.window_title}' 的窗口有 {len(wins)} 个:")
             for i, w in enumerate(wins):
-                log.info(f"   [{i}] '{w.title}'  ({w.left},{w.top}) {w.width}x{w.height}")
-        win = wins[args.window_idx]
-        log.info(f"选中 [{args.window_idx}]: '{win.title}'  ({win.left},{win.top}) {win.width}x{win.height}")
+                print(f"   [{i}] '{w.title}'  ({w.left},{w.top}) {w.width}x{w.height}")
+            if args.window_idx is not None:
+                idx = args.window_idx
+            else:
+                choice = input(f"选第几个 [0-{len(wins)-1}](默认0): ").strip()
+                idx = int(choice) if choice.isdigit() and int(choice) < len(wins) else 0
+        else:
+            idx = args.window_idx or 0
+        win = wins[idx]
+        log.info(f"选中 [{idx}]: '{win.title}'  ({win.left},{win.top}) {win.width}x{win.height}")
         if win.width <= 0 or win.height <= 0 or win.left < -10000:
             log.error("窗口尺寸异常(最小化?)。先还原窗口,或用 --region。")
             sys.exit(2)
@@ -91,8 +98,8 @@ def main():
     ap = argparse.ArgumentParser(description="录 WePoker 窗口为无损帧序列 + manifest(T126)")
     src = ap.add_argument_group("捕获区域(二选一,都不给=全屏)")
     src.add_argument("--window-title", type=str, help="按标题自动定位窗口(pygetwindow)")
-    ap.add_argument("--window-idx", type=int, default=0,
-                    help="标题匹配多个窗口时选第几个(默认0;先跑一次看列表再选 Chrome 那个)")
+    ap.add_argument("--window-idx", type=int, default=None,
+                    help="多窗口匹配时直接选第几个(脚本override;不给则交互选,同roi_config)")
     src.add_argument("--region", type=int, nargs=4, metavar=("L", "T", "W", "H"),
                      help="屏幕绝对坐标 left top width height")
     ap.add_argument("--fps", type=float, default=10.0, help="目标帧率(默认 10;DXcam 上限 ~120)")
