@@ -40,6 +40,9 @@ def main():
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--hash-size", type=int, default=16, help="phash 边长(16=256bit,名字细节够)")
     ap.add_argument("--decimate", type=int, default=50, help="每 N 帧采一次")
+    ap.add_argument("--cluster-seats", default="",
+                    help="把指定座(如 '1,7')phash 聚类 → 跨座比同玩家簇(治换座污染)")
+    ap.add_argument("--cluster-th", type=int, default=15, help="聚类 hamming 阈(≤此同簇)")
     args = ap.parse_args()
 
     import cv2
@@ -60,6 +63,45 @@ def main():
         for s, roi in id_rois.items():
             l, t, w, h = roi
             per_seat[s].append(_phash(img[t:t + h, l:l + w], args.hash_size))
+
+    # ── --cluster-seats "1,7":把指定座的 phash 按相似度聚类(治"换座"污染:
+    #    一座会分出{你的名字, 空座}多簇)→ 再跨座比"同一玩家那簇"。
+    if args.cluster_seats:
+        seats = [int(x) for x in args.cluster_seats.split(",") if x.strip()]
+        th = args.cluster_th
+
+        def cluster(hashes):
+            clu = []  # [[rep, count], ...]
+            for h in hashes:
+                for c in clu:
+                    if _ham(h, c[0]) <= th:
+                        c[1] += 1; break
+                else:
+                    clu.append([h, 1])
+            return sorted(clu, key=lambda c: -c[1])
+
+        print(f"\n=== 聚类(每{args.decimate}帧, hamming≤{th} 同簇)===")
+        seat_clusters = {}
+        for s in seats:
+            hs = [h for h in per_seat.get(s, []) if h]
+            cl = cluster(hs)
+            seat_clusters[s] = cl
+            print(f"  s{s}: {len(hs)}帧 → {len(cl)}簇")
+            for i, (rep, cnt) in enumerate(cl):
+                print(f"     簇{i}: {cnt}帧 popcount={bin(rep).count('1')} rep={rep}")
+        if len(seats) == 2:
+            a, b = seats
+            print(f"\n=== 跨座比对 s{a} 各簇 ↔ s{b} 各簇(找同一玩家:最小 hamming)===")
+            best = (999, None, None)
+            for i, (ra, _) in enumerate(seat_clusters[a]):
+                row = [f"s{b}簇{j}={_ham(ra, rb)}" for j, (rb, _) in enumerate(seat_clusters[b])]
+                print(f"  s{a}簇{i}: " + "  ".join(row))
+                for j, (rb, _) in enumerate(seat_clusters[b]):
+                    if _ham(ra, rb) < best[0]:
+                        best = (_ham(ra, rb), i, j)
+            print(f"\n  最佳匹配: s{a}簇{best[1]} ↔ s{b}簇{best[2]} = {best[0]}/{bits}")
+            print(f"  判读: 若这对≈0-5 = 同玩家跨座(含跨侧)成立;几十=跨侧名字框内位置不一致。")
+        return
 
     print(f"=== ID phash 验证 ({args.hash_size}x{args.hash_size}={bits}bit, 每{args.decimate}帧)===")
     seat_mode = {}
