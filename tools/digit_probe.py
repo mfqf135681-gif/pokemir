@@ -91,6 +91,8 @@ def main():
     ap.add_argument("--dump-proj", action="store_true")
     ap.add_argument("--normalize", action="store_true",
                     help="每 crop 亮度归一(min-max 拉满量程)再 th/匹配 — 治发暗帧漏墨(类2)")
+    ap.add_argument("--bootstrap", action="store_true",
+                    help="pool 现有模板读全8座(起步),用户翻图只报错→纠错后建 per-seat 模板")
     ap.add_argument("--validate", type=int, default=0,
                     help="留出验证:随机挑 N 张非 harvest 帧,读全 8 座按 seat0-7 打印(供翻图核对)")
     ap.add_argument("--seed", type=int, default=0, help="--validate 随机种子(换数字重roll新帧)")
@@ -193,6 +195,29 @@ def main():
         digits, _ = digit_ocr.parse_number(
             cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], tpl, args.score_th))
         return digits or "空"
+
+    # ── bootstrap:pool 现有模板读全 8 座(起步用,用户翻图只报错)→ 纠错后建 per-seat ──
+    if args.bootstrap:
+        pool = {}
+        for s in sorted(seat_tpls):  # seat6 全 0-9 → 先 pool 进来
+            for ch, gl in seat_tpls[s].items():
+                pool.setdefault(ch, gl)
+        print(f"\n=== bootstrap 读全8座(pooled模板{sorted(pool)};跨座+normalize起步,必有错)===")
+        for fn, _ in harvest:
+            cols = []
+            for s in range(8):
+                roi = seat_rois.get(s)
+                if roi is None:
+                    cols.append(f"s{s}=NA"); continue
+                g = gray_roi(fn, roi)
+                if g is None:
+                    cols.append(f"s{s}=NA"); continue
+                digits, _ = digit_ocr.parse_number(
+                    cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], pool, args.score_th))
+                cols.append(f"s{s}={digits or '空'}")
+            print(f"  {fn}  " + "  ".join(cols))
+        print("\n翻这12帧核对,**只把读错的**告诉我(帧+座+正确值),我建 per-seat 模板。")
+        return
 
     # ── 留出验证:随机挑非 harvest 帧,读全 8 座按 seat0-7 打印(用户翻图核对)──
     if args.validate > 0:
