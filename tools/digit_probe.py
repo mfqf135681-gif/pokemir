@@ -183,8 +183,8 @@ def main():
         l, t, w, h = roi
         crop = img[t:t + h, l:l + w]
         g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
-        if args.normalize:  # 类2:亮度归一,治发暗帧漏墨。有内容才拉伸,防空crop放大噪声
-            lo, hi = float(g.min()), float(g.max())
+        if args.normalize:  # 亮度归一:p2–p98 拉伸(杂散纯黑/白点不再主导 min-max→治暗黄字卡阈值)
+            lo, hi = float(np.percentile(g, 2)), float(np.percentile(g, 98))
             if hi - lo >= 30:
                 g = ((g.astype(np.float32) - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
         return g
