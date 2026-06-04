@@ -237,7 +237,7 @@ VALID_FIELDS = {
 
 # Per-seat sub-element names for --element flag. Order matches the full-seat prompt order.
 # REQUIRED_SEAT_ELEMENTS = {action, stack} — final-save validation refuses entries lacking these.
-SEAT_ELEMENT_ORDER = ["action", "amount", "fold_area", "fold_text", "timer", "stack", "button_indicator", "cards", "id", "hand_type", "win_amount"]
+SEAT_ELEMENT_ORDER = ["action", "amount", "fold_area", "fold_text", "timer", "stack", "button_indicator", "cards", "id", "hand_type", "win_amount", "card_marker"]
 REQUIRED_SEAT_ELEMENTS = {"action", "stack"}
 ELEMENT_HINTS = {
     "action": "头像上方,玩家行动时**只显示动作汉字**(「跟注/加注/下注/过牌」);WePoker 中**金额不在此**;空闲时此位置显示玩家昵称",
@@ -251,6 +251,7 @@ ELEMENT_HINTS = {
     "id": "玩家昵称区域 — WePoker 显示中文/英文/数字混排昵称(如「白鸢飞ix」「湖南闷高」),与 action 同像素;直接框跟 action 一模一样的区域即可;ESC 可跳过(将来 hand-start 缓存昵称用)",
     "hand_type": "**摊牌时**该 seat 在底牌下方显示的**牌型中文文字**(「对子」「顺子」「同花」「葫芦」「四条」「同花顺」「皇家同花顺」「三条」「两对」「高牌」);独立 ROI,**比 cards 紧得多**,只框那一行牌型文字;ESC 可跳过(若用户暂不需要交叉验证),将来用于 hole+community 推导验证",
     "win_amount": "**手结算时**获胜玩家头上短暂显示的赢取金额(「+45」「+1000」「+12500」等),只显示 1-2 秒;紧框「+」号 + 数字本身,**不带其他文字 / 头像**;为 Path B 净胜负 stat 提供直接信号(免去 stack-delta 推算的误差);全 8 seat 同样大小,适合 --copy-size 批量框",
+    "card_marker": "**在手标记** = 头像【左下角】那两条红色竖条(= 两张牌背,全玩家统一图案);**在手全程都在、弃牌即消失(被压暗+「弃牌」盖住)、摊牌时被显牌占据**。紧框这两条红竖条本身,**不带头像 / 桌布 / 数字**(越紧 phash 越干净)。活跃集基桩:对一份标准牌背参考 phash,hamming≤阈值=该座在手。8 座同小目标,用放大工具逐座框",
 }
 
 

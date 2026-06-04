@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(_ROOT, "pipeline"))
 import reconstruct as _recon  # noqa: E402
 reconstruct = _recon.reconstruct
 import solver as _solver  # noqa: E402  砖2 守恒/合法性求解器
+import active_set as _active  # noqa: E402  活跃集判定纯逻辑(在手区间)
 
 
 # ── 可测核:profile ROI 提取 ──────────────────────────────────────────
@@ -153,6 +154,12 @@ def load_button_rois(profile_path):
     """→ {seat: button_indicator ROI}。切手信号:D 按钮(纯白高对比)移座 = 新手开始。"""
     p = json.loads(Path(profile_path).read_text(encoding="utf-8"))
     return {int(s["seat_index"]): s["button_indicator"] for s in p.get("seats", []) if s.get("button_indicator")}
+
+
+def load_card_marker_rois(profile_path):
+    """→ {seat: card_marker ROI}。活跃集信号:头像左下两条红牌背(全玩家统一)= 在手。"""
+    p = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+    return {int(s["seat_index"]): s["card_marker"] for s in p.get("seats", []) if s.get("card_marker")}
 
 
 def _avg_hash(crop):
@@ -431,6 +438,14 @@ def main():
                     help="T130:只读+打印每座 win_amount(+xx 结算)时间序列(验它能否当手边界,翻牌前结束的手也有)")
     ap.add_argument("--dump-signals", action="store_true",
                     help="T132:三信号切手验证 — D按钮移座(亮度) + win phash变化 + 公共牌reset 时间线对比(全程不OCR)")
+    ap.add_argument("--dump-active", action="store_true",
+                    help="活跃集验证:每座 card_marker(牌背)对标准参考 phash 的 hamming → 在手区间(不OCR);看在手 vs 弃/空 分不分得开")
+    ap.add_argument("--marker-ref-seat", type=int, default=None,
+                    help="--dump-active:取哪座当标准牌背参考(默认最小座);该座在 ref-t 须在手")
+    ap.add_argument("--marker-ref-t", type=float, default=None,
+                    help="--dump-active:参考帧时刻秒(默认首帧);挑该 ref-seat 明确在手的帧")
+    ap.add_argument("--active-th", type=int, default=8,
+                    help="--dump-active:hamming ≤ 此 = 像牌背参考=在手(默认8/64)")
     ap.add_argument("--hash-th", type=int, default=12,
                     help="--dump-signals:win phash 变化阈值(hamming>此=视觉突变,默认12/64)")
     ap.add_argument("--settle-win", type=float, default=2.0,
@@ -636,6 +651,45 @@ def main():
         print(f"  {resets}")
         print("\n判读:三条时间线应**互相印证**(每手末≈一个 D移座 + 一个 win突变 + 一个公共牌reset);"
               "看哪条最干净、哪条补哪条的洞(D漏的same-seat / 公共牌漏的无翻牌手 / win的OCR无关因用phash)。")
+        return
+
+    if args.dump_active:
+        import cv2
+        marker_rois = load_card_marker_rois(profile_path)
+        if not marker_rois:
+            print("ERROR: profile 无 card_marker ROI — 先 roi_config --field seat_N --element card_marker 框")
+            return
+        fdir = Path(args.session) / "frames"
+        per_seat_hash = {s: [] for s in marker_rois}      # {seat: [(t, avg_hash)]}(cv2,Win)
+        for k, (i, fn, t) in enumerate(frames):
+            if t < args.start or t > args.end or (k % args.decimate):
+                continue
+            img = cv2.imread(str(fdir / fn))
+            if img is None:
+                continue
+            for s, (l, tt, w, h) in marker_rois.items():
+                per_seat_hash[s].append((t, _avg_hash(img[tt:tt + h, l:l + w])))
+        ref_seat = args.marker_ref_seat if args.marker_ref_seat is not None else min(marker_rois)
+        if not per_seat_hash.get(ref_seat):
+            print(f"ERROR: ref-seat {ref_seat} 无数据(检查 --marker-ref-seat / 该座有无 card_marker)")
+            return
+        ref_t = args.marker_ref_t if args.marker_ref_t is not None else per_seat_hash[ref_seat][0][0]
+        ref_hash = min(per_seat_hash[ref_seat], key=lambda th: abs(th[0] - ref_t))[1]
+        print(f"\n=== 活跃集(card_marker 牌背 对标准参考 phash,不OCR)===")
+        print(f"  标准参考: seat{ref_seat} @t≈{ref_t:.1f}  | th={args.active_th}(hamming≤th=在手)")
+        # 后处理纯函数(_hamming + active_intervals,Linux 可验逻辑)
+        for s in sorted(per_seat_hash):
+            samples = [(t, _hamming(h, ref_hash)) for (t, h) in per_seat_hash[s]]
+            hams = [hm for (_, hm) in samples]
+            if not hams:
+                continue
+            ivs = _active.active_intervals(samples, th=args.active_th, min_run=2)
+            med = sorted(hams)[len(hams) // 2]
+            n_in = sum(1 for hm in hams if hm <= args.active_th)
+            print(f"  seat{s}: hamming[min{min(hams)}/中{med}/max{max(hams)}] 在手{n_in}/{len(hams)}帧"
+                  f" | 在手区间 {[(round(a, 1), round(b, 1)) for a, b in ivs]}")
+        print("\n判读:在手座 hamming 应稳定【低】(贴牌背参考)、弃/空座【高】;看 min↔max 是否两极(bimodal)、gap 在哪 → 定 th。")
+        print("  ⚠️ 摊牌时 marker 被显牌占 → hamming 飙高,在手区间止于摊牌(下注街内有效=正常)。")
         return
 
     stack_rois, community_rois = load_rois(profile_path)
