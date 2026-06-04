@@ -56,6 +56,8 @@ def main():
     ap.add_argument("--field", default="stack")
     ap.add_argument("--harvest", default="",
                     help='多座采模板:"帧=v0,v1,…,v7; 帧2=…"(一帧里 seats 0..N 的 stack 真值,同字体凑 0-9)')
+    ap.add_argument("--harvest-file", default="",
+                    help="从文件读真值块(每行 '帧=v0,..,v7',# 注释)——免跨终端粘长串被塞空格")
     ap.add_argument("--harvest-assist", type=int, default=0,
                     help="从全段 manifest 均匀挑 N 帧打文件名(供眼裁真值,跨整段保证数字多样性);打完即退")
     ap.add_argument("--decimate", type=int, default=10)
@@ -85,8 +87,8 @@ def main():
         print("\n读完按 '帧名=,,,,,,seat6,seat7' 报我(只填 6、7 座,前面 6 个逗号留空)。")
         return
 
-    if not args.harvest:
-        print("需要 --harvest 或 --harvest-assist N。"); return
+    if not args.harvest and not args.harvest_file:
+        print("需要 --harvest / --harvest-file / --harvest-assist N。"); return
 
     import cv2
 
@@ -102,9 +104,17 @@ def main():
         crop = img[t:t + h, l:l + w]
         return cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
 
-    # 解析 --harvest:"帧=v0,v1,…; 帧2=…" → [(帧, [v0,v1,…])](按 seat 序)
+    # 解析真值块:来自 --harvest("帧=v0,…; 帧2=…")和/或 --harvest-file(每行一块,# 注释)
+    # → [(帧, [v0,v1,…])](按 seat 序)。文件优先,免跨终端粘长串被塞空格。
+    blocks = []
+    if args.harvest_file:
+        for line in Path(args.harvest_file).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                blocks.append(line)
+    blocks += args.harvest.split(";")
     harvest = []
-    for blk in args.harvest.split(";"):
+    for blk in blocks:
         blk = blk.strip()
         if not blk or "=" not in blk:
             continue
