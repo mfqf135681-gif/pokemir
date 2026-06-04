@@ -97,6 +97,8 @@ def main():
     ap.add_argument("--validate", type=int, default=0,
                     help="留出验证:随机挑 N 张非 harvest 帧,读全 8 座按 seat0-7 打印(供翻图核对)")
     ap.add_argument("--seed", type=int, default=0, help="--validate 随机种子(换数字重roll新帧)")
+    ap.add_argument("--scan", type=int, default=0,
+                    help="扫每N帧,报 --field ROI 非空的帧+座(找瞬态下注额所在帧,供选帧采真值)")
     args = ap.parse_args()
 
     # ── --harvest-assist:全段均匀挑 N 帧打文件名(纯 manifest,无 cv2),供眼裁真值 ──
@@ -115,8 +117,8 @@ def main():
         print("\n读完按 '帧名=,,,,,,seat6,seat7' 报我(只填 6、7 座,前面 6 个逗号留空)。")
         return
 
-    if not args.harvest and not args.harvest_file:
-        print("需要 --harvest / --harvest-file / --harvest-assist N。"); return
+    if not args.harvest and not args.harvest_file and not args.scan:
+        print("需要 --harvest / --harvest-file / --harvest-assist N / --scan N。"); return
 
     import cv2
 
@@ -159,6 +161,32 @@ def main():
     def cells_of(g):
         return digit_ocr.segment_cells(_col_ink(g, args.ink_th), args.gap_th,
                                        args.min_gap, args.min_cell_w, args.max_merge_w)
+
+    # ── 扫描非空帧:瞬态区(amount 下注额)找出有内容的帧+座,供选帧采真值 ──
+    if args.scan > 0:
+        mlines = (Path(args.session) / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+        frames_all = [json.loads(x) for x in mlines[1:] if x.strip()]
+        print(f"\n=== 扫 --field {args.field} 非空帧(每{args.scan}帧;格式 sX(切格数))===")
+        hits = 0
+        for k, d in enumerate(frames_all):
+            if k % args.scan:
+                continue
+            seats_hit = []
+            for s in range(8):
+                roi = seat_rois.get(s)
+                if roi is None:
+                    continue
+                g = gray_roi(d["file"], roi)
+                if g is None:
+                    continue
+                c = cells_of(g)
+                if c:
+                    seats_hit.append(f"s{s}({len(c)})")
+            if seats_hit:
+                print(f"  {d['file']} t={d.get('t_mono', 0):.0f}: {' '.join(seats_hit)}")
+                hits += 1
+        print(f"\n非空帧 {hits} 个。挑几个【切格数稳定、跨不同手】的,翻图读下注额报我(帧 座 值)。")
+        return
 
     # ── ① per-seat 采模板(每座只用自己的字形,跨帧累积凑齐数字表)──
     # seat_tpls[seat][char] = glyph;治跨座 5↔6、8↔3 渲染差(card_marker 同款解)。
