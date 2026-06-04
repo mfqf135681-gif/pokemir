@@ -91,6 +91,8 @@ def main():
                     help="从文件读真值块(每行 '帧=v0,..,v7',# 注释)——免跨终端粘长串被塞空格")
     ap.add_argument("--harvest-session", default="",
                     help="模板采自此录像(默认=--session)。设它=用A录像模板读B录像→跨录像迁移测试")
+    ap.add_argument("--harvest-src", action="append", default=[],
+                    help="多源采模板 '录像路径|真值文件'(可多次):各源帧从各自录像读,exemplar汇入同pool→密化/多录像合并")
     ap.add_argument("--harvest-assist", type=int, default=0,
                     help="从全段 manifest 均匀挑 N 帧打文件名(供眼裁真值,跨整段保证数字多样性);打完即退")
     ap.add_argument("--decimate", type=int, default=10)
@@ -147,8 +149,8 @@ def main():
         print("\n读完按 '帧名=,,,,,,seat6,seat7' 报我(只填 6、7 座,前面 6 个逗号留空)。")
         return
 
-    if not args.harvest and not args.harvest_file and not args.scan:
-        print("需要 --harvest / --harvest-file / --harvest-assist N / --scan N。"); return
+    if not (args.harvest or args.harvest_file or args.harvest_src or args.scan):
+        print("需要 --harvest / --harvest-file / --harvest-src / --harvest-assist N / --scan N。"); return
 
     import cv2
 
@@ -181,20 +183,30 @@ def main():
 
     # 解析真值块:来自 --harvest("帧=v0,…; 帧2=…")和/或 --harvest-file(每行一块,# 注释)
     # → [(帧, [v0,v1,…])](按 seat 序)。文件优先,免跨终端粘长串被塞空格。
-    blocks = []
-    if args.harvest_file:
-        for line in Path(args.harvest_file).read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                blocks.append(line)
-    blocks += args.harvest.split(";")
-    harvest = []
-    for blk in blocks:
-        blk = blk.strip()
-        if not blk or "=" not in blk:
-            continue
-        fn, vals = blk.split("=", 1)
-        harvest.append((fn.strip(), [v.strip() for v in vals.split(",")]))
+    def _parse_blocks(raw_lines):
+        out = []
+        for blk in raw_lines:
+            blk = blk.strip()
+            if not blk or blk.startswith("#") or "=" not in blk:
+                continue
+            fn, vals = blk.split("=", 1)
+            out.append((fn.strip(), [v.strip() for v in vals.split(",")]))
+        return out
+
+    # 采集源:--harvest-src "录像|真值文件"(可多次,各源帧从各自session读)→ 密化/合并多录像 pool。
+    # 缺省单源:--harvest-file/--harvest 的块从 hdir(--harvest-session 或 --session)读。
+    sources = []  # [(frames_dir, [(fn,vals),...])]
+    for src in args.harvest_src:
+        sess, tf = src.split("|", 1)
+        blks = _parse_blocks(Path(tf.strip()).read_text(encoding="utf-8").splitlines())
+        sources.append((Path(sess.strip()) / "frames", blks))
+    if not sources:
+        raw = []
+        if args.harvest_file:
+            raw += Path(args.harvest_file).read_text(encoding="utf-8").splitlines()
+        raw += args.harvest.split(";")
+        sources.append((hdir, _parse_blocks(raw)))
+    harvest = [b for _, blks in sources for b in blks]  # 汇总(供 validate 排除/bootstrap/②引用)
 
     def cells_of(g):
         return digit_ocr.segment_cells(_col_ink(g, args.ink_th), args.gap_th,
@@ -203,11 +215,12 @@ def main():
     # ── ① per-seat 采模板(每座只用自己的字形,跨帧累积凑齐数字表)──
     # seat_tpls[seat][char] = glyph;治跨座 5↔6、8↔3 渲染差(card_marker 同款解)。
     seat_tpls = {}
-    for fn, vals in harvest:
+    for fdir_src, blks in sources:
+      for fn, vals in blks:
         for si, val in enumerate(vals):
-            if not val or si not in seat_rois:
-                continue
-            g = gray_roi(fn, seat_rois[si], hdir)  # 采模板从 harvest-session(默认=session)
+            if not val or not val.isdigit() or si not in seat_rois:
+                continue  # 跳过空 + 非数字(遮挡标签"公告污染"等)
+            g = gray_roi(fn, seat_rois[si], fdir_src)  # 各源帧从各自 session 读
             if g is None:
                 print(f"  ⚠️ 读不到 {fn}"); break
             cells = cells_of(g)
