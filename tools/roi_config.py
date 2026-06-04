@@ -19,6 +19,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from capture.screen import ScreenCapturer
 
+try:                                   # 纯坐标回映(已单测 tests/test_roi_geom.py)
+    from roi_geom import map_zoomed_roi
+except ImportError:                    # pragma: no cover — 兼容 python -m tools.roi_config
+    from tools.roi_geom import map_zoomed_roi
+
+ZOOM_SCALE = 8                         # A2 阶段2 放大倍数(INTER_NEAREST 保边缘锐利)
+ZOOM_PAD = 24                          # A2 粗框四周裁剪留白(原图像素)
+
 ROI_PROMPTS = [
     ("hero_card_1", "Hero Card 1 — drag rectangle, SPACE to confirm, C to skip"),
     ("hero_card_2", "Hero Card 2"),
@@ -98,16 +106,63 @@ def _fit_window(win_name: str, img: np.ndarray,
         cv2.resizeWindow(win_name, int(w * scale), int(h * scale))
 
 
-def select_roi(window_name: str, img: np.ndarray) -> tuple | None:
-    """Open cv2.selectROI window. Returns (x, y, w, h) or None if skipped."""
-    print(f"  {window_name}...")
-    _fit_window(window_name, img)
-    r = cv2.selectROI(window_name, img, showCrosshair=True)
+def _confirm_crop(window_name: str, img: np.ndarray, x: int, y: int, w: int, h: int,
+                  scale: int) -> str:
+    """A3:把最终裁剪块放大显示,等用户确认。返回 'accept' / 'redo' / 'skip'。
+    ⚠️ cv2 GUI,本机(无 cv2)无法验证,Win 端试飞。"""
+    crop = img[y:y + h, x:x + w]
+    if crop.size == 0:
+        return 'redo'
+    disp = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+    cv2.putText(disp, "SPACE=save  R=redo  ESC=skip", (5, 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    _fit_window(window_name, disp)
+    cv2.imshow(window_name, disp)
+    out = 'redo'
+    while True:
+        k = cv2.waitKey(0) & 0xFF
+        if k == 32:                      # SPACE
+            out = 'accept'; break
+        if k in (ord('r'), ord('R')):
+            out = 'redo'; break
+        if k == 27:                      # ESC
+            out = 'skip'; break
     cv2.destroyWindow(window_name)
-    x, y, w, h = r
-    if w == 0 and h == 0:
-        return None
-    return (x, y, w, h)
+    return out
+
+
+def select_roi(window_name: str, img: np.ndarray) -> tuple | None:
+    """两阶段放大框选 + 裁剪预览(A2+A3)。返回 (x, y, w, h) 或 None(跳过)。
+    阶段1 粗框 → 裁剪+放大 ZOOM_SCALE× → 阶段2 精框 → 回映原图(roi_geom)→ 预览确认。
+    ⚠️ cv2 GUI 全程未经 Linux 验证(本机无 cv2);坐标回映已单测。Win 端首验。"""
+    H, W = img.shape[:2]
+    print(f"  {window_name}:① 粗框该区域→ENTER  ② 放大图精框→ENTER  ③ 预览 SPACE存/R重/ESC跳")
+    while True:
+        win1 = f"{window_name} [1/coarse]"
+        _fit_window(win1, img)
+        cx, cy, cw, ch = cv2.selectROI(win1, img, showCrosshair=True)
+        cv2.destroyWindow(win1)
+        if cw == 0 and ch == 0:
+            return None                  # 阶段1 跳过 = 跳过本 ROI(保留旧 skip 语义)
+        x0, y0 = max(0, cx - ZOOM_PAD), max(0, cy - ZOOM_PAD)
+        x1, y1 = min(W, cx + cw + ZOOM_PAD), min(H, cy + ch + ZOOM_PAD)
+        zoomed = cv2.resize(img[y0:y1, x0:x1], None, fx=ZOOM_SCALE, fy=ZOOM_SCALE,
+                            interpolation=cv2.INTER_NEAREST)
+        win2 = f"{window_name} [2/fine {ZOOM_SCALE}x]"
+        _fit_window(win2, zoomed)
+        fx, fy, fw, fh = cv2.selectROI(win2, zoomed, showCrosshair=True)
+        cv2.destroyWindow(win2)
+        if fw == 0 and fh == 0:
+            box = (cx, cy, cw, ch)       # 阶段2 跳过 → 用粗框
+        else:
+            box = map_zoomed_roi((cx, cy, cw, ch), (fx, fy, fw, fh),
+                                 ZOOM_SCALE, ZOOM_PAD, W, H)
+        decision = _confirm_crop(f"{window_name} [3/confirm]", img, *box, ZOOM_SCALE)
+        if decision == 'accept':
+            return box
+        if decision == 'skip':
+            return None
+        # 'redo' → 回阶段1 重来
 
 
 def place_roi_by_click(img: np.ndarray, ref_w: int, ref_h: int,
