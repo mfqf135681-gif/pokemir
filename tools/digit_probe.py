@@ -306,9 +306,43 @@ def main():
                 "\n".join(hdr) + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
             print(f"  已核真值写入 {args.verify_out}({len(lines)} 帧;含准确率+纠正明细)")
 
+    # ── 客观诊断:列墨profile + 灰度min/max(查反相/暗字)+ cells。吃 --check 文件当目标 ──
+    if args.diagnose:
+        entries = []
+        if args.check:
+            for line in Path(args.check).read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    fn, vals = line.split("=", 1)
+                    for s, t in enumerate([x.strip() for x in vals.split(",")]):
+                        if t and t.isdigit():
+                            entries.append((fn.strip(), s, t))
+        else:
+            for fn, vals in harvest:
+                if args.seat < len(vals) and vals[args.seat]:
+                    entries.append((fn, args.seat, vals[args.seat]))
+        tgt = args.read_field or args.field
+        print(f"\n=== 客观诊断 {tgt}(列墨profile + 灰度min/max查反相/暗字 + cells)===")
+        for fn, s, truth in entries:
+            roi = read_rois.get(s)
+            if roi is None:
+                continue
+            g = gray_roi(fn, roi)
+            if g is None:
+                continue
+            gmin, gmax, gmean = int(g.min()), int(g.max()), int(g.mean())
+            ink = _col_ink(g, args.ink_th)
+            mx = max(ink) or 1
+            prof = "".join("_" if v == 0 else "." if v <= mx / 3 else ":" if v <= 2 * mx / 3 else "#"
+                           for v in ink)
+            cells = cells_of(g)
+            bright = float((g > args.ink_th).mean())
+            print(f"\n{fn} s{s} 真值'{truth}' (灰度min{gmin}/max{gmax}/mean{gmean} >th占比{bright:.0%} 切{len(cells)}格):")
+            print(f"  |{prof}|")
+        return
+
     # ── --check:拿已核真值文件当真相,跑工具 diff,列出错项(零重验,可跨录像)──
-    # 注:--diagnose 优先(它也吃 --check 文件当诊断目标),故此处排除 diagnose。
-    if args.check and not args.diagnose:
+    if args.check:
         pool = _pool()
         ok = bad = 0
         misses = []
@@ -453,44 +487,6 @@ def main():
         digits, _ = digit_ocr.parse_number(
             cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], templates, args.score_th))
         return digits
-
-    # ── 客观数字诊断(不靠眼读):列墨profile + 灰度min/max(查白底黑字反相)+ raw/cells ──
-    if args.diagnose:
-        import numpy as np
-        # 诊断目标:--check 文件的(帧,座,真值);否则 harvest 的 args.seat。读 read-field ROI。
-        entries = []
-        if args.check:
-            for line in Path(args.check).read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                fn, vals = line.split("=", 1)
-                for s, t in enumerate([x.strip() for x in vals.split(",")]):
-                    if t and t.isdigit():
-                        entries.append((fn.strip(), s, t))
-        else:
-            for fn, vals in harvest:
-                if args.seat < len(vals) and vals[args.seat]:
-                    entries.append((fn, args.seat, vals[args.seat]))
-        tgt = args.read_field or args.field
-        print(f"\n=== 客观诊断 {tgt}(profile列墨 + 灰度min/max查反相 + cells)===")
-        for fn, s, truth in entries:
-            roi = read_rois.get(s)
-            if roi is None:
-                continue
-            g = gray_roi(fn, roi)
-            if g is None:
-                continue
-            gmin, gmax, gmean = int(g.min()), int(g.max()), int(g.mean())
-            ink = _col_ink(g, args.ink_th)
-            mx = max(ink) or 1
-            prof = "".join("_" if v == 0 else "." if v <= mx / 3 else ":" if v <= 2 * mx / 3 else "#"
-                           for v in ink)
-            cells = cells_of(g)
-            bright_frac = float((g > args.ink_th).mean())  # >ink_th 像素占比;白底黑字会很高
-            print(f"\n{fn} s{s} 真值'{truth}' (灰度 min{gmin}/max{gmax}/mean{gmean}, "
-                  f">th占比{bright_frac:.0%}, 切{len(cells)}格):")
-            print(f"  |{prof}|")
 
     # ── 存 crop 供眼诊断:放大 6x + 红(左界)绿(右界)线标切割,我直接看像素 ──
     if args.save_crops:
