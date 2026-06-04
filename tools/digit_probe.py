@@ -92,8 +92,9 @@ def main():
         return digit_ocr.segment_cells(_col_ink(g, args.ink_th), args.gap_th,
                                        args.min_gap, args.min_cell_w)
 
-    # ── ① 多座采模板(同字体,按各座真值打标签)──
-    templates = {}
+    # ── ① per-seat 采模板(每座只用自己的字形,跨帧累积凑齐数字表)──
+    # seat_tpls[seat][char] = glyph;治跨座 5↔6、8↔3 渲染差(card_marker 同款解)。
+    seat_tpls = {}
     for fn, vals in harvest:
         for si, val in enumerate(vals):
             if not val or si not in seat_rois:
@@ -107,11 +108,17 @@ def main():
             if len(cells) != len(val):
                 print(f"  ⚠️ {fn} seat{si}: 切{len(cells)}格 ≠ 真值{len(val)}位 → 跳过(调 --ink-th/--gap-th)")
                 continue
+            tpls = seat_tpls.setdefault(si, {})
             for (x0, x1), ch in zip(cells, val):
-                templates.setdefault(ch, g[:, x0:x1 + 1].copy())
-    print(f"\n采到模板: {sorted(templates)}  缺 {sorted(set('0123456789') - set(templates))}")
+                tpls.setdefault(ch, g[:, x0:x1 + 1].copy())
+    print("\n采到模板(per-seat):")
+    for si in sorted(seat_tpls):
+        miss = sorted(set("0123456789") - set(seat_tpls[si]))
+        print(f"  seat{si}: 有 {sorted(seat_tpls[si])}  缺 {miss}")
+    templates = seat_tpls.get(args.seat, {})
     if not templates:
-        print("没采到任何模板 —— 先 --dump-proj 把切割调对(格数==位数)。"); return
+        print(f"\nseat{args.seat} 没采到模板 —— 给含该座的 --harvest 帧,且 --dump-proj 调对切割(格数==位数)。"); return
+    print(f"\n→ 用 seat{args.seat} 自己的模板读 seat{args.seat}(纯 per-seat,无跨座)")
 
     def tmpl_read(g):
         digits, _ = digit_ocr.parse_number(
