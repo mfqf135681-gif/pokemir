@@ -235,7 +235,7 @@ def main():
         return p
 
     # ── 交互核对(--verify):弹放大crop + console 确认 → 直接产出已核真值,杀手动翻图+转录错 ──
-    vacc = {"ok": 0, "bad": 0, "skip": 0, "fixed": {}}  # fixed: {frame:{seat:已核值}}
+    vacc = {"ok": 0, "bad": 0, "skip": 0, "fixed": {}, "corr": []}  # fixed:{frame:{seat:已核值}} corr:纠正明细
 
     def _verify_one(fn, s, g, read):
         """弹 crop + 提示。返回 True 继续 / False 退出(q)。回车=对/数字=纠正/s=遮挡/q=退。"""
@@ -253,6 +253,7 @@ def main():
         else:
             vacc["bad"] += 1
             vacc["fixed"].setdefault(fn, {})[s] = ans
+            vacc["corr"].append((fn, s, read, ans))  # (帧,座,工具读,正确值)
         return True
 
     def _verify_done():
@@ -262,13 +263,16 @@ def main():
             pass
         tot = vacc["ok"] + vacc["bad"]
         acc = f"{vacc['ok']}/{tot}" if tot else "0/0"
-        print(f"\n核对完: 对{vacc['ok']} 错{vacc['bad']} 遮挡{vacc['skip']} → 准确率 {acc}")
-        if vacc["bad"]:
-            print("  纠正:")
-            for fn in sorted(vacc["fixed"]):
-                for s, v in vacc["fixed"][fn].items():
-                    pass  # 明细已在 fixed;错项在下方文件
+        summary = f"对{vacc['ok']} 错{vacc['bad']} 遮挡{vacc['skip']} → 准确率 {acc}"
+        print(f"\n核对完: {summary}")
+        for fn, s, read, ans in vacc["corr"]:
+            print(f"  纠正 {fn} s{s}: 工具读'{read}' → 正确'{ans}'")
         if args.verify_out and vacc["fixed"]:
+            tgt = args.read_field or args.field
+            hdr = [f"# 交互核对 {tgt} @ {args.session}",
+                   f"# 准确率 {summary}"]
+            for fn, s, read, ans in vacc["corr"]:
+                hdr.append(f"#   纠正 {fn} s{s}: 工具读'{read}' → 正确'{ans}'")
             lines = []
             for fn in sorted(vacc["fixed"]):
                 row = ["" for _ in range(8)]
@@ -276,8 +280,8 @@ def main():
                     row[s] = v
                 lines.append(f"{fn}={','.join(row)}")
             Path(args.verify_out).write_text(
-                "# 交互核对产出的真值(回车确认+纠正)\n" + "\n".join(lines) + "\n", encoding="utf-8")
-            print(f"  已核真值写入 {args.verify_out}({len(lines)} 帧)")
+                "\n".join(hdr) + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+            print(f"  已核真值写入 {args.verify_out}({len(lines)} 帧;含准确率+纠正明细)")
 
     # ── 扫真下注:pool 模板读 read-field,过滤掉空+ante('10')+短格,只留真大注供眼核 ──
     if args.scan > 0:
