@@ -89,6 +89,8 @@ def main():
     ap.add_argument("--save-crops", default="",
                     help="把各 harvest 帧的 --seat crop 存 PNG(放大6x+红绿线标切割边界)供眼诊断")
     ap.add_argument("--dump-proj", action="store_true")
+    ap.add_argument("--normalize", action="store_true",
+                    help="每 crop 亮度归一(min-max 拉满量程)再 th/匹配 — 治发暗帧漏墨(类2)")
     args = ap.parse_args()
 
     # ── --harvest-assist:全段均匀挑 N 帧打文件名(纯 manifest,无 cv2),供眼裁真值 ──
@@ -116,13 +118,20 @@ def main():
     seat_rois = {s["seat_index"]: s[args.field] for s in prof["seats"] if s.get(args.field)}
     fdir = Path(args.session) / "frames"
 
+    import numpy as np
+
     def gray_roi(fn, roi):
         img = cv2.imread(str(fdir / fn))
         if img is None:
             return None
         l, t, w, h = roi
         crop = img[t:t + h, l:l + w]
-        return cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+        g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+        if args.normalize:  # 类2:亮度归一,治发暗帧漏墨。有内容才拉伸,防空crop放大噪声
+            lo, hi = float(g.min()), float(g.max())
+            if hi - lo >= 30:
+                g = ((g.astype(np.float32) - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
+        return g
 
     # 解析真值块:来自 --harvest("帧=v0,…; 帧2=…")和/或 --harvest-file(每行一块,# 注释)
     # → [(帧, [v0,v1,…])](按 seat 序)。文件优先,免跨终端粘长串被塞空格。
