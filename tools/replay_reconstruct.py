@@ -31,6 +31,7 @@ import reconstruct as _recon  # noqa: E402
 reconstruct = _recon.reconstruct
 import solver as _solver  # noqa: E402  砖2 守恒/合法性求解器
 import active_set as _active  # noqa: E402  活跃集判定纯逻辑(在手区间)
+import conservation as _cons  # noqa: E402  整手守恒判级(同口径 v_hand_conservation)
 
 
 # ── 可测核:profile ROI 提取 ──────────────────────────────────────────
@@ -462,6 +463,10 @@ def main():
                     help="结算抑制(settle_guard):首个派彩 rise 前 N 秒起判结算噪声、抑制(锚真实结算点,非窗末;治 river settlement 假阳;0=关)")
     ap.add_argument("--solve", action="store_true",
                     help="砖2:reconstruct 后过守恒/合法性求解器(裁自加/重复读/全下后行动幻影 → 提 precision)")
+    ap.add_argument("--conservation", action="store_true",
+                    help="整手守恒对比:每手 chip_movement(Σ首稳态-Σ末稳态)+pot → 同口径 "
+                         "v_hand_conservation 判 OK/CHECK/NULL,并排旧 DB 基准(21.3%)→ 新桩基牢不牢的系统级数字。"
+                         "无需 --truth;pot 取每手窗内 pot_size ROI 峰值(无则用 --pot)")
     ap.add_argument("--p6", action="store_true",
                     help="P-6 加法:用 card_marker 活跃集补看不见的末位跟注(翻后仍活跃且未到注级→跟到注级);需 profile 有 card_marker_ref")
     ap.add_argument("--win-merge", type=float, default=6.0,
@@ -835,6 +840,28 @@ def main():
                   for s in pj6.get("seats", []) if s.get("card_marker_ref") is not None}
         if not p6_ref:
             print("  ⚠️ --p6 但 profile 无 card_marker_ref(先 --capture-marker-refs);跳过 P-6")
+    # --conservation:读 pot_size ROI 每帧 → 每手取窗内峰值当 pot_size_final 代理
+    cons_records, cons_pot_series = [], []
+    if args.conservation:
+        import cv2
+        from recognition.ocr import OCREngine
+        pot_roi, _ = load_pot_roi(profile_path)
+        if pot_roi:
+            ocr_pot = OCREngine(gpu=True, name="cons-pot")
+            fdir = Path(args.session) / "frames"
+            for k, (i, fn, t) in enumerate(frames):
+                if t < args.start or t > args.end or (k % args.decimate):
+                    continue
+                img = cv2.imread(str(fdir / fn))
+                if img is None:
+                    continue
+                v = read_stack(img, pot_roi, ocr_pot)
+                if v is not None:
+                    cons_pot_series.append((t, v))
+            print(f"  --conservation:pot ROI 读到 {len(cons_pot_series)} 个非空(每手取窗内峰值)")
+        else:
+            print(f"  --conservation:profile 无 pot_size ROI → 退回 --pot={args.pot}(无则 NULL_POT)")
+
     all_actions, all_bet_cands, machine_hands = [], [], []
     for hi, (t0, t1) in enumerate(windows, 1):
         ss, cs = _recon.slice_series(stack_series, community_series, t0, t1)
@@ -859,6 +886,13 @@ def main():
                 res.notes.append(n)
             res.actions.extend(inferred)
         all_actions.extend(res.actions)
+        if args.conservation:
+            cm = _cons.chip_movement_from_stacks(ss, fuse=_recon.fuse_plateaus)
+            pot_win = [v for (t, v) in cons_pot_series if t0 <= t < t1]
+            pot = max(pot_win) if pot_win else (args.pot or None)
+            cons_records.append((cm, pot))
+            print(f"  [守恒] chip_movement={cm:.0f}  pot={pot}  "
+                  f"→ {_cons.conservation_status(cm, pot)}")
         bet_cands = []
         if bet_series:  # §19 下注区 call-to 候选(融合比对用)
             bs = {s: [(t, v) for (t, v) in bet_series.get(s, []) if t0 <= t < t1] for s in bet_series}
@@ -871,6 +905,11 @@ def main():
         for n in res.notes:
             if any(k in n for k in ("涨", "ante", "胜率", "all-in", "求解器", "P-6")):  # 派彩/ante排除/all-in反解/求解器/P-6补
                 print("  " + n)
+    if args.conservation:
+        print("\n" + _cons.format_comparison(_cons.summarize(cons_records)))
+        print("  ⚠️ 守恒口径=整手对不对得平(底池锚),非逐动作 recall;后者要 --truth。"
+              "\n  ⚠️ 单 session/单桌皮,样本=本次手数,不可外推全局。")
+
     if args.truth:
         cmp = compare_to_truth(all_actions, args.truth)
         fus = compare_to_truth_fused(all_actions, all_bet_cands, args.truth)
