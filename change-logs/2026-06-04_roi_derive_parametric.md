@@ -13,18 +13,21 @@ card_marker 锚重框的思路,推广到其余 ROI。
 - amount 不是 8 座全坏:**列座 s1/2/3/6 派生残差 0-3**,只有 s0=27/s4=187 巨偏、s5/s7 小偏(7/10)。
 - 结论:**不需重框 104 框**;每座 ROI = 该座 card_marker 锚 + 组内偏移模板,从参考座抽模板套同组。
 
-## §3 实现
+## §3 实现(镜像派生:单左模板 → 全座统一)
 - `tools/roi_geom.py` +3 纯几何原语:`roi_offset`(box−anchor)/`apply_offset`(逆)/`mirror_box_x`(绕垂直轴镜像)。
-- `tools/roi_derive.py`(新):
-  - 左组 {0,1,2,3} 用参考 s2、右组 {4,5,6,7} 用参考 s6 抽偏移模板,套各座自身 card_marker 派生。
-  - 默认 `--dry-run`:打印 派生vs现有残差 + 中柱特例 + 左右镜像一致性自检。
-  - `--write`:**"残差≤tol 才替换、超阈保留原值"** 策略 → 写 `party_poker_8_derived.json`(消列座抖动、护 s0/s4 特例)。
+- `tools/roi_derive.py`(新):**单一真相源 = 左模板 T_L(从 left-ref s2 抽)**。
+  - 左型(左列 1/2/3 + hero s0)套 T_L;右型(右列 5/6/7 + 顶 s4)套 `mirror(T_L)`
+    (右模板解析镜像 `dx_R=cm_w−w−dx_L`,相对自身锚、无需轴;**镜像保 w/h → 左右必然同尺寸**)。
+  - 策略:**列座 {1,2,3,5,6,7} 强制派生(求统一)**;**中柱 {0,4} 残差≤tol 才替换、超阈保留原值**(护真离群)。
+  - 默认 `--dry-run`;`--write` 写 `party_poker_8_derived.json`(不覆盖生产)。
+  - (演进:初版用 s2/s6 两套独立模板 + 跳过 amount,左右尺寸不一致 8 字段;改镜像派生后 11 字段全统一。)
 
 ## §4 验证(Linux 静态/逻辑)
 - 单测 `tests/test_roi_geom.py` 7/7(含新 3 原语:偏移往返、镜像对合、左→右映射)。
-- dry-run on party_poker_8:左右镜像一致性 ✅(最大 4px);**78 字段规整、10 超阈保留原值**;
-  产物校验 amount/card_marker/结构全未动。
-- roi_config.py 加 `--frame`(--verify 叠录制帧而非实时屏幕):ast 语法 + 3.14 help 串检查通过。
+- dry-run on party_poker_8:**11 字段列座尺寸全统一**、左右镜像一致性 ✅(最大 0px);
+  **81 字段派生、7 超阈保留原值**(仅中柱 s0/s4 的 amount/id/fold_area/button);amount 列座统一 77×25;
+  card_marker(锚)/结构未动。注:amount s7 位置残差 21px(强制拉到镜像对称点,Win 须核仍盖住下注数)。
+- roi_config.py 加 `--frame`(--verify 叠录制帧)+ 画框计数/分辨率告警自诊断 + verify+frame 跳选窗:ast 语法 + 3.14 help 检查通过。
 
 ## §5 红线
 - **R-7(改 ROI 须重跑 profile 验证)**:命中。**本轮只产出 `party_poker_8_derived.json`,
