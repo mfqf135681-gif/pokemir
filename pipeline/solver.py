@@ -78,6 +78,60 @@ def solve_hand(actions, config=None):
     return res
 
 
+def infer_p6_calls(actions, active_intervals, street_starts, config=None):
+    """P-6:补【看不见的末位跟注】(加法,§19.12 用户洞察)。
+
+    某座本街【有捕获动作】但 to_amount < 该街注级,且【翻到下一街仍活跃】、非 all-in
+    → 它必然跟到了注级(筹码秒进池、人眼难辨)→ 补一笔 inferred call(to_amount=注级)。
+
+    三道安全闸(防 R3 重演 / cover-allin 洞):
+      闸1 翻后仍活跃(active_intervals 覆盖下一街起点)——靠 card-marker 活跃集(高置信)
+      闸2 非 all-in(短 all-in 在手却没跟满,不可强推到注级)
+      闸3 本街注级 >0(没人下注无"跟到注级"可言)
+    **保守**:只补【有捕获动作】的座(canonical:下注后被加、看不见地跟平);
+    不补纯隐形(零捕获)的座 —— 避免误把过牌的盲注当跟注。
+    末街(无下一街,marker 摊牌被占)跳过。
+
+    actions: list[ChipAction](一手);active_intervals: {seat:[(t0,t1),...]};
+    street_starts: [(street, t_start),...] 升序(= boundaries_from_community)。
+    返回 (inferred_actions: list[ChipAction], notes)。纯函数,可单测。
+    """
+    from reconstruct import ChipAction  # 同 pipeline 目录
+    config = config or {}
+    tol = config.get("tol", 2.0)
+    order = [st for (st, _) in street_starts]
+    start_t = {st: t for (st, t) in street_starts}
+    level, seat_to, allin = {}, {}, set()
+    for a in actions:
+        level[a.street] = max(level.get(a.street, 0.0), a.to_amount)
+        k = (a.seat, a.street)
+        seat_to[k] = max(seat_to.get(k, 0.0), a.to_amount)
+        if a.atype == "all_in":
+            allin.add(a.seat)
+
+    def active_at(t):
+        return {s for s, ivs in active_intervals.items() if any(a <= t <= b for (a, b) in ivs)}
+
+    inferred, notes = [], []
+    for i in range(len(order) - 1):                 # 末街跳过(无下一街)
+        st = order[i]
+        lvl = level.get(st, 0.0)
+        if lvl <= tol:                              # 闸3
+            continue
+        active_next = active_at(start_t[order[i + 1]])
+        seats_on_st = {s for (s, sst) in seat_to if sst == st}
+        for seat in sorted(seats_on_st & active_next):
+            if seat in allin:                       # 闸2
+                continue
+            cur = seat_to[(seat, st)]
+            if cur < lvl - tol:                     # 有动作但没到注级 → 补跟到注级
+                inferred.append(ChipAction(seat=seat, street=st, chips_in=lvl - cur,
+                                           t=start_t[order[i + 1]], atype="call",
+                                           confidence=0.6, to_amount=lvl))
+                notes.append(f"P-6 补 seat{seat} {st} 跟到注级{lvl:.0f}(原{cur:.0f},翻后仍活跃)")
+    return inferred, notes
+
+
 def _self_test():
     from dataclasses import dataclass as _dc
 
@@ -129,6 +183,36 @@ def _self_test():
     r5 = solve_hand(acts5)
     assert len(r5.kept) == 9 and not r5.dropped, (len(r5.kept), r5.dropped)
     print(f"✅ 正常牌局零误杀:{len(r5.kept)}/9 全留")
+
+    # ── P-6 加法推理(补看不见的末位跟注)──────────────────────────────
+    from dataclasses import dataclass as _dc2
+
+    @_dc2
+    class A6:
+        seat: int
+        street: str
+        to_amount: float
+        atype: str = "call"
+
+    streets = [(PREFLOP, 0.0), (FLOP, 10.0)]
+    # canonical:A 下注100(to100)→ B 加到300 → C 跟到300;A 看不见地跟到300。翻后 A/B/C 仍活跃
+    acts6 = [A6(0, PREFLOP, 100, "bet"), A6(1, PREFLOP, 300, "raise"), A6(2, PREFLOP, 300, "call")]
+    active = {0: [(0, 20)], 1: [(0, 20)], 2: [(0, 20)]}   # 三人都翻到 flop(t10)仍活跃
+    inf, _ = infer_p6_calls(acts6, active, streets, {"tol": 2.0})
+    got = [(a.seat, round(a.to_amount), round(a.chips_in)) for a in inf]
+    assert got == [(0, 300, 200)], got            # 只补 seat0 跟到300(B/C 已在注级)
+    print(f"✅ P-6 canonical:补 {got}(A 下注后看不见地跟到注级)")
+
+    # 闸1 弃牌不补:A 下注100 后弃(flop 不活跃)→ 不补
+    inf2, _ = infer_p6_calls(acts6, {1: [(0, 20)], 2: [(0, 20)]}, streets, {"tol": 2.0})  # seat0 翻后不在
+    assert inf2 == [], inf2
+    print(f"✅ P-6 闸1:弃牌座(翻后不活跃)不补")
+
+    # 闸2 短 all-in 不补:A all-in 100(短),B 加到300,A 仍活跃 → 不强推到300
+    acts6b = [A6(0, PREFLOP, 100, "all_in"), A6(1, PREFLOP, 300, "raise")]
+    inf3, _ = infer_p6_calls(acts6b, {0: [(0, 20)], 1: [(0, 20)]}, streets, {"tol": 2.0})
+    assert inf3 == [], inf3
+    print(f"✅ P-6 闸2:短 all-in 在手但不强推到注级(cover 洞)")
 
     print("\n✅ solver self-test 全过")
 

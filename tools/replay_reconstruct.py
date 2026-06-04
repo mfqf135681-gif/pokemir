@@ -246,7 +246,7 @@ def build_fuse_series(session, frames, stack_rois, amount_rois, community_rois,
 
 
 def build_truth_series(session, frames, stack_rois, amount_rois, button_rois, community_rois,
-                       start, end, decimate, white_th=170, frac_th=0.12):
+                       start, end, decimate, white_th=170, frac_th=0.12, card_marker_rois=None):
     """§19/T130/T132 --truth:一遍读 stack(+all-in) + 下注区 amount + D按钮(白占比,切手) + 公共牌。
     (去掉 win_amount OCR:+xx 跨桌不robust §19.11,切手改用 D 按钮亮度 §19.* / 省 8 次 OCR/帧)。"""
     import cv2
@@ -257,6 +257,7 @@ def build_truth_series(session, frames, stack_rois, amount_rois, button_rois, co
     allin_marks = {s: [] for s in stack_rois}
     button_series = []  # (t, button_seat|None) — D 纯白高对比,白占比 argmax
     community_series = []
+    marker_hash = {s: [] for s in (card_marker_rois or {})}  # P-6 活跃集:card_marker avg_hash
     fdir = Path(session) / "frames"
     for k, (i, fn, t) in enumerate(frames):
         if t < start or t > end or (k % decimate):
@@ -278,7 +279,10 @@ def build_truth_series(session, frames, stack_rois, amount_rois, button_rois, co
                 best_s, best_wf = s, wf
         button_series.append((t, best_s if best_wf > frac_th else None))
         community_series.append((t, count_community(img, community_rois, white_th, frac_th)))
-    return stack_series, bet_series, button_series, community_series, allin_marks
+        if card_marker_rois:
+            for s, (l, tt, w, h) in card_marker_rois.items():
+                marker_hash[s].append((t, _avg_hash(img[tt:tt + h, l:l + w])))
+    return stack_series, bet_series, button_series, community_series, allin_marks, marker_hash
 
 
 # ── 真值比对(可测)────────────────────────────────────────────────────
@@ -458,6 +462,8 @@ def main():
                     help="结算抑制(settle_guard):首个派彩 rise 前 N 秒起判结算噪声、抑制(锚真实结算点,非窗末;治 river settlement 假阳;0=关)")
     ap.add_argument("--solve", action="store_true",
                     help="砖2:reconstruct 后过守恒/合法性求解器(裁自加/重复读/全下后行动幻影 → 提 precision)")
+    ap.add_argument("--p6", action="store_true",
+                    help="P-6 加法:用 card_marker 活跃集补看不见的末位跟注(翻后仍活跃且未到注级→跟到注级);需 profile 有 card_marker_ref")
     ap.add_argument("--win-merge", type=float, default=6.0,
                     help="T130:+xx 结算聚类合并窗秒(大桌结算散开调大,如 12;默认 6)")
     ap.add_argument("--win-min", type=float, default=0.0,
@@ -767,13 +773,14 @@ def main():
     stack_rois, community_rois = load_rois(profile_path)
     print(f"session {args.session}: {len(frames)} 帧, 时间窗 [{args.start},{args.end}], "
           f"{len(stack_rois)} 座 stack ROI")
-    bet_series, hand_starts = {}, None
+    bet_series, hand_starts, marker_hash = {}, None, {}
     if args.truth:  # §19 融合 + T132 按钮切手:读下注区 + D 按钮(白占比)
         _, amount_rois = load_action_rois(profile_path)
         button_rois = load_button_rois(profile_path)
-        stack_series, bet_series, button_series, community_series, allin_marks = build_truth_series(
+        cm_rois = load_card_marker_rois(profile_path) if args.p6 else None  # P-6 活跃集
+        stack_series, bet_series, button_series, community_series, allin_marks, marker_hash = build_truth_series(
             args.session, frames, stack_rois, amount_rois, button_rois, community_rois,
-            args.start, args.end, args.decimate, args.white_th, args.frac_th)
+            args.start, args.end, args.decimate, args.white_th, args.frac_th, cm_rois)
         hand_starts = _recon.hand_starts_from_button(button_series)
         print(f"  D 按钮移座 {len(hand_starts)} 次 → 按钮权威切手")
     else:
@@ -821,6 +828,13 @@ def main():
         config["hand_starts"] = hand_starts
     windows = _recon.segment_hands(stack_series, community_series, config)
     print(f"\n=== 手分段:检测到 {len(windows)} 手 ===")
+    p6_ref = {}
+    if args.p6 and marker_hash:                        # P-6:profile 存档 card_marker_ref
+        pj6 = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+        p6_ref = {int(s["seat_index"]): int(s["card_marker_ref"])
+                  for s in pj6.get("seats", []) if s.get("card_marker_ref") is not None}
+        if not p6_ref:
+            print("  ⚠️ --p6 但 profile 无 card_marker_ref(先 --capture-marker-refs);跳过 P-6")
     all_actions, all_bet_cands, machine_hands = [], [], []
     for hi, (t0, t1) in enumerate(windows, 1):
         ss, cs = _recon.slice_series(stack_series, community_series, t0, t1)
@@ -832,6 +846,18 @@ def main():
             for a, why in sr.dropped:
                 res.notes.append(f"求解器裁:seat{a.seat} {a.street} to{a.to_amount:.0f} @t{a.t:.1f} — {why}")
             res.actions = sr.kept
+        if args.p6 and p6_ref:                         # P-6:活跃集补看不见的末位跟注
+            ivs = {}
+            for s, ser in marker_hash.items():
+                if s not in p6_ref:
+                    continue
+                samples = [(t, _hamming(h, p6_ref[s])) for (t, h) in ser if t0 <= t < t1]
+                ivs[s] = _active.active_intervals(samples, th=args.active_th, min_run=2)
+            inferred, p6notes = _solver.infer_p6_calls(res.actions, ivs,
+                                                       _recon.boundaries_from_community(cs), config)
+            for n in p6notes:
+                res.notes.append(n)
+            res.actions.extend(inferred)
         all_actions.extend(res.actions)
         bet_cands = []
         if bet_series:  # §19 下注区 call-to 候选(融合比对用)
@@ -843,7 +869,7 @@ def main():
         for a in sorted(res.actions, key=lambda x: x.t):
             print(f"  seat{a.seat} {a.street} {a.atype} 投入{a.chips_in:.0f} @t{a.t:.1f}")
         for n in res.notes:
-            if any(k in n for k in ("涨", "ante", "胜率", "all-in", "求解器")):  # 派彩/ante排除/all-in反解/求解器裁决
+            if any(k in n for k in ("涨", "ante", "胜率", "all-in", "求解器", "P-6")):  # 派彩/ante排除/all-in反解/求解器/P-6补
                 print("  " + n)
     if args.truth:
         cmp = compare_to_truth(all_actions, args.truth)
