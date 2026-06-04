@@ -119,6 +119,8 @@ def main():
                     help="交互核对:配 --scan/--validate,每读弹放大crop+console确认(回车对/输正确值/s遮挡/q退)")
     ap.add_argument("--verify-out", default="",
                     help="--verify 把已核值(确认+纠正)写入此真值文件(帧=v0..v7),零手填")
+    ap.add_argument("--check", default="",
+                    help="拿已核真值文件当真相跑工具 diff,列错项+准确率(零重验,可跨录像)")
     ap.add_argument("--scan", type=int, default=0,
                     help="扫每N帧,pool模板读 read-field 真下注(过滤空/ante10),报读值+格数供眼核")
     ap.add_argument("--min-hit-cells", type=int, default=4,
@@ -282,6 +284,38 @@ def main():
             Path(args.verify_out).write_text(
                 "\n".join(hdr) + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
             print(f"  已核真值写入 {args.verify_out}({len(lines)} 帧;含准确率+纠正明细)")
+
+    # ── --check:拿已核真值文件当真相,跑工具 diff,列出错项(零重验,可跨录像)──
+    if args.check:
+        pool = _pool()
+        ok = bad = 0
+        misses = []
+        for line in Path(args.check).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            fn, vals = line.split("=", 1)
+            for s, truth in enumerate([x.strip() for x in vals.split(",")]):
+                if not truth or not truth.isdigit():   # 跳过空 + 非数字(遮挡标签等)
+                    continue
+                roi = read_rois.get(s)
+                if roi is None:
+                    continue
+                g = gray_roi(fn.strip(), roi)
+                if g is None:
+                    continue
+                r, _ = digit_ocr.parse_number(
+                    cells_of(g), lambda c: _match_char_multi(g[:, c[0]:c[1] + 1], pool, args.score_th))
+                if r == truth:
+                    ok += 1
+                else:
+                    bad += 1
+                    misses.append((fn.strip(), s, truth, r))
+        tot = ok + bad
+        print(f"\n=== --check {args.check}: 对{ok} 错{bad} → 准确率 {ok}/{tot} ===")
+        for fn, s, t, r in misses:
+            print(f"  ✗ {fn} s{s}: 真值'{t}' 工具读'{r}'")
+        return
 
     # ── 扫真下注:pool 模板读 read-field,过滤掉空+ante('10')+短格,只留真大注供眼核 ──
     if args.scan > 0:
