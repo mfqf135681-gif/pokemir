@@ -80,6 +80,7 @@ def main():
     ap.add_argument("--gap-th", type=int, default=0)
     ap.add_argument("--min-gap", type=int, default=2, help="缝<此列数→合并(治数字内细缝劈裂)")
     ap.add_argument("--min-cell-w", type=int, default=3, help="格<此px→丢(治1-2px噪点)")
+    ap.add_argument("--max-merge-w", type=int, default=14, help="合并后宽>此→不并(防字间1px真缝误并两位)")
     ap.add_argument("--score-th", type=float, default=0.6)
     ap.add_argument("--mode-window", type=int, default=0,
                     help="每真值帧 ±W 帧密集读取众数 vs 真值(验时序中位能否吸收离群坏帧)")
@@ -142,7 +143,7 @@ def main():
 
     def cells_of(g):
         return digit_ocr.segment_cells(_col_ink(g, args.ink_th), args.gap_th,
-                                       args.min_gap, args.min_cell_w)
+                                       args.min_gap, args.min_cell_w, args.max_merge_w)
 
     # ── ① per-seat 采模板(每座只用自己的字形,跨帧累积凑齐数字表)──
     # seat_tpls[seat][char] = glyph;治跨座 5↔6、8↔3 渲染差(card_marker 同款解)。
