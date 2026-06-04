@@ -331,6 +331,8 @@ def main():
         # imread returns BGR;tool expects BGRA-or-BGR;keep as BGR
         image_override = loaded
         print(f"Using static image: {from_path} ({loaded.shape[1]}x{loaded.shape[0]})")
+    elif args.verify and args.frame:
+        pass  # --verify --frame:用录制帧,不需要 capturer/选窗(省去 Select 打断)
     else:
         # ── Find or select capture source ────────────────────
         if args.window:
