@@ -72,11 +72,13 @@ def main():
     ocr = OCREngine(gpu=True, name="digit_probe")
 
     def read_roi(img):
-        crop = img[t:t + h, l:l + w]
+        return img[t:t + h, l:l + w]                       # 彩色 crop(EasyOCR 要 3 通道)
+
+    def to_gray(crop):
         return cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
 
-    def easy_digits(gray):
-        txt = ocr.read_text(gray, allowlist="0123456789")
+    def easy_digits(crop):
+        txt = ocr.read_text(crop, allowlist="0123456789")  # 彩色给 OCR
         return "".join(c for c in txt if c.isdigit())
 
     # ── ① 自举采模板 ──
@@ -87,8 +89,9 @@ def main():
         img = cv2.imread(str(fdir / d["file"]))
         if img is None:
             continue
-        gray = read_roi(img)
-        digits = easy_digits(gray)
+        crop = read_roi(img)
+        gray = to_gray(crop)
+        digits = easy_digits(crop)
         col = _col_ink(gray, args.ink_th)
         cells = digit_ocr.segment_cells(col, args.gap_th)
         if args.dump and dumped < 5:
@@ -111,8 +114,9 @@ def main():
         img = cv2.imread(str(fdir / d["file"]))
         if img is None:
             continue
-        gray = read_roi(img)
-        eo = easy_digits(gray)
+        crop = read_roi(img)
+        gray = to_gray(crop)
+        eo = easy_digits(crop)
         col = _col_ink(gray, args.ink_th)
         cells = digit_ocr.segment_cells(col, args.gap_th)
         tmpl_read, _ = digit_ocr.parse_number(
