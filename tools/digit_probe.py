@@ -453,30 +453,43 @@ def main():
             cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], templates, args.score_th))
         return digits
 
-    # ── 客观数字诊断(不靠眼读):列墨profile + raw/过滤cells + 每格top-k 分 ──
+    # ── 客观数字诊断(不靠眼读):列墨profile + 灰度min/max(查白底黑字反相)+ raw/cells ──
     if args.diagnose:
-        print(f"\n=== 客观诊断 seat{args.seat}(profile=确定性渲染的列墨量,非像素眼读)===")
-        for fn, vals in harvest:
-            if args.seat >= len(vals) or not vals[args.seat]:
+        import numpy as np
+        # 诊断目标:--check 文件的(帧,座,真值);否则 harvest 的 args.seat。读 read-field ROI。
+        entries = []
+        if args.check:
+            for line in Path(args.check).read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                fn, vals = line.split("=", 1)
+                for s, t in enumerate([x.strip() for x in vals.split(",")]):
+                    if t and t.isdigit():
+                        entries.append((fn.strip(), s, t))
+        else:
+            for fn, vals in harvest:
+                if args.seat < len(vals) and vals[args.seat]:
+                    entries.append((fn, args.seat, vals[args.seat]))
+        tgt = args.read_field or args.field
+        print(f"\n=== 客观诊断 {tgt}(profile列墨 + 灰度min/max查反相 + cells)===")
+        for fn, s, truth in entries:
+            roi = read_rois.get(s)
+            if roi is None:
                 continue
-            g = gray_roi(fn, seat_rois[args.seat])
+            g = gray_roi(fn, roi)
             if g is None:
                 continue
+            gmin, gmax, gmean = int(g.min()), int(g.max()), int(g.mean())
             ink = _col_ink(g, args.ink_th)
             mx = max(ink) or 1
             prof = "".join("_" if v == 0 else "." if v <= mx / 3 else ":" if v <= 2 * mx / 3 else "#"
-                           for v in ink)  # _=无墨(可见,防粘贴吞前导空格)
-            raw = digit_ocr.segment_cells(ink, args.gap_th, 0, 0)        # 未过滤纯墨段
-            cells = cells_of(g)                                          # 当前参数过滤后
-            print(f"\n{fn} 真值'{vals[args.seat]}' (宽{len(ink)}px ink-th={args.ink_th}):")
+                           for v in ink)
+            cells = cells_of(g)
+            bright_frac = float((g > args.ink_th).mean())  # >ink_th 像素占比;白底黑字会很高
+            print(f"\n{fn} s{s} 真值'{truth}' (灰度 min{gmin}/max{gmax}/mean{gmean}, "
+                  f">th占比{bright_frac:.0%}, 切{len(cells)}格):")
             print(f"  |{prof}|")
-            print(f"  raw runs(未过滤,(x0,x1,宽)): {[(a, b, b - a + 1) for a, b in raw]}")
-            print(f"  cells(min_gap={args.min_gap} min_cell_w={args.min_cell_w}): "
-                  f"{[(a, b, b - a + 1) for a, b in cells]}")
-            for j, (x0, x1) in enumerate(cells):
-                top = _match_topk(g[:, x0:x1 + 1], templates, 3)
-                print(f"    cell{j}({x0}-{x1}): " + "  ".join(f"{c}={s:.2f}" for c, s in top))
-        return
 
     # ── 存 crop 供眼诊断:放大 6x + 红(左界)绿(右界)线标切割,我直接看像素 ──
     if args.save_crops:
