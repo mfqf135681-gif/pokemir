@@ -157,6 +157,54 @@ def load_button_rois(profile_path):
     return {int(s["seat_index"]): s["button_indicator"] for s in p.get("seats", []) if s.get("button_indicator")}
 
 
+def _write_conservation_db(records, session, run_label=""):
+    """把每手守恒结果写进 VPS postgres replay_conservation 表(Win→VPS Tailscale 通路)。
+
+    幂等:同 (run_session, run_label) 先删后插;表不存在则建。仿 replay_corrections 模式。
+    连库失败=优雅降级(只打印告警,不中断;控制台对比表仍在)。⚠️ 需 Win .env 配好
+    POKEMIR_DB_DSN_SYNC(指向 100.101.105.46:5432)。
+    """
+    import psycopg2
+    sys.path.insert(0, _ROOT)
+    from config import DB_DSN_SYNC
+    sess = str(session).replace("\\", "/").rstrip("/").split("/")[-1]  # 取录像目录名当 key
+    try:
+        con = psycopg2.connect(DB_DSN_SYNC)
+    except Exception as e:  # noqa: BLE001 — 连不上不该崩,降级
+        print(f"  ⚠️ --write-db 连库失败({type(e).__name__}: {e})— 跳过写库,结果只在上面控制台。"
+              f"\n     查:Win .env 有 POKEMIR_DB_DSN_SYNC?Test-NetConnection 100.101.105.46 -Port 5432 通否?")
+        return
+    try:
+        cur = con.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS replay_conservation (
+                id serial PRIMARY KEY,
+                run_session text NOT NULL,
+                run_label text NOT NULL DEFAULT '',
+                hand_index int,
+                t0 double precision, t1 double precision,
+                chip_movement double precision,
+                pot double precision,
+                status text,
+                n_actions int,
+                created_at timestamptz NOT NULL DEFAULT now()
+            )""")
+        cur.execute("DELETE FROM replay_conservation WHERE run_session=%s AND run_label=%s",
+                    (sess, run_label))
+        for r in records:
+            cur.execute(
+                """INSERT INTO replay_conservation
+                   (run_session, run_label, hand_index, t0, t1, chip_movement, pot, status, n_actions)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (sess, run_label, r["hand_index"], r["t0"], r["t1"],
+                 r["chip_movement"], r["pot"], r["status"], r["n_actions"]))
+        con.commit()
+        print(f"  ✅ --write-db:{len(records)} 手写入 replay_conservation "
+              f"(run_session='{sess}', run_label='{run_label or '<空>'}')→ Claude 可直接 mcp 读")
+    finally:
+        con.close()
+
+
 def load_card_marker_rois(profile_path):
     """→ {seat: card_marker ROI}。活跃集信号:头像左下两条红牌背(全玩家统一)= 在手。"""
     p = json.loads(Path(profile_path).read_text(encoding="utf-8"))
@@ -467,6 +515,11 @@ def main():
                     help="整手守恒对比:每手 chip_movement(Σ首稳态-Σ末稳态)+pot → 同口径 "
                          "v_hand_conservation 判 OK/CHECK/NULL,并排旧 DB 基准(21.3%)→ 新桩基牢不牢的系统级数字。"
                          "无需 --truth;pot 取每手窗内 pot_size ROI 峰值(无则用 --pot)")
+    ap.add_argument("--write-db", action="store_true",
+                    help="把 --conservation 每手结果写进 VPS postgres 表 replay_conservation"
+                         "(走 Win→VPS Tailscale 通路 / config.DB_DSN_SYNC)→ Claude 直接读,零粘贴")
+    ap.add_argument("--run-label", default="",
+                    help="--write-db 的运行标签(如 'solve+p6'),区分同 session 多次跑;同标签重跑覆盖")
     ap.add_argument("--p6", action="store_true",
                     help="P-6 加法:用 card_marker 活跃集补看不见的末位跟注(翻后仍活跃且未到注级→跟到注级);需 profile 有 card_marker_ref")
     ap.add_argument("--win-merge", type=float, default=6.0,
@@ -890,9 +943,12 @@ def main():
             cm = _cons.chip_movement_from_stacks(ss, fuse=_recon.fuse_plateaus)
             pot_win = [v for (t, v) in cons_pot_series if t0 <= t < t1]
             pot = max(pot_win) if pot_win else (args.pot or None)
-            cons_records.append((cm, pot))
-            print(f"  [守恒] chip_movement={cm:.0f}  pot={pot}  "
-                  f"→ {_cons.conservation_status(cm, pot)}")
+            st = _cons.conservation_status(cm, pot)
+            cons_records.append({"hand_index": hi, "t0": float(t0), "t1": float(t1),
+                                 "chip_movement": float(cm),
+                                 "pot": (float(pot) if pot is not None else None),
+                                 "status": st, "n_actions": len(res.actions)})
+            print(f"  [守恒] chip_movement={cm:.0f}  pot={pot}  → {st}")
         bet_cands = []
         if bet_series:  # §19 下注区 call-to 候选(融合比对用)
             bs = {s: [(t, v) for (t, v) in bet_series.get(s, []) if t0 <= t < t1] for s in bet_series}
@@ -906,9 +962,12 @@ def main():
             if any(k in n for k in ("涨", "ante", "胜率", "all-in", "求解器", "P-6")):  # 派彩/ante排除/all-in反解/求解器/P-6补
                 print("  " + n)
     if args.conservation:
-        print("\n" + _cons.format_comparison(_cons.summarize(cons_records)))
+        print("\n" + _cons.format_comparison(
+            _cons.summarize([(r["chip_movement"], r["pot"]) for r in cons_records])))
         print("  ⚠️ 守恒口径=整手对不对得平(底池锚),非逐动作 recall;后者要 --truth。"
               "\n  ⚠️ 单 session/单桌皮,样本=本次手数,不可外推全局。")
+        if args.write_db:
+            _write_conservation_db(cons_records, args.session, args.run_label)
 
     if args.truth:
         cmp = compare_to_truth(all_actions, args.truth)
