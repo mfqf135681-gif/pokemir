@@ -64,6 +64,8 @@ def main():
     ap.add_argument("--min-gap", type=int, default=2, help="缝<此列数→合并(治数字内细缝劈裂)")
     ap.add_argument("--min-cell-w", type=int, default=3, help="格<此px→丢(治1-2px噪点)")
     ap.add_argument("--score-th", type=float, default=0.6)
+    ap.add_argument("--mode-window", type=int, default=0,
+                    help="每真值帧 ±W 帧密集读取众数 vs 真值(验时序中位能否吸收离群坏帧)")
     ap.add_argument("--dump-proj", action="store_true")
     args = ap.parse_args()
 
@@ -145,6 +147,40 @@ def main():
         digits, _ = digit_ocr.parse_number(
             cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], templates, args.score_th))
         return digits
+
+    # ── ②.5 时序中位检查:每真值帧 ±W 帧密集读取众数 vs 真值(验离群坏帧能否被吸收)──
+    if args.mode_window > 0:
+        from collections import Counter
+        mlines = (Path(args.session) / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+        frames_all = [json.loads(x) for x in mlines[1:] if x.strip()]
+        idx_of = {d["file"]: i for i, d in enumerate(frames_all)}
+        W = args.mode_window
+        print(f"\n=== ②.5 时序中位(seat{args.seat},每真值帧 ±{W} 帧取众数 vs 真值)===")
+        ok = tot = 0
+        for fn, vals in harvest:
+            if args.seat >= len(vals) or not vals[args.seat]:
+                continue
+            truth = vals[args.seat]
+            i = idx_of.get(fn)
+            if i is None:
+                print(f"  {fn}: 不在 manifest"); continue
+            reads = []
+            for d in frames_all[max(0, i - W): i + W + 1]:
+                g = gray_roi(d["file"], seat_rois[args.seat])
+                if g is None:
+                    continue
+                r = tmpl_read(g)
+                if r:
+                    reads.append(r)
+            if not reads:
+                print(f"  {fn} 真值{truth}: 窗口内无读数"); continue
+            mode, cnt = Counter(reads).most_common(1)[0]
+            frame_ok = sum(1 for r in reads if r == truth)
+            tot += 1; ok += (mode == truth)
+            print(f"  {fn} 真值{truth}: 众数'{mode}'({cnt}/{len(reads)}) | per帧对{frame_ok}/{len(reads)}  "
+                  f"{'✅' if mode == truth else '❌'}")
+        print(f"\n时序中位 per-值准确率: {ok}/{tot}(对比 per-帧 ~75%)")
+        return
 
     # ── ② 自检:harvest 帧里 --seat 那座回读 == 真值 ──
     print(f"\n=== ② 自检(harvest 帧 seat{args.seat} 回读 vs 真值)===")
