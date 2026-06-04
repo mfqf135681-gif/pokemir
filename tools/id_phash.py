@@ -1,4 +1,4 @@
-"""tools/id_phash.py — 玩家 ID phash 验证(image-only,零 OCR)。
+r"""tools/id_phash.py — 玩家 ID phash 验证(image-only,零 OCR)。
 
 治 OCR 漂移把同玩家拆成多名字(见 find_player_aliases)。名字【像素】稳定、漂移的是 OCR
 → 对 id ROI 做 phash 当稳定 player key。本工具验两档(card_marker bimodal 同款思路):
