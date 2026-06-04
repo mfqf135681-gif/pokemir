@@ -104,7 +104,9 @@ def main():
     ap.add_argument("--min-hit-cells", type=int, default=4,
                     help="--scan 只报切格≥此的座(图标+3位数=真大注,滤掉ante;默认4)")
     ap.add_argument("--icon-prefix", action="store_true",
-                    help="采集时若切格>位数,丢首部多余格(筹码图标在左)对齐真值 — 下注区amount用")
+                    help="采集时若切格>位数,丢多余格(筹码图标)对齐真值 — 下注区amount用")
+    ap.add_argument("--icon-right-seats", default="",
+                    help="这些座筹码图标在数字【右】侧(丢尾格);其余在左(丢首格)。如 '5,6,7'")
     args = ap.parse_args()
 
     # ── --harvest-assist:全段均匀挑 N 帧打文件名(纯 manifest,无 cv2),供眼裁真值 ──
@@ -134,6 +136,7 @@ def main():
     # → 测"字体一致,stack 模板直接读下注区"假设,零新采集。默认 read_field = field。
     read_rois = ({s["seat_index"]: s[args.read_field] for s in prof["seats"] if s.get(args.read_field)}
                  if args.read_field else seat_rois)
+    icon_right = {int(x) for x in args.icon_right_seats.split(",") if x.strip()}
     fdir = Path(args.session) / "frames"
 
     import numpy as np
@@ -185,7 +188,8 @@ def main():
             cells = cells_of(g)
             use = cells
             if args.icon_prefix and len(cells) > len(val):
-                use = cells[-len(val):]  # 丢首部多余格(筹码图标在左,数字在右)对齐真值
+                # 筹码图标在数字旁:icon_right_seats 座图标在右(取左侧len格),其余在左(取右侧len格)
+                use = cells[:len(val)] if si in icon_right else cells[-len(val):]
             if args.dump_proj:
                 print(f"  [proj] {fn} seat{si} 真值'{val}' 切{len(cells)}格 用{len(use)}格 {cells}")
             if len(use) != len(val):
