@@ -736,7 +736,8 @@ def main():
                   f" | 在手区间 {[(round(a, 1), round(b, 1)) for a, b in ivs]}")
         # 一键自动核 A(不OCR,零手工):庄家(按钮位)开局必在手 → 断言 dealer ∈ 活跃集
         starts = collapse_changes(btn_series)              # [(t, dealer_seat|None)]
-        checks = [(t, d) for (t, d) in starts if d is not None]
+        t_open = btn_series[0][0] if btn_series else 0.0   # 跳过录像开局 5s 内的"半截手"(非真发牌点)
+        checks = [(t, d) for (t, d) in starts if d is not None and t > t_open + 5.0]
         if checks:
             print(f"\n  === 一键自动核 A:庄家开局必在手(不OCR)===")
             ok, bad = 0, []
