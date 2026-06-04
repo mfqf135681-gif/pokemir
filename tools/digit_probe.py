@@ -219,21 +219,33 @@ def main():
         print("\n翻这12帧核对,**只把读错的**告诉我(帧+座+正确值),我建 per-seat 模板。")
         return
 
-    # ── 留出验证:随机挑非 harvest 帧,读全 8 座按 seat0-7 打印(用户翻图核对)──
+    # ── 留出验证:pool 模板读【随机非 harvest 帧】全 8 座(真·held-out + 跨座)──
     if args.validate > 0:
         import random
+        pool_tpl = {}
+        for s in sorted(seat_tpls):  # 一套 pool 通吃(bootstrap 已证跨座+normalize 可行)
+            for ch, gl in seat_tpls[s].items():
+                pool_tpl.setdefault(ch, gl)
         mlines = (Path(args.session) / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
         frames_all = [json.loads(x) for x in mlines[1:] if x.strip()]
         hv = {fn for fn, _ in harvest}
-        pool = [d for d in frames_all if d["file"] not in hv]
-        picks = random.Random(args.seed).sample(pool, min(args.validate, len(pool)))
+        cand = [d for d in frames_all if d["file"] not in hv]
+        picks = random.Random(args.seed).sample(cand, min(args.validate, len(cand)))
         picks.sort(key=lambda d: d["file"])
-        ncov = sorted(seat_tpls)
-        print(f"\n=== 留出验证(seed={args.seed},{len(picks)} 随机帧×全8座,翻图核对)===")
-        print(f"  (有模板的座: {ncov};其余打 NA)")
+        print(f"\n=== 留出验证(seed={args.seed},{len(picks)} 随机非harvest帧×全8座,pool模板{sorted(pool_tpl)})===")
         for d in picks:
-            cols = "  ".join(f"s{s}={read_seat(d['file'], s)}" for s in range(8))
-            print(f"  {d['file']}  {cols}")
+            cols = []
+            for s in range(8):
+                roi = seat_rois.get(s)
+                if roi is None:
+                    cols.append(f"s{s}=NA"); continue
+                g = gray_roi(d["file"], roi)
+                if g is None:
+                    cols.append(f"s{s}=NA"); continue
+                digits, _ = digit_ocr.parse_number(
+                    cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], pool_tpl, args.score_th))
+                cols.append(f"s{s}={digits or '空'}")
+            print(f"  {d['file']}  " + "  ".join(cols))
         print("\n翻这几帧核对:工具读 vs 你眼看。不一致 → 两边都重查(人/工具都会幻觉)。")
         return
 
