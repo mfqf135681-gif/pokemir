@@ -68,6 +68,8 @@ def main():
     ap.add_argument("--score-th", type=float, default=0.6)
     ap.add_argument("--mode-window", type=int, default=0,
                     help="每真值帧 ±W 帧密集读取众数 vs 真值(验时序中位能否吸收离群坏帧)")
+    ap.add_argument("--save-crops", default="",
+                    help="把各 harvest 帧的 --seat crop 存 PNG(放大6x+红绿线标切割边界)供眼诊断")
     ap.add_argument("--dump-proj", action="store_true")
     args = ap.parse_args()
 
@@ -157,6 +159,30 @@ def main():
         digits, _ = digit_ocr.parse_number(
             cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], templates, args.score_th))
         return digits
+
+    # ── 存 crop 供眼诊断:放大 6x + 红(左界)绿(右界)线标切割,我直接看像素 ──
+    if args.save_crops:
+        if args.seat not in seat_rois:
+            print(f"seat{args.seat} 无 {args.field} ROI。"); return
+        outdir = Path(args.save_crops)
+        outdir.mkdir(parents=True, exist_ok=True)
+        print(f"\n=== 存 seat{args.seat} crop(放大6x+切割线)到 {outdir} ===")
+        for fn, vals in harvest:
+            g = gray_roi(fn, seat_rois[args.seat])
+            if g is None:
+                continue
+            cells = cells_of(g)
+            big = cv2.resize(g, (g.shape[1] * 6, g.shape[0] * 6), interpolation=cv2.INTER_NEAREST)
+            vis = cv2.cvtColor(big, cv2.COLOR_GRAY2BGR)
+            for (x0, x1) in cells:
+                cv2.line(vis, (x0 * 6, 0), (x0 * 6, vis.shape[0] - 1), (0, 0, 255), 1)
+                cv2.line(vis, ((x1 + 1) * 6, 0), ((x1 + 1) * 6, vis.shape[0] - 1), (0, 255, 0), 1)
+            val = vals[args.seat] if args.seat < len(vals) else ""
+            out = outdir / f"{Path(fn).stem}_s{args.seat}_t{val}_切{len(cells)}.png"
+            cv2.imwrite(str(out), vis)
+            print(f"  {out.name}")
+        print("\n把读错那几张(4021/3151/3511/803…)贴给我,我直接看像素诊断。")
+        return
 
     # ── ②.5 时序中位检查:每真值帧 ±W 帧密集读取众数 vs 真值(验离群坏帧能否被吸收)──
     if args.mode_window > 0:
