@@ -188,8 +188,8 @@ def main():
                 continue
             ink = _col_ink(g, args.ink_th)
             mx = max(ink) or 1
-            prof = "".join(" " if v == 0 else "." if v <= mx / 3 else ":" if v <= 2 * mx / 3 else "#"
-                           for v in ink)
+            prof = "".join("_" if v == 0 else "." if v <= mx / 3 else ":" if v <= 2 * mx / 3 else "#"
+                           for v in ink)  # _=无墨(可见,防粘贴吞前导空格)
             raw = digit_ocr.segment_cells(ink, args.gap_th, 0, 0)        # 未过滤纯墨段
             cells = cells_of(g)                                          # 当前参数过滤后
             print(f"\n{fn} 真值'{vals[args.seat]}' (宽{len(ink)}px ink-th={args.ink_th}):")
