@@ -127,6 +127,8 @@ def main():
                     help="扫每N帧,pool模板读 read-field 真下注(过滤空/ante10),报读值+格数供眼核")
     ap.add_argument("--min-hit-cells", type=int, default=4,
                     help="--scan 只报切格≥此的座(图标+3位数=真大注,滤掉ante;默认4)")
+    ap.add_argument("--only-seats", default="",
+                    help="scan/bootstrap/validate 只处理这些座(如 '0')——别座已验时省事重跑单座")
     ap.add_argument("--icon-prefix", action="store_true",
                     help="采集时若切格>位数,丢多余格(筹码图标)对齐真值 — 下注区amount用")
     ap.add_argument("--icon-right-seats", default="",
@@ -169,6 +171,7 @@ def main():
     # 模板从 --field 建,scan/bootstrap/validate 实际读 --read-field(测跨区,如 stack模板读amount/pot)
     read_rois = _rois_for(args.read_field) if args.read_field else seat_rois
     icon_right = {int(x) for x in args.icon_right_seats.split(",") if x.strip()}
+    seats_iter = [int(x) for x in args.only_seats.split(",") if x.strip()] or list(range(8))
     fdir = Path(args.session) / "frames"                       # 读取(scan/validate)的目标录像
     hdir = Path(args.harvest_session) / "frames" if args.harvest_session else fdir  # 采模板的录像
     if args.harvest_session:
@@ -388,7 +391,7 @@ def main():
             if k % args.scan or quit_v:
                 continue
             seats_hit = []
-            for s in range(8):
+            for s in seats_iter:
                 roi = read_rois.get(s)
                 if roi is None:
                     continue
@@ -424,7 +427,7 @@ def main():
         print(f"\n=== bootstrap 读全8座 {tgt}(pooled模板{sorted(pool)};跨座+normalize起步,必有错)===")
         for fn, _ in harvest:
             cols = []
-            for s in range(8):
+            for s in seats_iter:
                 roi = read_rois.get(s)
                 if roi is None:
                     cols.append(f"s{s}=NA"); continue
@@ -455,7 +458,7 @@ def main():
             if quit_v:
                 break
             cols = []
-            for s in range(8):
+            for s in seats_iter:
                 roi = read_rois.get(s)
                 if roi is None:
                     cols.append(f"s{s}=NA"); continue
