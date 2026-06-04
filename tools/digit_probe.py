@@ -89,6 +89,8 @@ def main():
                     help='多座采模板:"帧=v0,v1,…,v7; 帧2=…"(一帧里 seats 0..N 的 stack 真值,同字体凑 0-9)')
     ap.add_argument("--harvest-file", default="",
                     help="从文件读真值块(每行 '帧=v0,..,v7',# 注释)——免跨终端粘长串被塞空格")
+    ap.add_argument("--harvest-session", default="",
+                    help="模板采自此录像(默认=--session)。设它=用A录像模板读B录像→跨录像迁移测试")
     ap.add_argument("--harvest-assist", type=int, default=0,
                     help="从全段 manifest 均匀挑 N 帧打文件名(供眼裁真值,跨整段保证数字多样性);打完即退")
     ap.add_argument("--decimate", type=int, default=10)
@@ -151,11 +153,14 @@ def main():
     read_rois = ({s["seat_index"]: s[args.read_field] for s in prof["seats"] if s.get(args.read_field)}
                  if args.read_field else seat_rois)
     icon_right = {int(x) for x in args.icon_right_seats.split(",") if x.strip()}
-    fdir = Path(args.session) / "frames"
+    fdir = Path(args.session) / "frames"                       # 读取(scan/validate)的目标录像
+    hdir = Path(args.harvest_session) / "frames" if args.harvest_session else fdir  # 采模板的录像
+    if args.harvest_session:
+        print(f"[跨录像] 模板采自 {args.harvest_session},读取打到 {args.session}")
 
     import numpy as np
 
-    def gray_roi(fn, roi):
+    def gray_roi(fn, roi, fdir=fdir):
         img = cv2.imread(str(fdir / fn))
         if img is None:
             return None
@@ -196,7 +201,7 @@ def main():
         for si, val in enumerate(vals):
             if not val or si not in seat_rois:
                 continue
-            g = gray_roi(fn, seat_rois[si])
+            g = gray_roi(fn, seat_rois[si], hdir)  # 采模板从 harvest-session(默认=session)
             if g is None:
                 print(f"  ⚠️ 读不到 {fn}"); break
             cells = cells_of(g)
