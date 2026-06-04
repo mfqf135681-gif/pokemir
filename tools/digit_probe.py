@@ -46,18 +46,32 @@ def _match_topk(glyph, templates, k=3):
     return scores[:k]
 
 
-def _match_char(glyph, templates, score_th):
-    """灰度 + resize-到-模板 + 去均值归一相关。基线:18/20 位正确(仅 5↔6、8↔3 跨座混淆)。
-    二值化版实测退步(细笔画毁于固定画布),已退回。提升读数走 per-seat 模板或 CNN。"""
+def _corr(glyph, tmpl):
+    """去均值归一相关(glyph resize 到 tmpl 尺寸)。"""
     import cv2
     import numpy as np
+    g = cv2.resize(glyph, (tmpl.shape[1], tmpl.shape[0])).astype(np.float32)
+    tf = tmpl.astype(np.float32)
+    g -= g.mean(); tf -= tf.mean()
+    return float((g * tf).sum() / (float(np.linalg.norm(g) * np.linalg.norm(tf)) or 1.0))
+
+
+def _match_char(glyph, templates, score_th):
+    """单样本:templates={char:glyph}。"""
     best, best_s = "?", -1.0
     for ch, tmpl in templates.items():
-        g = cv2.resize(glyph, (tmpl.shape[1], tmpl.shape[0])).astype(np.float32)
-        tf = tmpl.astype(np.float32)
-        g -= g.mean(); tf -= tf.mean()
-        denom = float(np.linalg.norm(g) * np.linalg.norm(tf)) or 1.0
-        s = float((g * tf).sum() / denom)
+        s = _corr(glyph, tmpl)
+        if s > best_s:
+            best, best_s = ch, s
+    return best if best_s >= score_th else "?"
+
+
+def _match_char_multi(glyph, exemplars, score_th):
+    """多样本:exemplars={char:[glyph,...]}。每字取其所有样本最高分,选最高字。
+    治跨座小字 5↔6 类:留各座的 5,某座的 5 字形匹配到自己那个 5 样本 → 胜过 6。"""
+    best, best_s = "?", -1.0
+    for ch, gls in exemplars.items():
+        s = max(_corr(glyph, t) for t in gls)
         if s > best_s:
             best, best_s = ch, s
     return best if best_s >= score_th else "?"
@@ -204,10 +218,11 @@ def main():
         print(f"  seat{si}: 有 {sorted(seat_tpls[si])}  缺 {miss}")
 
     def _pool():
+        """多样本 pool:{char:[各座该字的样本]} → 配 _match_char_multi 治跨座小字混淆。"""
         p = {}
         for s in sorted(seat_tpls):
             for ch, gl in seat_tpls[s].items():
-                p.setdefault(ch, gl)
+                p.setdefault(ch, []).append(gl)
         return p
 
     # ── 扫真下注:pool 模板读 read-field,过滤掉空+ante('10')+短格,只留真大注供眼核 ──
@@ -234,7 +249,7 @@ def main():
                     c = cells_of(g)
                     if len(c) >= args.min_hit_cells:
                         r, _ = digit_ocr.parse_number(
-                            c, lambda cc: _match_char(g[:, cc[0]:cc[1] + 1], pool, args.score_th))
+                            c, lambda cc: _match_char_multi(g[:, cc[0]:cc[1] + 1], pool, args.score_th))
                         if r not in skip:
                             cur = f"{r or '空'}({len(c)})"
                 if cur and cur != last.get(s):
@@ -261,7 +276,7 @@ def main():
                 if g is None:
                     cols.append(f"s{s}=NA"); continue
                 digits, _ = digit_ocr.parse_number(
-                    cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], pool, args.score_th))
+                    cells_of(g), lambda c: _match_char_multi(g[:, c[0]:c[1] + 1], pool, args.score_th))
                 cols.append(f"s{s}={digits or '空'}")
             print(f"  {fn}  " + "  ".join(cols))
         print("\n翻这12帧核对,**只把读错的**告诉我(帧+座+正确值),我建 per-seat 模板。")
@@ -270,10 +285,7 @@ def main():
     # ── 留出验证:pool 模板读【随机非 harvest 帧】全 8 座(真·held-out + 跨座)──
     if args.validate > 0:
         import random
-        pool_tpl = {}
-        for s in sorted(seat_tpls):  # 一套 pool 通吃(bootstrap 已证跨座+normalize 可行)
-            for ch, gl in seat_tpls[s].items():
-                pool_tpl.setdefault(ch, gl)
+        pool_tpl = _pool()  # 多样本 pool(跨座小字混淆靠多样本治)
         mlines = (Path(args.session) / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
         frames_all = [json.loads(x) for x in mlines[1:] if x.strip()]
         hv = {fn for fn, _ in harvest}
@@ -292,7 +304,7 @@ def main():
                 if g is None:
                     cols.append(f"s{s}=NA"); continue
                 digits, _ = digit_ocr.parse_number(
-                    cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], pool_tpl, args.score_th))
+                    cells_of(g), lambda c: _match_char_multi(g[:, c[0]:c[1] + 1], pool_tpl, args.score_th))
                 cols.append(f"s{s}={digits or '空'}")
             print(f"  {d['file']}  " + "  ".join(cols))
         print("\n翻这几帧核对:工具读 vs 你眼看。不一致 → 两边都重查(人/工具都会幻觉)。")
