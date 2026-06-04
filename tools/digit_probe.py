@@ -31,6 +31,21 @@ def _col_ink(gray, ink_th):
     return (gray > ink_th).astype(np.uint8).sum(axis=0).tolist()
 
 
+def _match_topk(glyph, templates, k=3):
+    """返回 top-k (字符, 分) —— 客观诊断用(看形近是否势均)。同 _match_char 的度量。"""
+    import cv2
+    import numpy as np
+    scores = []
+    for ch, tmpl in templates.items():
+        g = cv2.resize(glyph, (tmpl.shape[1], tmpl.shape[0])).astype(np.float32)
+        tf = tmpl.astype(np.float32)
+        g -= g.mean(); tf -= tf.mean()
+        denom = float(np.linalg.norm(g) * np.linalg.norm(tf)) or 1.0
+        scores.append((ch, float((g * tf).sum() / denom)))
+    scores.sort(key=lambda x: -x[1])
+    return scores[:k]
+
+
 def _match_char(glyph, templates, score_th):
     """灰度 + resize-到-模板 + 去均值归一相关。基线:18/20 位正确(仅 5↔6、8↔3 跨座混淆)。
     二值化版实测退步(细笔画毁于固定画布),已退回。提升读数走 per-seat 模板或 CNN。"""
@@ -68,6 +83,8 @@ def main():
     ap.add_argument("--score-th", type=float, default=0.6)
     ap.add_argument("--mode-window", type=int, default=0,
                     help="每真值帧 ±W 帧密集读取众数 vs 真值(验时序中位能否吸收离群坏帧)")
+    ap.add_argument("--diagnose", action="store_true",
+                    help="客观数字诊断(列墨profile+raw/过滤cells+每格top-k分),不靠眼读像素")
     ap.add_argument("--save-crops", default="",
                     help="把各 harvest 帧的 --seat crop 存 PNG(放大6x+红绿线标切割边界)供眼诊断")
     ap.add_argument("--dump-proj", action="store_true")
@@ -159,6 +176,31 @@ def main():
         digits, _ = digit_ocr.parse_number(
             cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], templates, args.score_th))
         return digits
+
+    # ── 客观数字诊断(不靠眼读):列墨profile + raw/过滤cells + 每格top-k 分 ──
+    if args.diagnose:
+        print(f"\n=== 客观诊断 seat{args.seat}(profile=确定性渲染的列墨量,非像素眼读)===")
+        for fn, vals in harvest:
+            if args.seat >= len(vals) or not vals[args.seat]:
+                continue
+            g = gray_roi(fn, seat_rois[args.seat])
+            if g is None:
+                continue
+            ink = _col_ink(g, args.ink_th)
+            mx = max(ink) or 1
+            prof = "".join(" " if v == 0 else "." if v <= mx / 3 else ":" if v <= 2 * mx / 3 else "#"
+                           for v in ink)
+            raw = digit_ocr.segment_cells(ink, args.gap_th, 0, 0)        # 未过滤纯墨段
+            cells = cells_of(g)                                          # 当前参数过滤后
+            print(f"\n{fn} 真值'{vals[args.seat]}' (宽{len(ink)}px ink-th={args.ink_th}):")
+            print(f"  |{prof}|")
+            print(f"  raw runs(未过滤,(x0,x1,宽)): {[(a, b, b - a + 1) for a, b in raw]}")
+            print(f"  cells(min_gap={args.min_gap} min_cell_w={args.min_cell_w}): "
+                  f"{[(a, b, b - a + 1) for a, b in cells]}")
+            for j, (x0, x1) in enumerate(cells):
+                top = _match_topk(g[:, x0:x1 + 1], templates, 3)
+                print(f"    cell{j}({x0}-{x1}): " + "  ".join(f"{c}={s:.2f}" for c, s in top))
+        return
 
     # ── 存 crop 供眼诊断:放大 6x + 红(左界)绿(右界)线标切割,我直接看像素 ──
     if args.save_crops:
