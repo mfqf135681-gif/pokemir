@@ -57,6 +57,8 @@ def main():
     ap.add_argument("--decimate", type=int, default=10)
     ap.add_argument("--ink-th", type=int, default=150)
     ap.add_argument("--gap-th", type=int, default=0)
+    ap.add_argument("--min-gap", type=int, default=2, help="缝<此列数→合并(治数字内细缝劈裂)")
+    ap.add_argument("--min-cell-w", type=int, default=3, help="格<此px→丢(治1-2px噪点)")
     ap.add_argument("--score-th", type=float, default=0.6)
     ap.add_argument("--dump-proj", action="store_true")
     args = ap.parse_args()
@@ -85,7 +87,8 @@ def main():
         harvest.append((fn.strip(), [v.strip() for v in vals.split(",")]))
 
     def cells_of(g):
-        return digit_ocr.segment_cells(_col_ink(g, args.ink_th), args.gap_th)
+        return digit_ocr.segment_cells(_col_ink(g, args.ink_th), args.gap_th,
+                                       args.min_gap, args.min_cell_w)
 
     # ── ① 多座采模板(同字体,按各座真值打标签)──
     templates = {}

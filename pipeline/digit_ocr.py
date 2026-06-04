@@ -11,20 +11,32 @@
 """
 
 
-def segment_cells(col_ink, gap_th=0):
-    """列墨色数组 → 数字格 [(x0, x1), ...](墨色 > gap_th 的极大连续段;段间空白=缝)。"""
-    cells = []
+def segment_cells(col_ink, gap_th=0, min_gap=2, min_cell_w=3):
+    """列墨色数组 → 数字格 [(x0, x1), ...]。
+    gap_th: 墨色 > 此 = 有墨。
+    min_gap: 相邻墨色段间缝 < 此列数 → 合并(治数字内 1px 细缝把一字劈两半)。
+    min_cell_w: 格宽 < 此 → 丢弃(治 1-2px 噪点碎片)。
+    实测真实字形:gap_th=0/min_gap=2/min_cell_w=3 → 段1 多座 4-5 位数切对位数。
+    """
+    runs = []
     start = None
     for x, ink in enumerate(col_ink):
         if ink > gap_th:
             if start is None:
                 start = x
         elif start is not None:
-            cells.append((start, x - 1))
-            start = None
+            runs.append([start, x - 1]); start = None
     if start is not None:
-        cells.append((start, len(col_ink) - 1))
-    return cells
+        runs.append([start, len(col_ink) - 1])
+    # 合并窄缝(< min_gap)分隔的段 = 同一数字
+    merged = []
+    for r in runs:
+        if merged and (r[0] - merged[-1][1] - 1) < min_gap:
+            merged[-1][1] = r[1]
+        else:
+            merged.append(r[:])
+    # 丢弃窄格(噪点)
+    return [(a, b) for a, b in merged if (b - a + 1) >= min_cell_w]
 
 
 def parse_number(cells, classify, min_cell_w=1):
@@ -49,11 +61,16 @@ def parse_number(cells, classify, min_cell_w=1):
 
 
 def _self_test():
-    # ① 切割:墨色投影 → 格(含窄 1 = 单列也算一格)
-    assert segment_cells([0, 0, 3, 5, 4, 0, 0, 2, 6, 0]) == [(2, 4), (7, 8)]
-    assert segment_cells([0, 0, 9, 0, 0]) == [(2, 2)]          # 窄 "1" 单列
-    assert segment_cells([5, 5, 0, 6]) == [(0, 1), (3, 3)]     # 贴边
-    print("✅ segment_cells:投影切缝 OK(含窄1/贴边)")
+    # ① 切割(默认 min_gap=2 / min_cell_w=3)
+    # 两数字,真缝(≥2列)分隔,各≥3px:
+    assert segment_cells([0, 0, 5, 5, 5, 0, 0, 6, 6, 6, 0]) == [(2, 4), (7, 9)]
+    # 数字内 1px 细缝 → 合并(治 seat7 劈裂):
+    assert segment_cells([5, 5, 5, 0, 5, 5, 5]) == [(0, 6)]
+    # 1px 噪点碎片 → 丢弃(治 seat3/5):
+    assert segment_cells([5, 5, 5, 0, 0, 9, 0, 0]) == [(0, 2)]
+    # 窄"1"(3px)保留:
+    assert segment_cells([0, 5, 5, 5, 0, 0, 9, 9, 9, 0]) == [(1, 3), (6, 8)]
+    print("✅ segment_cells:真缝切/细缝合并/噪点丢/窄1留 OK")
 
     # ② parse:mock 分类器按 cell 顺序吐预设字符
     def mk(seq):
