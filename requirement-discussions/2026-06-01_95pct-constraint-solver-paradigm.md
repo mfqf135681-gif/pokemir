@@ -744,3 +744,10 @@ win-merge 20 修对分段(12 手 1:1 对齐):**段1 Recall 70/70=100% / Precisio
 - **R3 不能自加**:某座已在注级上、又抬高但其间无他人加注 → 自己加自己,非法(杀手1-200 类结算幻影)。
 - self-test 5/5(含 170343 手1 真实幻影 + 合法再加注/正常牌局零误杀)。
 - **🔴 诚实预期**:R1-R3 杀自加/重复/全下后,但**街错位的 bet/call 对结构上合法、杀不掉**(需街边界或底池守恒,v2)。金额漂移归 OCR。**预期 precision 71%→部分提升(非 90%+)**;待 Win --solve 实测定数。
+
+### §20.3 ⭐ 活跃集基桩 + P-6 加法 实测 → "隐形跟注=伪漏点"(2026-06-03,T136/T137)
+- **活跃集 L1 基桩建成验证**:`card_marker`(头像左下两红牌背,player-independent)phash 对每座持久参考(profile `card_marker_ref`),hamming≤8=在手。**n=3 录像全 8 座 bimodal + 庄家在手下界 99%**(1/78 非系统漏检)。放大框选工具(roi_geom A2+A3)+ `active_set.py`(在手区间纯逻辑)+ `--dump-active/--capture-marker-refs/--active-at`。详见记忆 [[card-marker-active-set-pillar]]。
+- **P-6 加法(infer_p6_calls,--p6)实测判决 = 驴**:用活跃集补"看不见的末位跟注"。**三样本 recall 零增益**(98/99/73 → 98/99/73);所补全是"跟到BB/注级"小额,**stack-delta + 融合早 captured**(冗余补)。
+- **🔴 范式级结论**:**"筹码秒进池、看不见的跟注"是伪漏点 —— 我们读 stack【数值】,池子秒进 stack 照样掉,delta 早抓到**(印证早期 thorn,现 n=3 实证)。→ **别在"隐形跟注"上盖楼**;P-6 降为守门/校验(invariants.md);活跃集转喂 **P-7(谁在手→画像)+ 守恒交叉**,不背 recall。
+- **真瓶颈钉死**(P-6 都够不着):① **precision ~71%** 被 river 幻影(结算/街错位)拖 → 减法/守恒方向;② **段2 73%** = `tol=2` 融平 2 筹码(OCR-floor)→ 数字 CNN。
+- 顺带小 bug(低优先,P-6 低价值不修):多笔同街 call 的 `to_amount` 累计记账偶尔不到位(P-6 "原X" 即此)。
