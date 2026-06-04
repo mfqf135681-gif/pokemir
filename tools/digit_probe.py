@@ -91,6 +91,9 @@ def main():
     ap.add_argument("--dump-proj", action="store_true")
     ap.add_argument("--normalize", action="store_true",
                     help="每 crop 亮度归一(min-max 拉满量程)再 th/匹配 — 治发暗帧漏墨(类2)")
+    ap.add_argument("--validate", type=int, default=0,
+                    help="留出验证:随机挑 N 张非 harvest 帧,读全 8 座按 seat0-7 打印(供翻图核对)")
+    ap.add_argument("--seed", type=int, default=0, help="--validate 随机种子(换数字重roll新帧)")
     args = ap.parse_args()
 
     # ── --harvest-assist:全段均匀挑 N 帧打文件名(纯 manifest,无 cv2),供眼裁真值 ──
@@ -177,6 +180,38 @@ def main():
     for si in sorted(seat_tpls):
         miss = sorted(set("0123456789") - set(seat_tpls[si]))
         print(f"  seat{si}: 有 {sorted(seat_tpls[si])}  缺 {miss}")
+
+    def read_seat(fn, s):
+        """用 seat s 自己的模板读该帧该座 → 数字串('空'=无墨/读空,'NA'=无ROI/无模板)。"""
+        roi = seat_rois.get(s)
+        tpl = seat_tpls.get(s)
+        if roi is None or not tpl:
+            return "NA"
+        g = gray_roi(fn, roi)
+        if g is None:
+            return "NA"
+        digits, _ = digit_ocr.parse_number(
+            cells_of(g), lambda c: _match_char(g[:, c[0]:c[1] + 1], tpl, args.score_th))
+        return digits or "空"
+
+    # ── 留出验证:随机挑非 harvest 帧,读全 8 座按 seat0-7 打印(用户翻图核对)──
+    if args.validate > 0:
+        import random
+        mlines = (Path(args.session) / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+        frames_all = [json.loads(x) for x in mlines[1:] if x.strip()]
+        hv = {fn for fn, _ in harvest}
+        pool = [d for d in frames_all if d["file"] not in hv]
+        picks = random.Random(args.seed).sample(pool, min(args.validate, len(pool)))
+        picks.sort(key=lambda d: d["file"])
+        ncov = sorted(seat_tpls)
+        print(f"\n=== 留出验证(seed={args.seed},{len(picks)} 随机帧×全8座,翻图核对)===")
+        print(f"  (有模板的座: {ncov};其余打 NA)")
+        for d in picks:
+            cols = "  ".join(f"s{s}={read_seat(d['file'], s)}" for s in range(8))
+            print(f"  {d['file']}  {cols}")
+        print("\n翻这几帧核对:工具读 vs 你眼看。不一致 → 两边都重查(人/工具都会幻觉)。")
+        return
+
     templates = seat_tpls.get(args.seat, {})
     if not templates:
         print(f"\nseat{args.seat} 没采到模板 —— 给含该座的 --harvest 帧,且 --dump-proj 调对切割(格数==位数)。"); return
