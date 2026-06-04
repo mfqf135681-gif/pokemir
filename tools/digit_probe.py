@@ -112,6 +112,9 @@ def main():
     ap.add_argument("--no-normalize", dest="normalize", action="store_false",
                     help="关闭亮度归一(默认开:min-max拉满量程,已验消解发暗+5/6+跨座三害)")
     ap.set_defaults(normalize=True)
+    ap.add_argument("--binarize", action="store_true",
+                    help="硬二值化:>bin_th纯白/否则纯黑,杀抗锯齿过渡块+纹路(都中灰)→只留数字白核")
+    ap.add_argument("--bin-th", type=int, default=200, help="--binarize 阈值(默认200,只留近纯白)")
     ap.add_argument("--bootstrap", action="store_true",
                     help="pool 现有模板读全8座(起步),用户翻图只报错→纠错后建 per-seat 模板")
     ap.add_argument("--validate", type=int, default=0,
@@ -186,6 +189,8 @@ def main():
         l, t, w, h = roi
         crop = img[t:t + h, l:l + w]
         g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+        if args.binarize:  # 硬二值:>bin_th=纯白(数字核),否则纯黑→杀抗锯齿过渡块+纹路(都中灰)
+            return ((g > args.bin_th).astype(np.uint8) * 255)
         if args.normalize:  # 亮度归一:p2–p98 拉伸(杂散纯黑/白点不再主导 min-max→治暗黄字卡阈值)
             lo, hi = float(np.percentile(g, 2)), float(np.percentile(g, 98))
             if hi - lo >= 30:
