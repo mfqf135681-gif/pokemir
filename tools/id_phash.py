@@ -63,15 +63,19 @@ def main():
 
     print(f"=== ID phash 验证 ({args.hash_size}x{args.hash_size}={bits}bit, 每{args.decimate}帧)===")
     seat_mode = {}
-    print("\n① 同座跨帧稳定(同玩家坐着→maxΔ应≈0;大=换人/空座/读不稳):")
+    print("\n① 同座跨帧稳定(看是否有【稳定核】:多数帧贴众数、少数离群=空座/弃牌可滤):")
     for s in sorted(per_seat):
         hs = [h for h in per_seat[s] if h]
         if not hs:
             print(f"  s{s}: 无"); continue
         mode = Counter(hs).most_common(1)[0][0]
         seat_mode[s] = mode
-        maxham = max(_ham(h, mode) for h in hs)
-        print(f"  s{s}: {len(hs)}帧 {len(set(hs))}种hash maxΔ众数={maxham}/{bits}")
+        dists = sorted(_ham(h, mode) for h in hs)
+        n = len(dists)
+        med = dists[n // 2]
+        p80 = dists[min(n - 1, int(n * 0.8))]
+        tight = sum(1 for d in dists if d <= 10)  # 贴众数(≤10)的帧占比
+        print(f"  s{s}: {n}帧 中位Δ={med} 80分位={p80} max={dists[-1]} | 贴众数(≤10)={tight}/{n}={tight*100//n}%")
 
     print("\n② 跨座区分(不同玩家→两两 hamming 应大;小=phash撞):")
     ss = sorted(seat_mode)
