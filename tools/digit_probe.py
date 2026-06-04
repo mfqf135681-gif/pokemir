@@ -115,6 +115,10 @@ def main():
     ap.add_argument("--validate", type=int, default=0,
                     help="留出验证:随机挑 N 张非 harvest 帧,读全 8 座按 seat0-7 打印(供翻图核对)")
     ap.add_argument("--seed", type=int, default=0, help="--validate 随机种子(换数字重roll新帧)")
+    ap.add_argument("--verify", action="store_true",
+                    help="交互核对:配 --scan/--validate,每读弹放大crop+console确认(回车对/输正确值/s遮挡/q退)")
+    ap.add_argument("--verify-out", default="",
+                    help="--verify 把已核值(确认+纠正)写入此真值文件(帧=v0..v7),零手填")
     ap.add_argument("--scan", type=int, default=0,
                     help="扫每N帧,pool模板读 read-field 真下注(过滤空/ante10),报读值+格数供眼核")
     ap.add_argument("--min-hit-cells", type=int, default=4,
@@ -230,6 +234,51 @@ def main():
                 p.setdefault(ch, []).append(gl)
         return p
 
+    # ── 交互核对(--verify):弹放大crop + console 确认 → 直接产出已核真值,杀手动翻图+转录错 ──
+    vacc = {"ok": 0, "bad": 0, "skip": 0, "fixed": {}}  # fixed: {frame:{seat:已核值}}
+
+    def _verify_one(fn, s, g, read):
+        """弹 crop + 提示。返回 True 继续 / False 退出(q)。回车=对/数字=纠正/s=遮挡/q=退。"""
+        big = cv2.resize(g, (g.shape[1] * 8, g.shape[0] * 8), interpolation=cv2.INTER_NEAREST)
+        cv2.imshow("verify  (看图,到console敲键)", big)
+        cv2.waitKey(60)  # 渲染窗口
+        ans = input(f"  {fn} s{s} 读='{read}' ? [回车=对/输正确值/s=遮挡/q=退]: ").strip()
+        if ans == "q":
+            return False
+        if ans == "s":
+            vacc["skip"] += 1
+        elif ans == "":
+            vacc["ok"] += 1
+            vacc["fixed"].setdefault(fn, {})[s] = read
+        else:
+            vacc["bad"] += 1
+            vacc["fixed"].setdefault(fn, {})[s] = ans
+        return True
+
+    def _verify_done():
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
+        tot = vacc["ok"] + vacc["bad"]
+        acc = f"{vacc['ok']}/{tot}" if tot else "0/0"
+        print(f"\n核对完: 对{vacc['ok']} 错{vacc['bad']} 遮挡{vacc['skip']} → 准确率 {acc}")
+        if vacc["bad"]:
+            print("  纠正:")
+            for fn in sorted(vacc["fixed"]):
+                for s, v in vacc["fixed"][fn].items():
+                    pass  # 明细已在 fixed;错项在下方文件
+        if args.verify_out and vacc["fixed"]:
+            lines = []
+            for fn in sorted(vacc["fixed"]):
+                row = ["" for _ in range(8)]
+                for s, v in vacc["fixed"][fn].items():
+                    row[s] = v
+                lines.append(f"{fn}={','.join(row)}")
+            Path(args.verify_out).write_text(
+                "# 交互核对产出的真值(回车确认+纠正)\n" + "\n".join(lines) + "\n", encoding="utf-8")
+            print(f"  已核真值写入 {args.verify_out}({len(lines)} 帧)")
+
     # ── 扫真下注:pool 模板读 read-field,过滤掉空+ante('10')+短格,只留真大注供眼核 ──
     if args.scan > 0:
         pool = _pool()
@@ -240,8 +289,9 @@ def main():
         print(f"\n=== 扫 {tgt} 真下注(每{args.scan}帧,≥{args.min_hit_cells}格,过滤空/10,去重连续同值)===")
         hits = 0
         last = {}  # seat -> 上次显示值(去重:同座连续相同只报一次,值变了才再报)
+        quit_v = False
         for k, d in enumerate(frames_all):
-            if k % args.scan:
+            if k % args.scan or quit_v:
                 continue
             seats_hit = []
             for s in range(8):
@@ -249,21 +299,28 @@ def main():
                 if roi is None:
                     continue
                 g = gray_roi(d["file"], roi)
-                cur = ""
+                cur, rval = "", ""
                 if g is not None:
                     c = cells_of(g)
                     if len(c) >= args.min_hit_cells:
                         r, _ = digit_ocr.parse_number(
                             c, lambda cc: _match_char_multi(g[:, cc[0]:cc[1] + 1], pool, args.score_th))
                         if r not in skip:
-                            cur = f"{r or '空'}({len(c)})"
+                            cur, rval = f"{r or '空'}({len(c)})", r
                 if cur and cur != last.get(s):
-                    seats_hit.append(f"s{s}={cur}")
+                    if args.verify:
+                        if not _verify_one(d["file"], s, g, rval):
+                            quit_v = True; break
+                    else:
+                        seats_hit.append(f"s{s}={cur}")
+                    hits += 1
                 last[s] = cur
             if seats_hit:
                 print(f"  {d['file']} t={d.get('t_mono', 0):.0f}: {' '.join(seats_hit)}")
-                hits += 1
-        print(f"\n不同的真下注 {hits} 个(已去重连续同值;格式 sX=工具读值(切格数))。翻图核对值对不对——尤其图标污染。")
+        if args.verify:
+            _verify_done()
+        else:
+            print(f"\n不同的真下注 {hits} 个(已去重连续同值;格式 sX=工具读值(切格数))。翻图核对——尤其图标污染。")
         return
 
     # ── bootstrap:pool 现有模板读全 8 座(起步用,用户翻图只报错)→ 纠错后建 per-seat ──
@@ -299,7 +356,10 @@ def main():
         picks.sort(key=lambda d: d["file"])
         tgt = args.read_field or args.field
         print(f"\n=== 留出验证(seed={args.seed},{len(picks)} 随机非harvest帧×全8座 {tgt},pool模板{sorted(pool_tpl)})===")
+        quit_v = False
         for d in picks:
+            if quit_v:
+                break
             cols = []
             for s in range(8):
                 roi = read_rois.get(s)
@@ -310,9 +370,18 @@ def main():
                     cols.append(f"s{s}=NA"); continue
                 digits, _ = digit_ocr.parse_number(
                     cells_of(g), lambda c: _match_char_multi(g[:, c[0]:c[1] + 1], pool_tpl, args.score_th))
-                cols.append(f"s{s}={digits or '空'}")
-            print(f"  {d['file']}  " + "  ".join(cols))
-        print("\n翻这几帧核对:工具读 vs 你眼看。不一致 → 两边都重查(人/工具都会幻觉)。")
+                if args.verify:
+                    if digits:  # 只核非空读数
+                        if not _verify_one(d["file"], s, g, digits):
+                            quit_v = True; break
+                else:
+                    cols.append(f"s{s}={digits or '空'}")
+            if not args.verify:
+                print(f"  {d['file']}  " + "  ".join(cols))
+        if args.verify:
+            _verify_done()
+        else:
+            print("\n翻这几帧核对:工具读 vs 你眼看。不一致 → 两边都重查(人/工具都会幻觉)。")
         return
 
     templates = seat_tpls.get(args.seat, {})
