@@ -446,6 +446,10 @@ def main():
                     help="--dump-active:参考帧时刻秒(默认首帧);挑该 ref-seat 明确在手的帧")
     ap.add_argument("--active-th", type=int, default=8,
                     help="--dump-active:hamming ≤ 此 = 像牌背参考=在手(默认8/64)")
+    ap.add_argument("--capture-marker-refs", action="store_true",
+                    help="从 --from-image 逐座算 card_marker phash → 写入 profile 每座 card_marker_ref(持久参考,脱离 ref-t)")
+    ap.add_argument("--from-image", default=None,
+                    help="--capture-marker-refs:全员在手的整桌截图(分辨率须与 profile 一致)")
     ap.add_argument("--hash-th", type=int, default=12,
                     help="--dump-signals:win phash 变化阈值(hamming>此=视觉突变,默认12/64)")
     ap.add_argument("--settle-win", type=float, default=2.0,
@@ -653,6 +657,30 @@ def main():
               "看哪条最干净、哪条补哪条的洞(D漏的same-seat / 公共牌漏的无翻牌手 / win的OCR无关因用phash)。")
         return
 
+    if args.capture_marker_refs:
+        import cv2
+        if not args.from_image:
+            print("ERROR: --capture-marker-refs 需 --from-image <全员在手整桌截图.png>")
+            return
+        img = cv2.imread(args.from_image)
+        if img is None:
+            print(f"ERROR: 读不到图 {args.from_image}")
+            return
+        p = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+        captured = {}
+        for s in p.get("seats", []):
+            roi = s.get("card_marker")
+            if not roi:
+                continue
+            l, tt, w, h = roi
+            s["card_marker_ref"] = int(_avg_hash(img[tt:tt + h, l:l + w]))
+            captured[s["seat_index"]] = s["card_marker_ref"]
+        Path(profile_path).write_text(json.dumps(p, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"已写 {len(captured)} 座 card_marker_ref → {profile_path}")
+        print(f"  {captured}")
+        print("\n下一步:跑 --dump-active(自动用存档参考)验 8 座仍 bimodal;某座全程低=该图它没在手 → 换图重采。")
+        return
+
     if args.dump_active:
         import cv2
         marker_rois = load_card_marker_rois(profile_path)
@@ -669,17 +697,24 @@ def main():
                 continue
             for s, (l, tt, w, h) in marker_rois.items():
                 per_seat_hash[s].append((t, _avg_hash(img[tt:tt + h, l:l + w])))
-        # per-seat 参考:每座取【自己】在 ref-t 的 hash 当基准(免疫按座渲染差/框差;牌背仍 player-independent)
+        # 参考:优先 profile 存档 card_marker_ref(持久,跨局通用);否则现取 ref-t(本局)
+        pj = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+        stored_ref = {int(s["seat_index"]): int(s["card_marker_ref"])
+                      for s in pj.get("seats", []) if s.get("card_marker_ref") is not None}
         ref_t = args.marker_ref_t
         if ref_t is None:
             anyseat = min((s for s in per_seat_hash if per_seat_hash[s]), default=None)
             ref_t = per_seat_hash[anyseat][0][0] if anyseat is not None else 0.0
-        print(f"\n=== 活跃集(card_marker 牌背,【每座对自己】参考 phash,不OCR)===")
-        print(f"  per-seat 参考帧 @t≈{ref_t:.1f}(须挑【刚发完牌、各座都在手】的 preflop 帧)| th={args.active_th}")
+        print(f"\n=== 活跃集(card_marker 牌背,每座对自己参考,不OCR)===")
+        src = "profile 存档 card_marker_ref(持久)" if stored_ref else f"现取 ref-t≈{ref_t:.1f}(本局)"
+        print(f"  参考源:{src} | th={args.active_th}")
         for s in sorted(per_seat_hash):
             if not per_seat_hash[s]:
                 continue
-            ref_hash_s = min(per_seat_hash[s], key=lambda th: abs(th[0] - ref_t))[1]
+            if s in stored_ref:
+                ref_hash_s = stored_ref[s]
+            else:
+                ref_hash_s = min(per_seat_hash[s], key=lambda th: abs(th[0] - ref_t))[1]
             samples = [(t, _hamming(h, ref_hash_s)) for (t, h) in per_seat_hash[s]]
             hams = [hm for (_, hm) in samples]
             ivs = _active.active_intervals(samples, th=args.active_th, min_run=2)
