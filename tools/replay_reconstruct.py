@@ -513,7 +513,7 @@ def main():
                     help="砖2:reconstruct 后过守恒/合法性求解器(裁自加/重复读/全下后行动幻影 → 提 precision)")
     ap.add_argument("--conservation", action="store_true",
                     help="整手守恒对比:每手 chip_movement(Σ首稳态-Σ末稳态)+pot → 同口径 "
-                         "v_hand_conservation 判 OK/CHECK/NULL,并排旧 DB 基准(21.3%)→ 新桩基牢不牢的系统级数字。"
+                         "v_hand_conservation 判 OK/CHECK/NULL,并排旧 DB 基准(21.3%%)→ 新桩基牢不牢的系统级数字。"
                          "无需 --truth;pot 取每手窗内 pot_size ROI 峰值(无则用 --pot)")
     ap.add_argument("--write-db", action="store_true",
                     help="把 --conservation 每手结果写进 VPS postgres 表 replay_conservation"
