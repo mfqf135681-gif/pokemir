@@ -7,7 +7,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
-from roi_geom import map_zoomed_roi  # noqa: E402
+from roi_geom import map_zoomed_roi, roi_offset, apply_offset, mirror_box_x  # noqa: E402
 
 
 def test_roundtrip_exact():
@@ -39,9 +39,41 @@ def test_skip_fine_uses_coarse_shape():
         == (200, 150, 40, 30)
 
 
+# ── ROI 派生原语(roi_derive 用)─────────────────────────────────
+
+def test_offset_roundtrip():
+    # roi_offset 与 apply_offset 互逆:anchor + (box-anchor) == box
+    anchor = [685, 1038, 25, 28]
+    box = [679, 1072, 96, 28]
+    off = roi_offset(anchor, box)
+    assert off == (-6, 34, 96, 28), off
+    assert apply_offset(anchor, off) == box
+
+
+def test_mirror_box_x_involution():
+    # 绕轴镜像两次 = 原值(对合);宽高不变,上下不动
+    axis = 727.2
+    box = [126, 564, 96, 26]
+    m = mirror_box_x(box, axis)
+    assert m[1:] == [564, 96, 26]              # top/w/h 不变
+    assert mirror_box_x(m, axis) == box        # 镜像两次复原
+
+
+def test_mirror_maps_left_to_right():
+    # 左座 box 镜像应落到右座一侧(left 增大、跨过轴)
+    axis = 727.2
+    left = [126, 564, 96, 26]                  # 左列 stack
+    r = mirror_box_x(left, axis)
+    assert r[0] == round(2 * 727.2 - (126 + 96))  # = 1232
+    assert r[0] > axis                          # 落到右半
+
+
 if __name__ == "__main__":
     test_roundtrip_exact()
     test_clamp_left_top_edge()
     test_clamp_size_within_image()
     test_skip_fine_uses_coarse_shape()
-    print("✅ roi_geom.map_zoomed_roi 4/4 通过")
+    test_offset_roundtrip()
+    test_mirror_box_x_involution()
+    test_mirror_maps_left_to_right()
+    print("✅ roi_geom 7/7 通过")

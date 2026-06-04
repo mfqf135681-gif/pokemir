@@ -31,3 +31,24 @@ def map_zoomed_roi(coarse, fine, scale, pad, img_w, img_h):
     w = max(1, min(w, img_w - x))
     h = max(1, min(h, img_h - y))
     return (x, y, w, h)
+
+
+# ── ROI 参数化派生原语(无 cv2,Linux 可单测)─────────────────────────
+# 用途:把每座 ROI 表达成"相对该座 card_marker 锚的偏移",从一个参考座抽模板、
+# 套到同组其他座 → 消手框抖动 + 立可迁移几何模型(见 roi_derive.py)。
+
+def roi_offset(anchor, box):
+    """box 相对 anchor(card_marker)的偏移 (dx, dy, w, h)。
+    dx/dy = 左上角差;w/h = box 自身尺寸(锚只定位、不定尺寸)。"""
+    return (box[0] - anchor[0], box[1] - anchor[1], box[2], box[3])
+
+
+def apply_offset(anchor, offset):
+    """anchor + offset → box [l, t, w, h]。roi_offset 的逆运算。"""
+    return [anchor[0] + offset[0], anchor[1] + offset[1], offset[2], offset[3]]
+
+
+def mirror_box_x(box, axis):
+    """绕垂直轴 x=axis 镜像 box → [l, t, w, h](宽高不变,左右翻、上下不动)。
+    新 left = 2*axis - (left + w)(右边缘变左边缘)。用于左右座互推。"""
+    return [int(round(2 * axis - (box[0] + box[2]))), box[1], box[2], box[3]]
