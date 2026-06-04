@@ -103,6 +103,8 @@ def main():
                     help="扫每N帧,pool模板读 read-field 真下注(过滤空/ante10),报读值+格数供眼核")
     ap.add_argument("--min-hit-cells", type=int, default=4,
                     help="--scan 只报切格≥此的座(图标+3位数=真大注,滤掉ante;默认4)")
+    ap.add_argument("--icon-prefix", action="store_true",
+                    help="采集时若切格>位数,丢首部多余格(筹码图标在左)对齐真值 — 下注区amount用")
     args = ap.parse_args()
 
     # ── --harvest-assist:全段均匀挑 N 帧打文件名(纯 manifest,无 cv2),供眼裁真值 ──
@@ -181,13 +183,16 @@ def main():
             if g is None:
                 print(f"  ⚠️ 读不到 {fn}"); break
             cells = cells_of(g)
+            use = cells
+            if args.icon_prefix and len(cells) > len(val):
+                use = cells[-len(val):]  # 丢首部多余格(筹码图标在左,数字在右)对齐真值
             if args.dump_proj:
-                print(f"  [proj] {fn} seat{si} 真值'{val}' 切{len(cells)}格 {cells}")
-            if len(cells) != len(val):
-                print(f"  ⚠️ {fn} seat{si}: 切{len(cells)}格 ≠ 真值{len(val)}位 → 跳过(调 --ink-th/--gap-th)")
+                print(f"  [proj] {fn} seat{si} 真值'{val}' 切{len(cells)}格 用{len(use)}格 {cells}")
+            if len(use) != len(val):
+                print(f"  ⚠️ {fn} seat{si}: 切{len(cells)}格→用{len(use)} ≠ 真值{len(val)}位 → 跳过")
                 continue
             tpls = seat_tpls.setdefault(si, {})
-            for (x0, x1), ch in zip(cells, val):
+            for (x0, x1), ch in zip(use, val):
                 tpls.setdefault(ch, g[:, x0:x1 + 1].copy())
     print("\n采到模板(per-seat):")
     for si in sorted(seat_tpls):
