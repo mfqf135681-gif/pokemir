@@ -55,7 +55,8 @@ card_marker 锚重框的思路,推广到其余 ROI。
 ## §8 收口 + 后续
 **收口判定**:派生 vs 生产守恒逐手等价(零回归)+ 用户实时眼验通过 → **规整化达成目标
 (几何干净/可迁移)且安全,可替换生产**。本质=清理几何,非提捕获率(捕获率瓶颈在 §15 重建,非 ROI)。
-- **待办(用户 Win)**:`Move-Item` 替换生产 `party_poker_8.json` ← `_derived.json`(留 backup)+ git 提交;
-  中柱 s0/s4 那 7 个离群框(amount/id/fold_area/button)可顺手重框,不做亦不劣于现状。
+- **已替换生产**(2026-06-04,**Linux 侧** cp _derived→party_poker_8.json + git rm _derived + push,
+  尊重代码单向流 Linux→git→Win;Win 仅 `git pull`,**不在 Win 改+反向 push**)。旧版存 git 历史。
+- 中柱 s0/s4 那 7 个离群框(amount/id/fold_area/button)可选重框(在生产 profile 上),不做亦不劣于现状。
 - party_poker_9 / seated 变体用同引擎重生成(参数化模型最大红利)。
 - amount 中柱(s0/s4)若重框后仍漂,查"下注显示位置是否随金额位数浮动"(可能本就非定框)。

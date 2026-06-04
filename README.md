@@ -206,7 +206,7 @@ phash 当独立 key 不行(跨侧名字渲染镜像,hamming 跨人/同人重叠)
 | §15 reconstruct / solver(砖1/砖2) | ✅ 纯逻辑自测过;⚠️ **未接入 live**(`STACK_PROBE` 是预留钩子,默认关) |
 | 数字识别配方(digit_ocr) | ✅ 离线验证(stack~100%/amount~94%);⚠️ **未接入 live**,生产仍用 EasyOCR |
 | 守恒对比夹具(conservation + `--write-db`) | ✅ 本 session 建成,与 DB 视图 100% 同口径,闭环(Win 跑→写库→Claude 读) |
-| ROI 参数化模型(`roi_derive`,镜像派生) | ✅ 验证:列座 11 字段尺寸全统一+严格镜像;`party_poker_8_derived` 守恒读数与生产**逐手 bit 等价**(零回归,确认规整安全)。**本质=几何干净/可迁移,非提捕获率**。⚠️ 中柱 s0/s4 的 amount/id/fold_area/button 待 Win 重框;`_derived` 待替换生产 |
+| ROI 参数化模型(`roi_derive`,镜像派生) | ✅ **已启用**:统一版(列座 11 字段尺寸全统一+严格镜像)守恒读数与旧版**逐手 bit 等价**(零回归),已替换生产 `party_poker_8.json`。**本质=几何干净/可迁移,非提捕获率**。中柱 s0/s4 离群框(amount/id/fold_area/button)可选重框 |
 | 卡牌 CNN | 可用;⚠️ **报识别率看 val 不看 pytest**(pytest 含训练集虚高、val 才是真泛化),摊牌小卡域偏弱 |
 | dashboard | 部分(replay/profile/labeling/settings 可用,coach/live 占位) |
 | api / hud / stats | Phase 4-5 占位 |

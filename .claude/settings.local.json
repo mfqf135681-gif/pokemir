@@ -1,71 +1,29 @@
 {
   "permissions": {
     "allow": [
-      "Bash(mkdir -p d:/project/pokemir/.agents-full)",
-      "Bash(cp d:/project/pokemir/AGENTS.md d:/project/pokemir/.agents-full/AGENTS.md)",
-      "Bash(cp -r d:/project/pokemir/.agents/* d:/project/pokemir/.agents-full/)",
-      "WebFetch(domain:chat.deepseek.com)"
+      "mcp__postgres__query",
+      "Bash(python -m pytest tests/test_state_machines.py -v)",
+      "Bash(python3 -m pytest tests/test_state_machines.py -v)",
+      "Bash(.venv/bin/python -m pytest tests/test_state_machines.py -v)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m ' *)",
+      "Bash(git push *)",
+      "Bash(git mv *)",
+      "Bash(mv memory/phase-1-5-attention-mechanism-design.md memory_archive/)",
+      "Bash(cat)",
+      "Read(//home/alxe/project/memory/**)",
+      "Bash(sed -n 410,420p /home/alxe/.claude/projects/-home-alxe-project-pokemir/memory/long-term-roadmap.md)",
+      "Bash(sed -n 548,555p /home/alxe/.claude/projects/-home-alxe-project-pokemir/memory/long-term-roadmap.md)",
+      "Bash(sed -n 70,85p /home/alxe/.claude/projects/-home-alxe-project-pokemir/memory/player-profile-nit-trap-detection.md)",
+      "Bash(sed -n 205,208p /home/alxe/.claude/projects/-home-alxe-project-pokemir/memory/ring-beam-inference-design.md)",
+      "Bash(sed -i 's|\\\\[\\\\[cross-validation-architecture-implemented\\\\]\\\\]\\(Path A 多信号体系前身\\)|cross-validation-implemented\\(已封存,Path A 多信号体系前身\\)|' ring-beam-inference-design.md)",
+      "Bash(sed -i 's|\\\\[\\\\[phase-1-5-attention-mechanism-design\\\\]\\\\]|phase-1-5\\(已封存\\)|' constraint-solver-paradigm.md)",
+      "Bash(sed -i 's|\\\\[\\\\[path-a-history\\\\]\\\\]|path-a-history\\(已封存\\)|' env-machines.md env-tooling-constraints.md ocr-allowlist-double-edge.md)",
+      "Bash(python3 -c \"import easyocr; print\\('easyocr OK'\\)\")",
+      "Bash(python3 -c \"import torch; print\\('torch', torch.__version__, 'cuda', torch.cuda.is_available\\(\\)\\)\")",
+      "Bash(python3 -c \"import cv2; print\\('cv2 OK'\\)\")",
+      "Bash(python3 -m py_compile tools/replay_reconstruct.py)",
+      "Bash(python3 tools/replay_reconstruct.py --mock)"
     ]
-  },
-  "mcpServers": {
-    "sequential-thinking": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-      "env": {
-        "NPM_CONFIG_CACHE": "D:\\mcp-cache\\npm"
-      }
-    },
-    "screenshot": {
-      "command": "npx",
-      "args": ["-y", "universal-screenshot-mcp"],
-      "env": {
-        "NPM_CONFIG_CACHE": "D:\\mcp-cache\\npm"
-      }
-    },
-    "fast-paddleocr": {
-      "command": "uvx",
-      "args": ["--python", "3.13", "fast-paddleocr-mcp"],
-      "env": {
-        "UV_CACHE_DIR": "D:\\mcp-cache\\uv",
-        "UV_PYTHON_INSTALL_DIR": "D:\\mcp-cache\\uv\\python",
-        "UV_TOOL_DIR": "D:\\mcp-cache\\uv\\tools",
-        "MODELSCOPE_CACHE": "D:\\mcp-cache\\modelscope",
-        "HF_HOME": "D:\\mcp-cache\\huggingface"
-      }
-    },
-    "moondream": {
-      "command": "npx",
-      "args": ["-y", "@iflow-mcp/nighttrek-moondream-mcp"],
-      "env": {
-        "NPM_CONFIG_CACHE": "D:\\mcp-cache\\npm",
-        "HF_HOME": "D:\\mcp-cache\\huggingface"
-      }
-    },
-    "opencv": {
-      "command": "uvx",
-      "args": ["opencv-mcp-server"],
-      "env": {
-        "UV_CACHE_DIR": "D:\\mcp-cache\\uv",
-        "UV_PYTHON_INSTALL_DIR": "D:\\mcp-cache\\uv\\python",
-        "UV_TOOL_DIR": "D:\\mcp-cache\\uv\\tools"
-      }
-    },
-    "pgsql": {
-      "command": "npx",
-      "args": ["-y", "@tejasanik/postgres-mcp-server"],
-      "env": {
-        "NPM_CONFIG_CACHE": "D:\\mcp-cache\\npm",
-        "PG_NAME_1": "default",
-        "PG_HOST_1": "localhost",
-        "PG_PORT_1": "5432",
-        "PG_USERNAME_1": "poker_user",
-        "PG_PASSWORD_1": "Lc@135681",
-        "PG_DATABASE_1": "poker_assistant",
-        "PG_SCHEMA_1": "public",
-        "PG_SSL_1": "false",
-        "PG_DEFAULT_1": "true",
-        "PG_ACCESS_MODE_1": "readonly"
-      }
-    }
   }
 }
