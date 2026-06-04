@@ -43,6 +43,8 @@ def main():
     ap.add_argument("--cluster-seats", default="",
                     help="把指定座(如 '1,7')phash 聚类 → 跨座比同玩家簇(治换座污染)")
     ap.add_argument("--cluster-th", type=int, default=15, help="聚类 hamming 阈(≤此同簇)")
+    ap.add_argument("--cross", default="",
+                    help="时序跨座比对 'L:R,...'(L前半在座↔R后半在座):用已知换座方向比同玩家")
     args = ap.parse_args()
 
     import cv2
@@ -63,6 +65,32 @@ def main():
         for s, roi in id_rois.items():
             l, t, w, h = roi
             per_seat[s].append(_phash(img[t:t + h, l:l + w], args.hash_size))
+
+    # ── --cross "L:R,...":用已知时序比对同玩家(L 前半在座 ↔ R 后半在座)。治聚类撞共同态。
+    if args.cross:
+        def half_mode(seq, which):
+            n = len(seq)
+            half = seq[:n // 2] if which == "first" else seq[n // 2:]
+            hs = [h for h in half if h]
+            return Counter(hs).most_common(1)[0][0] if hs else 0
+
+        print(f"\n=== --cross 时序比对(L前半在座 ↔ R后半在座, {bits}bit)===")
+        first_modes = {}
+        for pair in args.cross.split(","):
+            L, R = (int(x) for x in pair.split(":"))
+            mL = half_mode(per_seat.get(L, []), "first")
+            mR = half_mode(per_seat.get(R, []), "second")
+            first_modes[L] = mL
+            print(f"  s{L}(前半) ↔ s{R}(后半): hamming={_ham(mL, mR)}/{bits}  "
+                  f"popcount {bin(mL).count('1')}/{bin(mR).count('1')}")
+        if len(first_modes) >= 2:
+            ks = list(first_modes)
+            print("\n  跨人区分(前半各玩家众数两两,应远):")
+            for i in range(len(ks)):
+                for j in range(i + 1, len(ks)):
+                    print(f"    s{ks[i]} ↔ s{ks[j]}: {_ham(first_modes[ks[i]], first_modes[ks[j]])}")
+        print("\n  判读:同人跨侧≈0-5成立 / 几十=跨侧名字框内位置不齐;跨人应远(几十)。")
+        return
 
     # ── --cluster-seats "1,7":把指定座的 phash 按相似度聚类(治"换座"污染:
     #    一座会分出{你的名字, 空座}多簇)→ 再跨座比"同一玩家那簇"。
