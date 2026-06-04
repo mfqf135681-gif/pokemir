@@ -45,6 +45,8 @@ def main():
     ap.add_argument("--cluster-th", type=int, default=15, help="聚类 hamming 阈(≤此同簇)")
     ap.add_argument("--cross", default="",
                     help="时序跨座比对 'L:R,...'(L前半在座↔R后半在座):用已知换座方向比同玩家")
+    ap.add_argument("--frames", default="",
+                    help="直接比指定帧+座 '文件:座,...':两两 phash hamming(零切半零众数,挑干净帧)")
     args = ap.parse_args()
 
     import cv2
