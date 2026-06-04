@@ -100,7 +100,9 @@ def main():
                     help="留出验证:随机挑 N 张非 harvest 帧,读全 8 座按 seat0-7 打印(供翻图核对)")
     ap.add_argument("--seed", type=int, default=0, help="--validate 随机种子(换数字重roll新帧)")
     ap.add_argument("--scan", type=int, default=0,
-                    help="扫每N帧,报 --field ROI 非空的帧+座(找瞬态下注额所在帧,供选帧采真值)")
+                    help="扫每N帧,pool模板读 read-field 真下注(过滤空/ante10),报读值+格数供眼核")
+    ap.add_argument("--min-hit-cells", type=int, default=4,
+                    help="--scan 只报切格≥此的座(图标+3位数=真大注,滤掉ante;默认4)")
     args = ap.parse_args()
 
     # ── --harvest-assist:全段均匀挑 N 帧打文件名(纯 manifest,无 cv2),供眼裁真值 ──
@@ -168,33 +170,6 @@ def main():
         return digit_ocr.segment_cells(_col_ink(g, args.ink_th), args.gap_th,
                                        args.min_gap, args.min_cell_w, args.max_merge_w)
 
-    # ── 扫描非空帧:瞬态区(amount 下注额)找出有内容的帧+座,供选帧采真值 ──
-    if args.scan > 0:
-        mlines = (Path(args.session) / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
-        frames_all = [json.loads(x) for x in mlines[1:] if x.strip()]
-        tgt = args.read_field or args.field
-        print(f"\n=== 扫 {tgt} 非空帧(每{args.scan}帧;格式 sX(切格数))===")
-        hits = 0
-        for k, d in enumerate(frames_all):
-            if k % args.scan:
-                continue
-            seats_hit = []
-            for s in range(8):
-                roi = read_rois.get(s)
-                if roi is None:
-                    continue
-                g = gray_roi(d["file"], roi)
-                if g is None:
-                    continue
-                c = cells_of(g)
-                if c:
-                    seats_hit.append(f"s{s}({len(c)})")
-            if seats_hit:
-                print(f"  {d['file']} t={d.get('t_mono', 0):.0f}: {' '.join(seats_hit)}")
-                hits += 1
-        print(f"\n非空帧 {hits} 个。挑几个【切格数稳定、跨不同手】的,翻图读下注额报我(帧 座 值)。")
-        return
-
     # ── ① per-seat 采模板(每座只用自己的字形,跨帧累积凑齐数字表)──
     # seat_tpls[seat][char] = glyph;治跨座 5↔6、8↔3 渲染差(card_marker 同款解)。
     seat_tpls = {}
@@ -219,12 +194,49 @@ def main():
         miss = sorted(set("0123456789") - set(seat_tpls[si]))
         print(f"  seat{si}: 有 {sorted(seat_tpls[si])}  缺 {miss}")
 
+    def _pool():
+        p = {}
+        for s in sorted(seat_tpls):
+            for ch, gl in seat_tpls[s].items():
+                p.setdefault(ch, gl)
+        return p
+
+    # ── 扫真下注:pool 模板读 read-field,过滤掉空+ante('10')+短格,只留真大注供眼核 ──
+    if args.scan > 0:
+        pool = _pool()
+        mlines = (Path(args.session) / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+        frames_all = [json.loads(x) for x in mlines[1:] if x.strip()]
+        tgt = args.read_field or args.field
+        skip = {"", "10"}  # 空 + ante;只看真下注
+        print(f"\n=== 扫 {tgt} 真下注(每{args.scan}帧,≥{args.min_hit_cells}格,过滤空/10;读值+格数)===")
+        hits = 0
+        for k, d in enumerate(frames_all):
+            if k % args.scan:
+                continue
+            seats_hit = []
+            for s in range(8):
+                roi = read_rois.get(s)
+                if roi is None:
+                    continue
+                g = gray_roi(d["file"], roi)
+                if g is None:
+                    continue
+                c = cells_of(g)
+                if len(c) < args.min_hit_cells:
+                    continue
+                r, _ = digit_ocr.parse_number(
+                    c, lambda cc: _match_char(g[:, cc[0]:cc[1] + 1], pool, args.score_th))
+                if r not in skip:
+                    seats_hit.append(f"s{s}={r or '空'}({len(c)})")
+            if seats_hit:
+                print(f"  {d['file']} t={d.get('t_mono', 0):.0f}: {' '.join(seats_hit)}")
+                hits += 1
+        print(f"\n真下注帧 {hits} 个(格式 sX=工具读值(切格数))。翻图核对这几个值对不对——尤其图标有没有污染。")
+        return
+
     # ── bootstrap:pool 现有模板读全 8 座(起步用,用户翻图只报错)→ 纠错后建 per-seat ──
     if args.bootstrap:
-        pool = {}
-        for s in sorted(seat_tpls):  # seat6 全 0-9 → 先 pool 进来
-            for ch, gl in seat_tpls[s].items():
-                pool.setdefault(ch, gl)
+        pool = _pool()
         tgt = args.read_field or args.field
         print(f"\n=== bootstrap 读全8座 {tgt}(pooled模板{sorted(pool)};跨座+normalize起步,必有错)===")
         for fn, _ in harvest:
