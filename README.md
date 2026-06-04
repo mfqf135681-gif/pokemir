@@ -142,7 +142,7 @@ phash 当独立 key 不行(跨侧名字渲染镜像,hamming 跨人/同人重叠)
 | **`pipeline/`** | 核心管线(4942 行) | `orchestrator.py`(实时主循环,~2800 行) · `reconstruct.py`(§15 砖1:stack序列→动作) · `solver.py`(砖2:裁幻影) · `digit_ocr.py`(模板数字识别核) · `conservation.py`(守恒判级) · `detector.py`(状态机/手边界) · `state/`(SeatLifecycle/HandPhase,**未接入**) · `io/`(异步 DB/diag 队列,**未接入**) |
 | **`recognition/`** | 识别层(Win) | `ocr.py`(OCREngine,EasyOCR 包装,gpu/allowlist/batch) · `cards.py`(CardRecognizer:CNN→SmolVLM→色彩+OCR 三级) · `cnn_classifier.py`(自训 CNN,rank/suit/iscard 三头) · `vision.py`(SmolVLM-256M 备用) · `actions.py`(动作文本解析) |
 | **`capture/`** | 截屏 + ROI | `screen.py`(ScreenCapturer,mss) · `roi.py`(ROIManager/TableROIs/SeatROI,读 JSON) |
-| **`rois/`** | ROI 配置 | `party_poker_8.json` / `_9.json`(每座 stack/action/amount/fold_area/id/cards/timer/win_amount/button_indicator/card_marker;表级 pot_size)。8座=hero坐下,9座=观战(hero卡 null) |
+| **`rois/`** | ROI 配置 | `party_poker_8.json` / `_9.json`(每座 stack/action/amount/fold_area/id/cards/timer/win_amount/button_indicator/card_marker;表级 pot_size)。8座=hero坐下,9座=观战(hero卡 null)。**几何上左右座近乎镜像(轴 x≈727)、各 ROI 可由 card_marker 锚 + 偏移模板参数化派生**(见 `tools/roi_derive.py`),仅中柱座 s0/s4 + amount 需手框 |
 | **`models/`** | 模型权重 | `card_cnn.pth`(自训,~1MB) · `easyocr/`(~120MB,craft+中英) |
 | **`events/`** | 领域模型 + 推断 | `models.py`(ActionType/Street/Position 枚举,Hand/ActionEvent 数据类) · `normalizer.py`(`infer_action_from_delta`/`compute_confidence` 从 stack/pot delta 推动作+物理矛盾兜底) · `diag.py`(诊断遥测) |
 | **`storage/`** | ORM + 仓储 | `models.py`(SQLAlchemy 表) · `database.py`(engine/session,读 `DB_DSN_SYNC`) · `repository.py`(Hand/ActionEvent CRUD) |
@@ -171,7 +171,7 @@ phash 当独立 key 不行(跨侧名字渲染镜像,hamming 跨人/同人重叠)
 | 数字/识别探针 | **`digit_probe.py`**★ | 数字识别配方工具(采模板/自检/`--verify`核对/`--check`跨录像验/`--diagnose`) | Win |
 | | `bench_ocr.py`/`bench_cnn.py` | OCR/CNN 吞吐 benchmark | Win |
 | | `diagnose_recognition.py` | 卡牌识别诊断 | 任意 |
-| ROI/几何 | `roi_config.py`(框选)/`roi_geom.py`(纯坐标核) | 配 ROI | Win / Linux |
+| ROI/几何 | `roi_config.py`(框选 + `--verify [--element X] [--frame 帧]` 逐元素叠帧核)/`roi_geom.py`(坐标回映 + 镜像/偏移原语)/**`roi_derive.py`**(参数化派生:card_marker 锚 + 模板 + 镜像 → 消手框抖动、立可迁移几何模型;默认 `--dry-run`,`--write` 出 `_derived.json` 不覆盖生产) | 配 / 派生 ROI | Win 框选 / Linux 派生 |
 | 标注/训练 | `train_card_cnn.py`/`label_showdown.py`/`label_baseline.py`/`shrink_cards.py`/`capture_empty_seat_baseline.py` | CNN 数据+训练 | Win / 任意 |
 | 玩家 ID | `id_phash.py`(phash 验证)/`find_player_aliases.py`(别名合并) | ID | Win / Linux |
 | 活跃集 | `active_set.py` | phash→在手区间(库,被 replay 消费) | Linux |

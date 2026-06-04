@@ -262,6 +262,15 @@ def main():
     parser.add_argument("--window", default="", help="Window title substring to find (e.g. 'Poker' or 'GGPoker')")
     parser.add_argument("--verify", action="store_true", help="Preview existing ROI config")
     parser.add_argument(
+        "--frame",
+        type=str,
+        default=None,
+        help="(配 --verify)把 ROI 叠在【录制帧 PNG】上而非实时屏幕——对着建 profile "
+             "那次的已知好帧核派生框,避免 live 窗口分辨率不一致的假警报。"
+             "例:--verify --name party_poker_8_derived --element stack "
+             "--frame data/recordings/20260602_170343/frames/f_000100.png",
+    )
+    parser.add_argument(
         "--field",
         default=None,
         choices=sorted(VALID_FIELDS),
@@ -359,15 +368,21 @@ def main():
             return 1
         with open(output_path, encoding="utf-8") as f:
             data = json.load(f)
-        # Find window if title saved
-        if data.get("window_title"):
-            if not capturer.find_window_by_title(data["window_title"]):
-                print(f"WARNING: Window '{data['window_title']}' not found, using monitor")
-                capturer.select_monitor(1)
+        if args.frame:  # 叠在录制帧上(对着已知好帧核,不受 live 窗口分辨率影响)
+            img_bgr = cv2.imread(args.frame)
+            if img_bgr is None:
+                print(f"ERROR: 读不到帧 {args.frame}")
+                return 1
         else:
-            capturer.select_monitor(1)
-        img = capturer.capture()
-        img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            # Find window if title saved
+            if data.get("window_title"):
+                if not capturer.find_window_by_title(data["window_title"]):
+                    print(f"WARNING: Window '{data['window_title']}' not found, using monitor")
+                    capturer.select_monitor(1)
+            else:
+                capturer.select_monitor(1)
+            img = capturer.capture()
+            img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
         _draw_rois(img_bgr, data, element_filter=args.element)
         title_suffix = f" — element={args.element}" if args.element else ""
         cv2.imshow(f"ROI Preview — {data.get('window_title', args.name)}{title_suffix} (press any key)", img_bgr)
