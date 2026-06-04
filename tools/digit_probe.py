@@ -89,8 +89,9 @@ def main():
     ap.add_argument("--save-crops", default="",
                     help="把各 harvest 帧的 --seat crop 存 PNG(放大6x+红绿线标切割边界)供眼诊断")
     ap.add_argument("--dump-proj", action="store_true")
-    ap.add_argument("--normalize", action="store_true",
-                    help="每 crop 亮度归一(min-max 拉满量程)再 th/匹配 — 治发暗帧漏墨(类2)")
+    ap.add_argument("--no-normalize", dest="normalize", action="store_false",
+                    help="关闭亮度归一(默认开:min-max拉满量程,已验消解发暗+5/6+跨座三害)")
+    ap.set_defaults(normalize=True)
     ap.add_argument("--bootstrap", action="store_true",
                     help="pool 现有模板读全8座(起步),用户翻图只报错→纠错后建 per-seat 模板")
     ap.add_argument("--validate", type=int, default=0,
