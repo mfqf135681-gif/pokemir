@@ -38,6 +38,7 @@ def main():
     ap = argparse.ArgumentParser(description="玩家 ID phash 验证(零 OCR)")
     ap.add_argument("--session", required=True)
     ap.add_argument("--profile", default="party_poker_8")
+    ap.add_argument("--field", default="id", help="ROI 字段(默认 id;可 win_amount 等,验纹理/任意区)")
     ap.add_argument("--hash-size", type=int, default=16, help="phash 边长(16=256bit,名字细节够)")
     ap.add_argument("--decimate", type=int, default=50, help="每 N 帧采一次")
     ap.add_argument("--cluster-seats", default="",
@@ -51,7 +52,7 @@ def main():
 
     import cv2
     prof = json.loads((Path(_ROOT) / "rois" / f"{args.profile}.json").read_text(encoding="utf-8"))
-    id_rois = {s["seat_index"]: s["id"] for s in prof["seats"] if s.get("id")}
+    id_rois = {s["seat_index"]: s[args.field] for s in prof["seats"] if s.get(args.field)}
     fdir = Path(args.session) / "frames"
     mlines = (Path(args.session) / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
     frames = [json.loads(x) for x in mlines[1:] if x.strip()]
