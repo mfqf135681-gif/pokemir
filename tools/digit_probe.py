@@ -116,7 +116,9 @@ def main():
                     help="硬二值化:>bin_th纯白/否则纯黑,杀抗锯齿过渡块+纹路(都中灰)→只留数字白核")
     ap.add_argument("--bin-th", type=int, default=200, help="--binarize 阈值(默认200,只留近纯白)")
     ap.add_argument("--bg-frame", default="",
-                    help="静态背景参考帧(无内容帧):每ROI减背景纹理→前景凸出(纹理须静态)。给绝对/相对路径")
+                    help="静态背景参考帧(无内容帧):与背景相同的像素标黑、不同的留原值→只扣背景前景不失真")
+    ap.add_argument("--bg-tol", type=int, default=25,
+                    help="背景掩码容差:|内容-背景|<此 = 同 = 标黑(治静态纹理噪声;默认25)")
     ap.add_argument("--bootstrap", action="store_true",
                     help="pool 现有模板读全8座(起步),用户翻图只报错→纠错后建 per-seat 模板")
     ap.add_argument("--validate", type=int, default=0,
@@ -201,8 +203,9 @@ def main():
         l, t, w, h = roi
         crop = img[t:t + h, l:l + w]
         g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
-        if bg_gray is not None:  # 减静态背景纹理 → 纹理归0、前景(数字)凸出
-            g = cv2.absdiff(g, bg_gray[t:t + h, l:l + w])
+        if bg_gray is not None:  # 背景掩码:与背景相同(diff<tol)的像素→黑,不同的→留【原值】(前景不失真)
+            diff = cv2.absdiff(g, bg_gray[t:t + h, l:l + w])
+            g = np.where(diff >= args.bg_tol, g, np.uint8(0)).astype(np.uint8)
         if args.binarize:  # 硬二值:>bin_th=纯白(数字核),否则纯黑→杀抗锯齿过渡块+纹路(都中灰)
             return ((g > args.bin_th).astype(np.uint8) * 255)
         if args.normalize:  # 亮度归一:p2–p98 拉伸(杂散纯黑/白点不再主导 min-max→治暗黄字卡阈值)
