@@ -446,6 +446,8 @@ def main():
                     help="--dump-active:参考帧时刻秒(默认首帧);挑该 ref-seat 明确在手的帧")
     ap.add_argument("--active-th", type=int, default=8,
                     help="--dump-active:hamming ≤ 此 = 像牌背参考=在手(默认8/64)")
+    ap.add_argument("--active-at", default=None,
+                    help="--dump-active:逗号分隔时刻(秒),打印各时刻的活跃集(座集合),对你眼标的街末名单做街级核")
     ap.add_argument("--capture-marker-refs", action="store_true",
                     help="从 --from-image 逐座算 card_marker phash → 写入 profile 每座 card_marker_ref(持久参考,脱离 ref-t)")
     ap.add_argument("--from-image", default=None,
@@ -708,6 +710,7 @@ def main():
         print(f"\n=== 活跃集(card_marker 牌背,每座对自己参考,不OCR)===")
         src = "profile 存档 card_marker_ref(持久)" if stored_ref else f"现取 ref-t≈{ref_t:.1f}(本局)"
         print(f"  参考源:{src} | th={args.active_th}")
+        per_seat_intervals = {}
         for s in sorted(per_seat_hash):
             if not per_seat_hash[s]:
                 continue
@@ -718,10 +721,20 @@ def main():
             samples = [(t, _hamming(h, ref_hash_s)) for (t, h) in per_seat_hash[s]]
             hams = [hm for (_, hm) in samples]
             ivs = _active.active_intervals(samples, th=args.active_th, min_run=2)
+            per_seat_intervals[s] = ivs
             med = sorted(hams)[len(hams) // 2]
             n_in = sum(1 for hm in hams if hm <= args.active_th)
             print(f"  seat{s}: hamming[min{min(hams)}/中{med}/max{max(hams)}] 在手{n_in}/{len(hams)}帧"
                   f" | 在手区间 {[(round(a, 1), round(b, 1)) for a, b in ivs]}")
+        if args.active_at:
+            print(f"\n  === 指定时刻活跃集(街级核:对你眼标的街末名单)===")
+            for tok in args.active_at.split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                t = float(tok)
+                aset = sorted(_active.active_set_at(t, per_seat_intervals))
+                print(f"    @t{t:.1f}: 活跃座 {aset}")
         print("\n判读:每座对自己参考 → 在手段 hamming≈0、弃/空/摊牌段高,应两极(bimodal)。")
         print("  ⚠️ 某座若【全程低】= 它在 ref-t 其实没在手(参考误取成弃/空态)→ 换 --marker-ref-t 到刚发牌帧。")
         print("  ⚠️ 摊牌时 marker 被显牌占 → 在手区间止于摊牌(下注街内有效)。")
