@@ -307,7 +307,8 @@ def main():
             print(f"  已核真值写入 {args.verify_out}({len(lines)} 帧;含准确率+纠正明细)")
 
     # ── --check:拿已核真值文件当真相,跑工具 diff,列出错项(零重验,可跨录像)──
-    if args.check:
+    # 注:--diagnose 优先(它也吃 --check 文件当诊断目标),故此处排除 diagnose。
+    if args.check and not args.diagnose:
         pool = _pool()
         ok = bad = 0
         misses = []
