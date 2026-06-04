@@ -66,6 +66,27 @@ def main():
             l, t, w, h = roi
             per_seat[s].append(_phash(img[t:t + h, l:l + w], args.hash_size))
 
+    # ── --frames "文件:座,文件:座":直接 phash 指定帧的指定座,两两 hamming(零切半零众数零猜)。
+    if args.frames:
+        import cv2
+        items = []
+        for tok in args.frames.split(","):
+            fn, s = tok.split(":")
+            s = int(s)
+            img = cv2.imread(str(fdir / fn.strip()))
+            if img is None:
+                print(f"  读不到 {fn}"); continue
+            l, t, w, h = id_rois[s]
+            ph = _phash(img[t:t + h, l:l + w], args.hash_size)
+            items.append((fn.strip(), s, ph))
+            print(f"  {fn.strip()} s{s}: popcount={bin(ph).count('1')}")
+        print("\n两两 hamming:")
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                fa, sa, pa = items[i]; fb, sb, pb = items[j]
+                print(f"  {fa}s{sa} ↔ {fb}s{sb}: {_ham(pa, pb)}/{bits}")
+        return
+
     # ── --cross "L:R,...":用已知时序比对同玩家(L 前半在座 ↔ R 后半在座)。治聚类撞共同态。
     if args.cross:
         def half_mode(seq, which):
