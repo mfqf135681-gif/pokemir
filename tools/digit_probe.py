@@ -158,8 +158,8 @@ def main():
         print("\n读完按 '帧名=,,,,,,seat6,seat7' 报我(只填 6、7 座,前面 6 个逗号留空)。")
         return
 
-    if not (args.harvest or args.harvest_file or args.harvest_src or args.scan):
-        print("需要 --harvest / --harvest-file / --harvest-src / --harvest-assist N / --scan N。"); return
+    if not (args.harvest or args.harvest_file or args.harvest_src or args.scan or args.diagnose):
+        print("需要 --harvest / --harvest-file / --harvest-src / --harvest-assist N / --scan N / --diagnose。"); return
 
     import cv2
 
