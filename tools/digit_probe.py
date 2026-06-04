@@ -54,8 +54,10 @@ def main():
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--seat", type=int, default=0)
     ap.add_argument("--field", default="stack")
-    ap.add_argument("--harvest", required=True,
+    ap.add_argument("--harvest", default="",
                     help='多座采模板:"帧=v0,v1,…,v7; 帧2=…"(一帧里 seats 0..N 的 stack 真值,同字体凑 0-9)')
+    ap.add_argument("--harvest-assist", type=int, default=0,
+                    help="从全段 manifest 均匀挑 N 帧打文件名(供眼裁真值,跨整段保证数字多样性);打完即退")
     ap.add_argument("--decimate", type=int, default=10)
     ap.add_argument("--ink-th", type=int, default=150)
     ap.add_argument("--gap-th", type=int, default=0)
@@ -64,6 +66,25 @@ def main():
     ap.add_argument("--score-th", type=float, default=0.6)
     ap.add_argument("--dump-proj", action="store_true")
     args = ap.parse_args()
+
+    # ── --harvest-assist:全段均匀挑 N 帧打文件名(纯 manifest,无 cv2),供眼裁真值 ──
+    if args.harvest_assist > 0:
+        mlines = (Path(args.session) / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+        frames = [json.loads(x) for x in mlines[1:] if x.strip()]
+        n = args.harvest_assist
+        if len(frames) <= n:
+            picks = frames
+        else:
+            step = (len(frames) - 1) / (n - 1) if n > 1 else 0
+            picks = [frames[round(i * step)] for i in range(n)]
+        print(f"全段 {len(frames)} 帧,均匀挑 {len(picks)} 帧(开这些读 seat6/seat7 持有筹码):")
+        for d in picks:
+            print(f"  {d['file']}   t={d.get('t_mono', 0):.0f}s")
+        print("\n读完按 '帧名=,,,,,,seat6,seat7' 报我(只填 6、7 座,前面 6 个逗号留空)。")
+        return
+
+    if not args.harvest:
+        print("需要 --harvest 或 --harvest-assist N。"); return
 
     import cv2
 
