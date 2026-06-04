@@ -691,6 +691,8 @@ def main():
             return
         fdir = Path(args.session) / "frames"
         per_seat_hash = {s: [] for s in marker_rois}      # {seat: [(t, avg_hash)]}(cv2,Win)
+        btn_rois = load_button_rois(profile_path)          # 一键自动核 A:庄家必在手(白占比,不OCR)
+        btn_series = []
         for k, (i, fn, t) in enumerate(frames):
             if t < args.start or t > args.end or (k % args.decimate):
                 continue
@@ -699,6 +701,12 @@ def main():
                 continue
             for s, (l, tt, w, h) in marker_rois.items():
                 per_seat_hash[s].append((t, _avg_hash(img[tt:tt + h, l:l + w])))
+            best_s, best_wf = None, 0.0
+            for s, (l, tt, w, h) in btn_rois.items():
+                wf = _white_frac(img[tt:tt + h, l:l + w], args.white_th)
+                if wf > best_wf:
+                    best_s, best_wf = s, wf
+            btn_series.append((t, best_s if best_wf > args.frac_th else None))
         # 参考:优先 profile 存档 card_marker_ref(持久,跨局通用);否则现取 ref-t(本局)
         pj = json.loads(Path(profile_path).read_text(encoding="utf-8"))
         stored_ref = {int(s["seat_index"]): int(s["card_marker_ref"])
@@ -726,6 +734,21 @@ def main():
             n_in = sum(1 for hm in hams if hm <= args.active_th)
             print(f"  seat{s}: hamming[min{min(hams)}/中{med}/max{max(hams)}] 在手{n_in}/{len(hams)}帧"
                   f" | 在手区间 {[(round(a, 1), round(b, 1)) for a, b in ivs]}")
+        # 一键自动核 A(不OCR,零手工):庄家(按钮位)开局必在手 → 断言 dealer ∈ 活跃集
+        starts = collapse_changes(btn_series)              # [(t, dealer_seat|None)]
+        checks = [(t, d) for (t, d) in starts if d is not None]
+        if checks:
+            print(f"\n  === 一键自动核 A:庄家开局必在手(不OCR)===")
+            ok, bad = 0, []
+            for (t, dealer) in checks:
+                aset = _active.active_set_at(t + 2.0, per_seat_intervals)
+                if dealer in aset:
+                    ok += 1
+                else:
+                    bad.append((round(t, 1), dealer, sorted(aset)))
+            for (t, d, aset) in bad:
+                print(f"    ✗ hand@t{t} 庄家 seat{d} 在 t{t+2:.0f} 不在活跃集 {aset}")
+            print(f"    庄家在手:{ok}/{len(checks)} 手 " + ("✅ 全过" if not bad else f"⚠ {len(bad)} 手矛盾(上列,看是真快弃还是漏检)"))
         if args.active_at:
             print(f"\n  === 指定时刻活跃集(街级核:对你眼标的街末名单)===")
             for tok in args.active_at.split(","):
