@@ -443,10 +443,16 @@ def segment_hands(stack_series, community_series, config):
     # ⑤ +xx 结算时刻(win-phash,T130;hand-end≈边界,与按钮 hand-start 聚同簇)
     for w in (config.get("win_ends") or []):
         cand.append((w, "win"))
-    # 交叉印证 → 真边界 → 窗口
-    bounds = corroborate_boundaries(
-        cand, cluster_win=config.get("boundary_merge", 6.0),
-        anchor="button", min_signals=config.get("min_corroborate", 2))
+    # 切手:**按钮权威**——按钮在场时【只用按钮边界】(已 monotonic+debounce),其余信号
+    #   不去切按钮确认的手(防 payout/公共牌抖动把按钮确认的 1 手从中间错切,= T139 回归点)。
+    #   按钮缺席时才用多信号交叉印证(≥2)补位。按钮漏整手的 gap-fill 留后续(需 gap 长度阈,慎)。
+    button_bounds = sorted(t for (t, sig) in cand if sig == "button")
+    if button_bounds:
+        bounds = button_bounds
+    else:
+        bounds = corroborate_boundaries(
+            cand, cluster_win=config.get("boundary_merge", 6.0),
+            anchor="button", min_signals=config.get("min_corroborate", 2))
     cuts = sorted(set([t0] + [b for b in bounds if t0 < b < tN] + [tN + 0.01]))
     return [(cuts[i], cuts[i + 1]) for i in range(len(cuts) - 1) if cuts[i + 1] - cuts[i] > 0.5]
 
