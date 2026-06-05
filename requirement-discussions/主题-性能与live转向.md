@@ -1,8 +1,9 @@
 # 主题:性能与 live 转向(破 1Hz + 走出温室)
 
-> 最近更新:2026-06-05 立
+> 最近更新:2026-06-05 立 + 当日复盘(context7 官方源校验 + 新增截屏盲区)
 > 涉及讨论:1 份(2026-06-05 讨论 + 代码侦察,本文即正文,无 archive)
-> 当前状态:**讨论 + 读码侦察快照,未实现(推断 + 离线 n=1,live 数未进)**。下一步 = Stage 0 三个数定盘。
+> 当前状态:**讨论 + 读码侦察快照,未实现(推断 + 离线 n=1,live 数未进)**。下一步 = Stage 0 **全 tick 拆解**定盘。
+> **校验来源标注**:`(官方)`=context7 官方文档证实;`(实测)`=本仓库 A/B;`(代码)`=读源码事实;`(博客/待验)`=网络博客,中等可信,需本地实测。
 
 关联:[[2026-06-01_95pct-constraint-solver-paradigm]]、[[主题-识别栈]]、[[主题-基础设施]]、[[主题-产品形态]]、[[主题-DDD架构]]。
 关联记忆:[[digit-ocr-stack-recipe]]、[[constraint-solver-paradigm]]、[[data-reliability-50-70-percent]]。
@@ -13,7 +14,7 @@
 
 | 时间 | 子主题 | 状态 | 关键决策 | 原文 |
 |:---|:---|:---|:---|:---|
-| 2026-06-05 | live 转向 + tick 性能作战图(含参照差分闸门) | 讨论定向,待实现 | 走出温室 / 配方替 OCR 数字区 / 三杠杆破 1Hz / 闸门列 Stage 2 | 本文正文 |
+| 2026-06-05 | live 转向 + tick 性能作战图(含参照差分闸门) | 讨论定向,待实现 | 走出温室 / 配方替 OCR 数字区 / **四杠杆**破 1Hz(+截屏整帧化)/ 闸门列 Stage 2 / Stage 0 = 全 tick 拆解 | 本文正文 |
 
 ---
 
@@ -32,6 +33,7 @@
 - **死因(用户确认)**:tick 卡 1Hz,怎么优化都破不了。
 - **根因**:EasyOCR **既是准度天花板**(~75% 且严重不准)**又是速度地板**(1Hz)——两头堵在同一块石头。100ms 抠是治症状没碰病因(这活不该用 EasyOCR)。
 - **配方是钥匙**:对数字区又快又准,同一动作把两堵墙一起推倒,不是 tradeoff。
+  - **为什么 EasyOCR 啃不动孤立数字(官方源,①)**:EasyOCR 两段 = `Reader.detect()`(CRAFT/DBNet18)+ `Reader.recognize()`(CRNN);`detect()` 官方参数含 `min_size=20` / `text_threshold=0.7` / `low_text=0.4` —— **孤立小数字在检测段就可能因不达阈值被丢框 → 识别段根本不运行 → 返回空**(官方 `/jaidedai/easyocr`)。和我们孤立"0"→`''`、多位数→读对 **(实测)** 对得上。**配方无检测段、不受这些阈值摆布 → 能命中**。(另:理论上调 `detect()` 阈值也能救孤立数字,但配方更干净,不走那条。)
 - **"复用老管线+新桩基"= 定点换发动机,不是重建**(前提:封存死因确是性能 → 已确认)。
 - **双 OCR(注意力)为什么死**:精心调度错的工具,且和 §15"密集全读"对撞。教训:**发现自己在为昂贵操作设计配给系统时,先问"它非得这么贵吗"**。
 
@@ -42,10 +44,19 @@
 - **已自带体检仪**:每 tick per-phase 计时 + 打日志(`tick_ms`/`pct_of_tick`,`orchestrator.py:290-493`)——跑起来自报谁慢。注释留有"seat_actions ~410ms 未计时 gap"。
 - **名字已 throttle**:`capture_ids` 每 8 tick 才读(`orchestrator.py:391`)——"名字移出热路径"老管线早做了。
 
-**1Hz 真凶(读码推断,待实测):**
-- 每座 OCR:`seat_stack/amount/action_ocr` × 8 座,每 tick 二十几次神经网络调用。
+**⚠️ 1Hz 真凶不是单一(复盘修正):两块同级嫌疑,且其一非 OCR。**
+
+*嫌疑甲 — 每座 OCR(读码推断,待实测):*
+- 每座 OCR:`seat_stack/amount/action_ocr` × 8 座,每 tick 二十几次神经网络调用(detect+recognize 两段)。
 - 数字集成点干净:`orchestrator.py:2022-2092 / 1652-1686 / 1290-1299`(均 `self.ocr.read_text(stack_area/amount_area)`)。
 - **动作词 OCR 不能顺手砍**:缠在 `detector.py:239 check_action_change` 触发器、且有平行 `events/normalizer.py:infer_action_from_delta`。数字能干净换,动作词缠着。
+
+*嫌疑乙 — 每 ROI 独立截屏(代码 + 官方,复盘新发现,非 OCR):*
+- `orchestrator.py` 有 **37 个 `capture_roi` 调用点**,`screen.py:143` 每个都是一次**独立 `self._get_sct().grab(region)`** **(代码)**;
+- 官方文档 `/websites/python-mss_readthedocs_io` 证实:**每 `grab(region)` = 一次独立捕获、mss 本就帧率受限**(官方带 fps benchmark 示例)**(官方)**;每 tick 几十次独立 grab → **很可能就是那"~410ms 未计时 gap"的真身,而且它非 OCR**。
+- **含义:只换 OCR 未必破 1Hz**——截屏方式是平行瓶颈(治法见 §4 杠杆 D)。
+- (具体 ms / DXcam 对比是博客来的、**官方无 → 待本地实测**,见 §5/§6。)
+
 - **死复杂度**:`ATTENTION_MODE`/双 OCR/Phase1.5 默认全关(`config.py:43`)——绕开,将来删。
 
 **参照差分 / 闸门现状(用户"基线对比"想法的实情):**
@@ -59,36 +70,54 @@
 
 | 杠杆 | 作用 | 状态 |
 |---|---|---|
-| **A 换配方** | 每次读**更便宜** | 件已造好(`pipeline/digit_reader.py`,replay 验过) |
+| **A 换配方** | 每次读**更便宜**(治 OCR) | 件已造好(`pipeline/digit_reader.py`,replay 验过) |
 | **B 内容闸门(参照差分)** | 空区**根本不读** + 脏区**挡门外** | 半成品+孤儿,**待建**(用户想法,一等公民) |
 | **C 变化闸门** | 上 tick 没变**不深处理** | 全新,概念最简单 |
+| **D 截屏整帧化(③)** | **几十次独立 grab → 1 次整帧 grab + numpy 切片**(治非-OCR 那块) | 待建;replay 已是此模式(`cv2.imread` 一次再切) |
 
-> A = "读得便宜",B/C = "少读/不读"。**相乘才是破 1Hz 的完整拳。**
+> A = "读得便宜",B/C = "少读/不读",**D = "少抓"**。前三治 OCR/识别,**D 治每 tick 几十次独立截屏**(嫌疑乙)。**四根都得算,只动 A 未必破 1Hz。**
+> **D 备选**:Windows 上 **DXcam** 比 mss 更快(**博客/待验**,官方无;我们运行时正是 Windows)→ 若整帧化后截屏仍是瓶颈再上。可先用官方 `MSS.performance_status` 量截屏成本。
 
 **杠杆 B 的两条用途(用户直觉的具现):**
 - **B1 空 ROI → 跳过 OCR(速度)**:amount 区绝大多数 tick 对绝大多数座是空的却每 tick 被读 → 微秒级"空就跳"。砍掉的读可能比换配方还多。描述子用**墨占比/与参照均差**(比 phash 更便宜更准)。
 - **B2 遮挡/横幅 → 拒读(精度)**:区域既不像"空"也不像"该有内容" = 外来物盖着(滚动公告横幅,一条亮带同扫一排座)→ 拒这批读。**廉价杀"真幻影"FP**(可能不必等求解器 #226)。phash 适合这类图案判定。
-- **车道**:它是**在不在/什么状态**的探测器,**不是内容读取器**(`128`/`228` phash 近似,分不出数字)。它管闸门/路由,识别管读数。
+- **车道**:它是**在不在/什么状态**的探测器,**不是内容读取器**——粗哈希**未必可靠区分相近多位数**(如 128/228),靠它读数不稳。它管闸门/路由,识别管读数。
 - **坑**:亮度(弃牌变暗)/动画会骗它 → 需亮度归一 + 时序稳定(状态持续几帧才认);参照按桌皮/座采集。
 
 ### §5 落地路线(分阶段)
 
-- **Stage 0 — 离线微基准(最先、最便宜、无温室)**。量三个数定盘:① 配方 vs EasyOCR 读同批 ROI 的 ms;② `seat_action_ocr` 占 tick 比;③ **amount/stack 每 tick 读空频率**(量杠杆 B 天花板)。
+- **Stage 0 — 全 tick 拆解基准(④,最先、最便宜)**。不能只测 OCR,否则换完 OCR 才发现卡在截屏。要量:
+  - **(a) 全 tick 成本分解**:截屏 / OCR / DB / 那"~410ms gap" 各占多少(用现成 per-phase 计时 + 把 `capture_roi` 单独计时;截屏可用官方 `MSS.performance_status`);
+  - **(b) 配方 vs EasyOCR 的 ms**——**且公平对比**:配方(CPU)vs EasyOCR(**GPU + batch,即生产配置**,非 CPU 裸跑);配方成本**随 exemplar 池大小涨**(每格 × 全部样本做相关),必须实测不能假设"轻几个量级";
+  - **(c) `seat_action_ocr` 占 tick 比**(决定要不要单开动作词那仗);
+  - **(d) amount/stack 每 tick 读空频率**(量杠杆 B 天花板);
+  - **(e) 几十次独立 grab vs 整帧抓一次 的 ms 差**(量杠杆 D 天花板)。
+  - 这几个数一起,把"破 1Hz 到底靠哪根杠杆、各值多少"定死。
 - **Stage 1 — 杠杆 A:换配方**。`POKEMIR_DIGIT_RECIPE` flag 守卫(默认关、一键回滚),init 按 profile 加载 `DigitReader`;数字区三处接"**配方为主 + EasyOCR 仅 None 兜底**";动作词不动。
 - **Stage 2 — 杠杆 B:内容闸门(用户想法,本路线一等阶段)**。接回孤儿 baseline JSON(或改用墨占比参照);活跃座**逐区读前**加微秒级内容闸门(**第一刀 = `amount_area`**);flag 守卫(如 `POKEMIR_REGION_GATE`)可单开、可叠 A;B2 横幅检测为同层精度副产物。
 - **Stage 3 — live 实测(真 test)**。A(+B)开,真桌跑几分钟,读自报 `tick_ms` → 破不破 1Hz;眼校配方在**真实渲染**下准度(n=1 录像≠live)。
-- **Stage 4 —(若验成)再榨 + 清债**。杠杆 C 变化闸门;砍额外 250ms sleep;删死的 `ATTENTION_MODE`。
+- **杠杆 D 截屏整帧化(独立、低风险,按 Stage 0 (a)/(e) 结果排序)**。把热路径几十次 `capture_roi` 改成"整帧 grab 一次 + numpy 切片"(replay 已是此模式),纯重构、不依赖 OCR 决策;若 Stage 0 显示截屏占大头,**它可能比换配方更先做**。
+- **Stage 4 —(若验成)再榨 + 清债**。杠杆 C 变化闸门;砍额外 250ms sleep;(Windows 截屏仍瓶颈则评估 DXcam);删死的 `ATTENTION_MODE`。
 
 ### §6 待拍板 & 诚实 caveat
 
 **待拍板:** ① 数字读法:**配方为主+兜底**(荐)vs 纯替换;② 动作词 OCR:**本轮不碰、Stage 0 先量占比**(占比大才单开下一仗:封闭词表模板化 / 靠 stack 跌幅推动作)。
 
-**caveat:** 全是**读码推断 + 离线 n=1**,live 数未进;**~410ms 未计时 gap** 可能非 OCR 成本(换 OCR/加闸门不一定全消);模板 / baseline **按桌皮**;配方 **live 渲染准度未验**。
+**caveat(标清可信度):**
+- 全是**读码推断 + 离线 n=1**,live 数未进;模板 / baseline **按桌皮**;配方 **live 渲染准度未验**。
+- **"配方比 EasyOCR 轻几个量级"= 未实测假设**,配方成本随 exemplar 池大小涨 → Stage 0 (b) 实测,不当结论。
+- **"~410ms gap = 截屏" 是强假设但未实测**;**mss 具体 ms / DXcam 快 3-4 倍 = 博客/待验**(官方文档无)→ 用官方 `performance_status` 本地量。
+- **粗哈希分不出相近多位数(128/228)= 一般性论断**,非逐例实测;闸门论点不依赖该具体例。
+- **高帧反噬**:tick 越快抓到动画中间帧越多 → live 同样靠 plateau/时序融合滤(非越快越好)。
+- **DB 每 tick 写库成本**(`db_total_ms` 已计时)= 另一块非 OCR 成本,Stage 0 (a) 顺带量。
+- **可用性**:截屏需 WePoker 窗口可见/前台 → 跑着时那块屏你用不了(live 实操约束,未解)。
+
+**校验小结(本次复盘)**:EasyOCR 两段架构 + `detect()` 阈值丢框机制 = **官方证实**;mss "每 grab 一调用/帧率受限" = **官方证实**;mss 具体数字 / DXcam = **博客,降级待本地验**。孤立"0"读空 = **本仓库 A/B 实测**。
 
 ---
 
 ## 关联记忆 / 待办
 
-- **待办**:Stage 0 三个数(配方 vs OCR ms / action_ocr 占比 / 读空频率)→ 定盘 → 走出温室。
+- **待办**:Stage 0 **全 tick 拆解**(截屏/OCR/DB/gap 分解 + 配方vsOCR ms + action占比 + 读空频率 + 整帧vs逐ROI grab)→ 定盘哪根杠杆各值多少 → 走出温室。
 - **现成件**:`pipeline/digit_reader.py`(杠杆 A)、`tools/build_digit_templates.py`、`tools/probe_zero.py`、孤儿 `tools/capture_empty_seat_baseline.py`(杠杆 B 待接)。
 - **关联记忆**:[[digit-ocr-stack-recipe]](配方)、[[constraint-solver-paradigm]](§15 stack-centric / 动作靠跌幅推)、[[data-reliability-50-70-percent]](95% 捕获主线)、[[hand-segmentation-corroboration]](离线夹具 recall 100% 金标准)。
