@@ -630,6 +630,17 @@ def _self_test():
     assert acts_s == [(100, 2)], acts_s  # 首派彩@8 前 2s 起判结算噪声 → 删 @7,留 @2
     print(f"✅ §19.12③ 结算抑制:锚首派彩,删结算期噪声 drop,留真 bet {acts_s}")
 
+    # §19.12+ 回归:手中段【0→X 假 rise】(某座起手补0/重买/读 artifact)绝不锚结算 →
+    #   不得把 cutoff 拉进手中误删后面真实下注(实测 hand5 seat6 turn74 被吞的根因)。
+    ss_zero_rise = {
+        0: [(0, 500), (1, 500), (10, 400), (11, 400)],   # 真 bet 100 @10
+        1: [(0, 0), (1, 0), (5, 200), (6, 200)],          # 0→200 @5 = 补码/重买(prev=0,不锚)
+    }
+    res_z = reconstruct(ss_zero_rise, [(0, 0)], {"tol": 2.0, "pot": 0, "seats": [0, 1], "settle_guard": 2.0})
+    acts_z = [(round(a.chips_in), round(a.t), a.seat) for a in res_z.actions]
+    assert acts_z == [(100, 10, 0)], acts_z  # 修前:0→200@5 把 cutoff 拉到 3 → bet@10 被误删 → []
+    print(f"✅ §19.12+ 0→X假rise不锚结算:手中段补0 rise 不误删真 bet {acts_z}")
+
     # T132 按钮切手:button-seat 移座 → hand-start(忽略 None 过渡)
     btn = [(0, 6), (1, None), (5, 7), (6, 7), (10, None), (11, 0), (20, 0), (21, None), (22, 1)]
     starts = hand_starts_from_button(btn, merge=3.0)
