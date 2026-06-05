@@ -60,24 +60,39 @@ def load_manifest(session):
 
 
 # ── 盲适配器(Win-only,OCR/CNN;--mock 跳过)───────────────────────────
-def read_stack(img, roi, ocr):
-    """裁 stack ROI → OCR 数字 → float|None。⚠️ Win-only,未在 Linux 验。"""
+def read_stack(img, roi, ocr, reader=None):
+    """裁 stack ROI → OCR 数字 → float|None。⚠️ Win-only,未在 Linux 验。
+    reader(DigitReader):EasyOCR 读空时兜底用配方读(治孤立0等 CRAFT 漏检)。"""
     l, t, w, h = roi
     crop = img[t:t + h, l:l + w]
     txt = ocr.read_text(crop, allowlist="0123456789")
     digits = "".join(c for c in txt if c.isdigit())
-    return float(digits) if digits else None
+    if digits:
+        return float(digits)
+    if reader is not None:  # 兜底:EasyOCR 读空 → 配方切格读(孤立0=全下)
+        v = reader.read(crop)
+        if v is not None:
+            return float(v)
+    return None
 
 
-def read_stack_ex(img, roi, ocr):
+def read_stack_ex(img, roi, ocr, reader=None):
     """BUG2/R15:读 stack,若命中 '%'(all-in 显胜率,筹码被盖)→ (None, True);否则 (float|None, False)。
-    allowlist 含 % 以侦测;⚠️ 单用途 stack ROI 才可这样收窄(见 ocr-allowlist 红线)。Win-only。"""
+    allowlist 含 % 以侦测;⚠️ 单用途 stack ROI 才可这样收窄(见 ocr-allowlist 红线)。Win-only。
+    reader(DigitReader):EasyOCR 读空(非%)时兜底用配方读(治全下"0"晚注册→街错FP)。"""
     l, t, w, h = roi
-    txt = ocr.read_text(img[t:t + h, l:l + w], allowlist="0123456789%") or ""
+    crop = img[t:t + h, l:l + w]
+    txt = ocr.read_text(crop, allowlist="0123456789%") or ""
     if "%" in txt:
         return None, True
     digits = "".join(c for c in txt if c.isdigit())
-    return (float(digits) if digits else None), False
+    if digits:
+        return float(digits), False
+    if reader is not None:  # 兜底:EasyOCR 读空 → 配方读(治全下"0"晚注册→街错FP)
+        v = reader.read(crop)
+        if v is not None:
+            return float(v), False
+    return None, False
 
 
 def _white_frac(crop, white_th):
@@ -96,14 +111,27 @@ def count_community(img, community_rois, white_th=170, frac_th=0.12):
     return n
 
 
+def _load_digit_reader(path):
+    """加载 stack 兜底模板(DigitReader)。path 空/不存在 → None(不兜底=原 EasyOCR 行为)。"""
+    if not path:
+        return None
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
+    import digit_reader
+    r = digit_reader.DigitReader.load(path)
+    print(f"  [兜底] 数字模板 {path} 已加载(EasyOCR 读空时配方补读;字符 {sorted(r.exemplars)})")
+    return r
+
+
 def build_series_real(session, frames, stack_rois, community_rois, start, end, decimate,
-                      white_th=170, frac_th=0.12, button_rois=None):
+                      white_th=170, frac_th=0.12, button_rois=None, digit_templates=None):
     """Win 路径:逐帧读 → stack_series / community_series (+ button_series 若给 button_rois)。
     公共牌用白占比(不用 CNN)。T138:按钮也读 → 守恒路径也能用按钮权威切手
-    (治公共牌假 reset 把 1 手切碎)。"""
+    (治公共牌假 reset 把 1 手切碎)。digit_templates:stack 兜底模板路径(治孤立0)。"""
     import cv2
     from recognition.ocr import OCREngine
     ocr = OCREngine(gpu=True, name="replay")
+    reader = _load_digit_reader(digit_templates)
     stack_series = {s: [] for s in stack_rois}
     allin_marks = {s: [] for s in stack_rois}  # BUG2:stack 区显胜率% 的时刻 → all-in
     community_series = []
@@ -116,7 +144,7 @@ def build_series_real(session, frames, stack_rois, community_rois, start, end, d
         if img is None:
             continue
         for s, roi in stack_rois.items():
-            v, is_ai = read_stack_ex(img, roi, ocr)
+            v, is_ai = read_stack_ex(img, roi, ocr, reader)
             stack_series[s].append((t, v))
             if is_ai:
                 allin_marks[s].append(t)
@@ -305,12 +333,15 @@ def build_fuse_series(session, frames, stack_rois, amount_rois, community_rois,
 
 
 def build_truth_series(session, frames, stack_rois, amount_rois, button_rois, community_rois,
-                       start, end, decimate, white_th=170, frac_th=0.12, card_marker_rois=None):
+                       start, end, decimate, white_th=170, frac_th=0.12, card_marker_rois=None,
+                       digit_templates=None):
     """§19/T130/T132 --truth:一遍读 stack(+all-in) + 下注区 amount + D按钮(白占比,切手) + 公共牌。
-    (去掉 win_amount OCR:+xx 跨桌不robust §19.11,切手改用 D 按钮亮度 §19.* / 省 8 次 OCR/帧)。"""
+    (去掉 win_amount OCR:+xx 跨桌不robust §19.11,切手改用 D 按钮亮度 §19.* / 省 8 次 OCR/帧)。
+    digit_templates:stack 兜底模板路径(EasyOCR 读空时配方补读,治孤立0=全下→晚注册街错FP)。"""
     import cv2
     from recognition.ocr import OCREngine
     ocr = OCREngine(gpu=True, name="replay")
+    reader = _load_digit_reader(digit_templates)
     stack_series = {s: [] for s in stack_rois}
     bet_series = {s: [] for s in amount_rois}
     allin_marks = {s: [] for s in stack_rois}
@@ -325,7 +356,7 @@ def build_truth_series(session, frames, stack_rois, amount_rois, button_rois, co
         if img is None:
             continue
         for s, roi in stack_rois.items():
-            v, is_ai = read_stack_ex(img, roi, ocr)
+            v, is_ai = read_stack_ex(img, roi, ocr, reader)
             stack_series[s].append((t, v))
             if is_ai:
                 allin_marks[s].append(t)
@@ -488,6 +519,8 @@ def main():
     ap.add_argument("--ante", type=float, default=None); ap.add_argument("--pot", type=float, default=0)
     ap.add_argument("--white-th", type=int, default=170, help="公共牌白像素阈值(三通道都>此=白)")
     ap.add_argument("--frac-th", type=float, default=0.12, help="白占比>此 = 该板位有牌")
+    ap.add_argument("--digit-templates", default="",
+                    help="stack 兜底模板 JSON(build_digit_templates.py 产):EasyOCR 读空时配方补读,治孤立0=全下晚注册街错FP")
     ap.add_argument("--mock", action="store_true", help="离线自测核(不读帧)")
     ap.add_argument("--dump-stacks", action="store_true",
                     help="只读+打印每座 stack 轨迹(验读取质量,不需真值/不跑 reconstruct)")
@@ -848,14 +881,15 @@ def main():
         cm_rois = load_card_marker_rois(profile_path) if args.p6 else None  # P-6 活跃集
         stack_series, bet_series, button_series, community_series, allin_marks, marker_hash = build_truth_series(
             args.session, frames, stack_rois, amount_rois, button_rois, community_rois,
-            args.start, args.end, args.decimate, args.white_th, args.frac_th, cm_rois)
+            args.start, args.end, args.decimate, args.white_th, args.frac_th, cm_rois,
+            digit_templates=args.digit_templates)
         hand_starts = _recon.button_moves_monotonic(button_series, num_seats=len(stack_rois))
         print(f"  D 按钮移座 {len(hand_starts)} 次(去抖+顺时针单调)→ 交叉印证切手")
     else:
         button_rois = load_button_rois(profile_path)  # T138:守恒路径也用按钮权威切手
         stack_series, community_series, allin_marks, button_series = build_series_real(
             args.session, frames, stack_rois, community_rois, args.start, args.end, args.decimate,
-            args.white_th, args.frac_th, button_rois)
+            args.white_th, args.frac_th, button_rois, digit_templates=args.digit_templates)
         hand_starts = _recon.button_moves_monotonic(button_series, num_seats=len(stack_rois)) if button_series else None
         if hand_starts:
             print(f"  D 按钮移座 {len(hand_starts)} 次(去抖+顺时针单调)→ 交叉印证切手(守恒路径)")

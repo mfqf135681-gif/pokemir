@@ -1,0 +1,132 @@
+r"""tools/build_digit_templates.py — 从真值文件采 stack 数字模板 → 存 JSON(供管线兜底读)。
+
+把 digit_probe 的"采模板"沉淀成一份【可加载的模板文件】,让 `read_stack` 能在 EasyOCR
+读空(孤立0等)时兜底用配方读。Win-only(cv2)。
+
+流程:① 读真值块(帧=v0,..,v7,只填有数字的座)→ 各座 stack ROI 灰度归一+列墨切格;
+       ② 若切格数==真值位数,glyph 按位打标签汇入共享 pool {char:[glyphs]};
+       ③ 存 JSON;④ 自检:回读每个 harvest 帧的座,报准确率(模板能否自洽复现)。
+
+⚠️ 复制粘贴友好:全短参数,真值走 --harvest-file(文件,不在命令行粘长串)。
+
+用法(Win,先 git pull):
+  .\.venv\Scripts\python.exe tools\build_digit_templates.py ^
+      --session data\recordings\20260603_121925 ^
+      --harvest-file tools\truth_digit_121925.txt ^
+      --out rois\digit_templates_party_poker_8.json
+"""
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "pipeline"))
+import digit_ocr  # noqa: E402
+import digit_reader  # noqa: E402
+
+
+def _parse_blocks(lines):
+    out = []
+    for blk in lines:
+        blk = blk.strip()
+        if not blk or blk.startswith("#") or "=" not in blk:
+            continue
+        fn, vals = blk.split("=", 1)
+        out.append((fn.strip(), [v.strip() for v in vals.split(",")]))
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description="采 stack 数字模板 → JSON(管线兜底读用)")
+    ap.add_argument("--session", required=True, help=r"采模板的录像目录")
+    ap.add_argument("--profile", default="party_poker_8")
+    ap.add_argument("--field", default="stack")
+    ap.add_argument("--harvest-file", action="append", default=[],
+                    help="真值文件(帧=v0,..,v7;可多次=多录像/多源密化)。多源时与 --session 列表一一对应")
+    ap.add_argument("--harvest-session", action="append", default=[],
+                    help="多源:各真值文件对应的录像(与 --harvest-file 同序);省则全用 --session")
+    ap.add_argument("--out", required=True, help="模板 JSON 输出路径")
+    ap.add_argument("--ink-th", type=int, default=digit_reader.INK_TH)
+    args = ap.parse_args()
+
+    import cv2
+
+    prof = json.loads((Path(_ROOT) / "rois" / f"{args.profile}.json").read_text(encoding="utf-8"))
+    seat_rois = {s["seat_index"]: s[args.field] for s in prof["seats"] if s.get(args.field)}
+
+    # 源列表:(录像frames目录, 真值块)
+    sessions = args.harvest_session or [args.session] * len(args.harvest_file)
+    if len(sessions) < len(args.harvest_file):
+        sessions += [args.session] * (len(args.harvest_file) - len(sessions))
+    sources = []
+    for tf, sess in zip(args.harvest_file, sessions):
+        blks = _parse_blocks(Path(tf).read_text(encoding="utf-8").splitlines())
+        sources.append((Path(sess) / "frames", blks, tf))
+
+    def gray_roi(fdir, fn, roi):
+        img = cv2.imread(str(fdir / fn))
+        if img is None:
+            return None
+        l, t, w, h = roi
+        return digit_reader._gray_normalize(img[t:t + h, l:l + w])
+
+    def cells_of(g):
+        return digit_ocr.segment_cells(digit_reader._col_ink(g, args.ink_th),
+                                       digit_reader.GAP_TH, digit_reader.MIN_GAP,
+                                       digit_reader.MIN_CELL_W, digit_reader.MAX_MERGE_W)
+
+    pool = {}            # {char: [glyph,...]} 共享 pool
+    harvested = []       # 供自检:(fdir, fn, seat, truth)
+    kept = skipped = 0
+    for fdir, blks, tf in sources:
+        for fn, vals in blks:
+            for si, val in enumerate(vals):
+                if not val or not val.isdigit() or si not in seat_rois:
+                    continue
+                g = gray_roi(fdir, fn, seat_rois[si])
+                if g is None:
+                    print(f"  ⚠️ 读不到 {fdir/fn}"); continue
+                cells = cells_of(g)
+                if len(cells) != len(val):
+                    print(f"  跳过 {fn} s{si} 真值'{val}'({len(val)}位)→切{len(cells)}格(不齐)")
+                    skipped += 1
+                    continue
+                for (x0, x1), ch in zip(cells, val):
+                    pool.setdefault(ch, []).append(g[:, x0:x1 + 1].copy())
+                harvested.append((fdir, fn, si, val))
+                kept += 1
+
+    have = sorted(pool)
+    miss = sorted(set("0123456789") - set(pool))
+    print(f"\n采到 pool:有 {have}(各字样本数 { {c: len(pool[c]) for c in have} })  缺 {miss}")
+    if miss:
+        print(f"  ⚠️ 缺数字 {miss} → 这些数字读不出。补:在真值文件里加含这些数字的帧。")
+
+    reader = digit_reader.DigitReader(exemplars=pool, ink_th=args.ink_th)
+    reader.save(args.out)
+    print(f"模板已存 {args.out}(score_th={reader.score_th}, ink_th={reader.ink_th})")
+
+    # 自检:回读每个 harvest 帧的座,断言==真值(模板自洽)
+    ok = bad = 0
+    bads = []
+    for fdir, fn, si, val in harvested:
+        img = cv2.imread(str(fdir / fn))
+        l, t, w, h = seat_rois[si]
+        got = reader.read(img[t:t + h, l:l + w])
+        if str(got) == val:
+            ok += 1
+        else:
+            bad += 1
+            bads.append((fn, si, val, got))
+    print(f"\n自检(回读 harvest 帧):对 {ok} / 错 {bad}")
+    for fn, si, val, got in bads[:20]:
+        print(f"  ✗ {fn} s{si} 真值'{val}' → 读 {got}")
+    if bad == 0:
+        print("✅ 模板自洽(回读全对)。下一步:替 replay 跑 --digit-templates 看全下0能否读出。")
+
+
+if __name__ == "__main__":
+    main()
