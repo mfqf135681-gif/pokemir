@@ -73,6 +73,8 @@ def main():
     ap.add_argument("--decimate", type=int, default=10, help="--find 每 N 帧扫一次")
     ap.add_argument("--limit", type=int, default=30, help="--find 最多报几帧")
     ap.add_argument("--ink-th", type=int, default=150)
+    ap.add_argument("--templates", default="",
+                    help="模板 JSON(build_digit_templates.py 产):用 DigitReader 实际读该0,验兜底能否补出")
     ap.add_argument("--out", default="probe_zero_crop.png", help="放大 crop 存盘路径")
     args = ap.parse_args()
 
@@ -139,6 +141,16 @@ def main():
               "配方可补(下一步:采 0 模板回读确认字符)。")
     else:
         print("    → 配方也没切出格:可能 ROI 真空 / 数字非白(调 --ink-th)/ 框没盖到 0。")
+
+    # C. 带模板实读(--templates):验兜底 DigitReader 能否把这个 0 读出来
+    if args.templates:
+        sys.path.insert(0, os.path.join(_ROOT, "pipeline"))
+        import digit_reader
+        rdr = digit_reader.DigitReader.load(args.templates)
+        v = rdr.read(crop)
+        print(f"\n[C] DigitReader(模板 {args.templates}, 字符 {sorted(rdr.exemplars)}).read → {v!r}"
+              + ("   ✅ 兜底读出!换配方读 stack 成立" if v is not None
+                 else "   ✗ 仍 None → 跨录像/跨座模板没迁过来(需补该侧座的0模板)"))
 
     # 放大 crop 存盘(6x,画切格红线)供眼裁
     vis = cv2.resize(crop, (crop.shape[1] * 6, crop.shape[0] * 6), interpolation=cv2.INTER_NEAREST)
