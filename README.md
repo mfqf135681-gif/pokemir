@@ -204,6 +204,8 @@ phash 当独立 key 不行(跨侧名字渲染镜像,hamming 跨人/同人重叠)
 | 旧实时管线(orchestrator,EasyOCR 增量推断) | ✅ **生产中**,已采 1549 手 |
 | 旧管线质量基准(整手守恒) | OK **21.3%** / CHECK 75% / 逐动作 silent 24.6%(`v_hand_conservation` 实测) |
 | §15 reconstruct / solver(砖1/砖2) | ✅ 纯逻辑自测过;⚠️ **未接入 live**(`STACK_PROBE` 是预留钩子,默认关) |
+| 切手(hand 分段) | ✅ **2026-06-04 修过切**:旧公共牌假 reset 把 1 手切碎(34 碎片 vs 13 真手)→ 改**多信号交叉印证**(按钮 anchor+≥2、去抖+顺时针单调)。**铁律:报守恒率先确认切手对(手数 vs 按钮移座数);conservation 必要不充分(空 OK 会掩盖切碎)** |
+| §15 回放守恒(13 真手,170343) | OK **61%**(切手修正后;碎片版曾虚报 47% 含 12 个"0动作大池"假象)。⚠️ n=13 单 session 不可外推;5 个 CHECK 待查(负 cm=输家下注没进末态/补码/边界,**末态取派彩后是对的**) |
 | 数字识别配方(digit_ocr) | ✅ 离线验证(stack~100%/amount~94%);⚠️ **未接入 live**,生产仍用 EasyOCR |
 | 守恒对比夹具(conservation + `--write-db`) | ✅ 本 session 建成,与 DB 视图 100% 同口径,闭环(Win 跑→写库→Claude 读) |
 | ROI 参数化模型(`roi_derive`,镜像派生) | ✅ **已启用**:统一版(列座 11 字段尺寸全统一+严格镜像)守恒读数与旧版**逐手 bit 等价**(零回归),已替换生产 `party_poker_8.json`。**本质=几何干净/可迁移,非提捕获率**。中柱 s0/s4 离群框(amount/id/fold_area/button)可选重框 |
