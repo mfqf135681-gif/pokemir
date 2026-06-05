@@ -20,9 +20,14 @@
 2. **多信号交叉印证 + 按钮硬约束**(42afaef,T139):
    - `button_moves_monotonic`:去抖(持有<min_hold=闪读丢)+ **顺时针单调**(新座=(旧+k)%
      num_seats,k∈[1,4];倒退/远跳=误读拒)。party_poker_8 座 index 已顺时针(0底→1/2/3左→4顶→5/6/7右)。
-   - `corroborate_boundaries`:候选按时间聚类,**含按钮 anchor OR ≥2 不同信号** 才算真边界
-     → 否决孤立假信号;**无按钮降级宽松**(单信号=旧并集)防欠切。
-   - `segment_hands` 重写:汇集 button/community/payout/ante/win_ends 候选 → 交叉印证。
+   - `corroborate_boundaries`:候选按时间聚类,含按钮 anchor OR ≥2 不同信号 才算真边界
+     (无按钮降级宽松防欠切)——**仅作按钮缺席时的 fallback**。
+   - `segment_hands`:**按钮权威**——按钮在场【只用按钮边界】(已 monotonic+debounce),
+     其余信号(community/payout/ante/win_ends)**不切按钮确认的手**;按钮缺席才用
+     `corroborate_boundaries` 补位。
+   - ⚠️ **过程教训(acd0c70 修)**:初版让交叉印证可越权切按钮确认的手 → payout(派彩+200)
+     + 公共牌河牌抖动(5→4→5)凑≥2 → 把 1 手错切成 2(用户验证抓出)。**按钮是切手最高
+     权威(每手必移+顺时针单调),其余信号只在按钮缺位补,不越权。**
 
 ## §4 影响(13 真手 vs 34 碎片)
 | 指标 | derived(碎) | btn(按钮·真) |
