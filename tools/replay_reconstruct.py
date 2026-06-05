@@ -849,18 +849,18 @@ def main():
         stack_series, bet_series, button_series, community_series, allin_marks, marker_hash = build_truth_series(
             args.session, frames, stack_rois, amount_rois, button_rois, community_rois,
             args.start, args.end, args.decimate, args.white_th, args.frac_th, cm_rois)
-        hand_starts = _recon.hand_starts_from_button(button_series)
-        print(f"  D 按钮移座 {len(hand_starts)} 次 → 按钮权威切手")
+        hand_starts = _recon.button_moves_monotonic(button_series, num_seats=len(stack_rois))
+        print(f"  D 按钮移座 {len(hand_starts)} 次(去抖+顺时针单调)→ 交叉印证切手")
     else:
         button_rois = load_button_rois(profile_path)  # T138:守恒路径也用按钮权威切手
         stack_series, community_series, allin_marks, button_series = build_series_real(
             args.session, frames, stack_rois, community_rois, args.start, args.end, args.decimate,
             args.white_th, args.frac_th, button_rois)
-        hand_starts = _recon.hand_starts_from_button(button_series) if button_series else None
+        hand_starts = _recon.button_moves_monotonic(button_series, num_seats=len(stack_rois)) if button_series else None
         if hand_starts:
-            print(f"  D 按钮移座 {len(hand_starts)} 次 → 按钮权威切手(守恒路径,治公共牌假reset切碎)")
+            print(f"  D 按钮移座 {len(hand_starts)} 次(去抖+顺时针单调)→ 交叉印证切手(守恒路径)")
         else:
-            print("  ⚠️ 无按钮信号 → 回退公共牌/派彩切手(可能被假reset切碎)")
+            print("  ⚠️ 无按钮信号 → 靠公共牌/派彩/ante 交叉印证切手")
 
     if args.dump_stacks:
         # 校准辅助:抽几帧打印每个板位的白占比(看空板 vs 有牌差多少,定 --frac-th)

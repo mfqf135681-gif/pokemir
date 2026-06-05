@@ -342,47 +342,86 @@ def hand_starts_from_button(button_series, merge=3.0):
     return starts
 
 
+def button_moves_monotonic(button_series, num_seats=8, min_hold=3.0, max_skip=4):
+    """D 按钮移座 → hand-start 时刻,带两道【误读过滤】(T139):
+    (a) **去抖**:某座持有 < min_hold 秒 = 瞬时闪读(误读到别座),丢;
+    (b) **顺时针单调**:庄家钮每手只【顺时针前进】到下一个有人座(跳过空座);
+        新座 = (旧座 + k) % num_seats,k∈[1,max_skip] 才合法;倒退/远跳(如误读闪到
+        对面再跳回)→ 拒。要求 seat_index 顺时针排布(party_poker_8 已是:
+        0底→1/2/3左→4顶→5/6/7右)。
+    返回有效移座时刻 [t,...](= hand starts)。纯逻辑,可单测。"""
+    # 压缩成段 (t_start, seat, t_end):同座连续(None 跳过、不断段)
+    segs = []
+    for (t, s) in sorted(button_series):
+        if s is None:
+            continue
+        if segs and segs[-1][1] == s:
+            segs[-1][2] = t
+        else:
+            segs.append([t, s, t])
+    # (a) 去抖:持有 ≥ min_hold(只一段则不丢)
+    held = [(t0, s) for (t0, s, t1) in segs if t1 - t0 >= min_hold or len(segs) == 1]
+    # (b) 顺时针单调
+    out, cur = [], None
+    for (t, s) in held:
+        if cur is None:
+            out.append(t); cur = s; continue
+        if 1 <= (s - cur) % num_seats <= max_skip:   # 合法顺时针前进
+            out.append(t); cur = s
+        # else 倒退/远跳 = 误读 → 忽略(cur 不变)
+    return out
+
+
+def corroborate_boundaries(candidates, cluster_win=6.0, anchor="button", min_signals=2):
+    """多信号交叉印证切手(T139):candidates=[(t, signal_name),...]。
+    按时间聚类(相邻 ≤cluster_win 归一簇),一簇是【真边界】当:
+      含 anchor 信号(每手必移、权威)  OR  ≥min_signals 个【不同】信号印证。
+    → 孤立单信号(如公共牌误 reset)被否决;按钮缺时 ≥2 其他信号可补漏。
+    返回真边界时刻(每簇取首信号时刻),升序。纯逻辑,可单测。
+    **降级**:若候选里【完全没有 anchor 信号】(如该桌无按钮ROI/全程漏检),自动退回
+    宽松(min_signals=1=旧并集),避免"只有公共牌一种信号"时全被否决 → 切不出手。"""
+    if not candidates:
+        return []
+    eff_min = min_signals if any(sig == anchor for _, sig in candidates) else 1
+    clusters = []  # [first_t, set(signals), last_t]
+    for t, sig in sorted(candidates, key=lambda x: x[0]):
+        if clusters and t - clusters[-1][2] <= cluster_win:
+            clusters[-1][1].add(sig)
+            clusters[-1][2] = t
+        else:
+            clusters.append([t, {sig}, t])
+    return [ft for ft, sigs, _ in clusters if anchor in sigs or len(sigs) >= eff_min]
+
+
 def segment_hands(stack_series, community_series, config):
-    """检测手边界 → [(t_start, t_end)] 每手窗口。
-    **优先 hand_starts(D 按钮移座,实测最干净)** → config["hand_starts"]。
-    次选 win_ends(+xx 结算;某些桌 OCR 垃圾/边池散开,见 §19.11)。
-    再回退信号(§15.3):派彩大涨 / 全员 ante 小跌簇 / 公共牌 reset。"""
-    allt0 = [t for obs in stack_series.values() for (t, _) in obs] + [t for (t, _) in community_series]
-    hand_starts = config.get("hand_starts")
-    if hand_starts:
-        t0 = min(allt0) if allt0 else 0.0
-        t1 = max(allt0) if allt0 else 0.0
-        bm = config.get("boundary_merge", 6.0)
-        # hand-start 作边界:窗 = 相邻 start 之间;首窗从 t0 起
-        bounds = [t0]
-        for s in sorted(hand_starts):
-            if t0 < s < t1 and s - bounds[-1] > bm:
-                bounds.append(s)
-        bounds.append(t1)
-        return [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
-    win_ends = config.get("win_ends")
-    if win_ends:
-        allt = [t for obs in stack_series.values() for (t, _) in obs] + [t for (t, _) in community_series]
-        t0 = min(allt) if allt else 0.0
-        t1 = max(allt) if allt else 0.0
-        bm = config.get("boundary_merge", 6.0)
-        bounds = [t0]
-        for e in sorted(win_ends):
-            if t0 < e < t1 and e - bounds[-1] > bm:
-                bounds.append(e)
-        bounds.append(t1)
-        return [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
+    """检测手边界 → [(t_start, t_end)] 每手窗口。**T139 交叉印证组合器**:
+    汇集多信号候选(按钮移座[anchor,已顺时针单调过滤] / 公共牌reset / 派彩大涨 / ante簇
+    / 可选 win-phash),交叉印证(含按钮 OR ≥2 信号)才算真边界 → 否决孤立假信号
+    (如公共牌误 reset 把 1 手切碎)。按钮缺时多信号补漏。
+    config: hand_starts(=button_moves_monotonic 产的时刻) · win_ends(可选,+xx结算) ·
+            payout_th/ante/boundary_merge/min_corroborate。"""
+    allt = [t for obs in stack_series.values() for (t, _) in obs] + [t for (t, _) in community_series]
+    if not allt:
+        return []
+    t0, tN = min(allt), max(allt)
     tol = config.get("tol", 2.0)
     payout_th = config.get("payout_th", max(config.get("bb", 4) * 10, 50))
     ante = config.get("ante", 0)
-    bounds = set()
-    # 1) 派彩:任一座平台大涨
+    cand = []
+    # ① 按钮移座(anchor):caller 传 monotonic-filtered hand_starts
+    for s in (config.get("hand_starts") or []):
+        cand.append((s, "button"))
+    # ② 公共牌 reset(n 下降)
+    for k in range(1, len(community_series)):
+        if community_series[k][1] < community_series[k - 1][1]:
+            cand.append((community_series[k][0], "community"))
+    # ③ 派彩大涨(任一座平台跳 > payout_th)
     for obs in stack_series.values():
         plats = fuse_plateaus(obs, tol=tol)
         for i in range(1, len(plats)):
             if plats[i][1] - plats[i - 1][1] > payout_th:
-                bounds.add(round(plats[i][0], 1))
-    # 2) ante 簇:相近时间多座各跌 ≈ante
+                cand.append((plats[i][0], "payout"))
+    # ④ ante 簇:相近时间多座各跌 ≈ante
     if ante > 0:
         ad = []
         for obs in stack_series.values():
@@ -399,25 +438,16 @@ def segment_hands(stack_series, community_series, config):
             while j < len(ad) and ad[j] - ad[i] <= win:
                 j += 1
             if j - i >= min_n:
-                bounds.add(round(ad[i], 1))
+                cand.append((ad[i], "ante"))
             i = j
-    # 3) 公共牌 reset(n 下降)
-    for k in range(1, len(community_series)):
-        if community_series[k][1] < community_series[k - 1][1]:
-            bounds.add(round(community_series[k][0], 1))
-    # 合并相近边界
-    merged = []
-    bm = config.get("boundary_merge", 6.0)  # 几秒内的边界信号(公共牌reset/派彩/ante)当一个
-    for b in sorted(bounds):
-        if merged and b - merged[-1] <= bm:
-            continue
-        merged.append(b)
-    # 构造窗口
-    allt = [t for obs in stack_series.values() for (t, _) in obs] + [t for (t, _) in community_series]
-    if not allt:
-        return []
-    t0, tN = min(allt), max(allt)
-    cuts = sorted(set([t0] + merged + [tN + 0.01]))
+    # ⑤ +xx 结算时刻(win-phash,T130;hand-end≈边界,与按钮 hand-start 聚同簇)
+    for w in (config.get("win_ends") or []):
+        cand.append((w, "win"))
+    # 交叉印证 → 真边界 → 窗口
+    bounds = corroborate_boundaries(
+        cand, cluster_win=config.get("boundary_merge", 6.0),
+        anchor="button", min_signals=config.get("min_corroborate", 2))
+    cuts = sorted(set([t0] + [b for b in bounds if t0 < b < tN] + [tN + 0.01]))
     return [(cuts[i], cuts[i + 1]) for i in range(len(cuts) - 1) if cuts[i + 1] - cuts[i] > 0.5]
 
 
