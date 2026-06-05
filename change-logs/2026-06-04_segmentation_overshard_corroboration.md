@@ -38,6 +38,16 @@
 | 平均动作/手 | 1.1 | **4.4** |
 - "0 动作大池"谜底揭穿=真手被切走翻前段后剩的中后段残片。
 
+## §4.5 ⭐ recall 大反转(切手修对后的真账)
+切手修对 → 按钮真边界上干净 `--truth` 量 2 个守恒 CHECK 手:
+- **hand 7(CHECK):recall 10/10=100%** / precision 86%(FP river90)
+- **hand 4(CHECK):recall 8/8=100%** / precision 86%(FP river225≈真值228=读偏非幻影)
+
+→ **守恒 CHECK ≠ 漏抓,= 读噪声**(dump 实锤:hand11 seat0 末态+596 无 funding=补码/误读;hand7 seat6 半 None)。
+**61% 守恒严重低估 §15 捕获——它抓得几乎全。** 结论反转:**瓶颈从来不是 recall**(连猜三遍漏抓全错),
+= ① 切手过切(已修)+ ② 读噪声拉低守恒(治法=数字配方提读准,非治 recall)。
+⚠️ **n=2 单 session 都 heads-up**,strong directional ≠ 全局 95% 定论;多人池/all-in/跨录像待全标验。
+
 ## §5 验证(Linux 静态/逻辑)
 - `pipeline/reconstruct.py` 全自测过(含按钮切手 4 手窗 / win-分段);
 - 新增交叉印证单测:232 假 reset 被否决(有按钮)/ 闪读 s5 被滤 / 无按钮降级宽松;
