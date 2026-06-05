@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM 数字配方兜底读 stack:① 采模板 ② 秒验 seat2 全下"0"能否兜底读出。
 REM 免长命令跨终端粘贴丢参数。用法(已激活 .venv):  tools\run_digit_fallback.cmd
 echo === (1/2) 采 stack 模板(从 121925 的真值)→ rois\digit_templates_party_poker_8.json ===
