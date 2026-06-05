@@ -191,6 +191,20 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
                     res.notes.append(f"seat{s}@{t}: stack跌{chips}≠下注区{near} → 低置信")
         res.actions.append(act)
 
+    # 🔧 T140 全下封盘线抑制(规则:胜率%⟺该座 all-in⟺它此后不再行动):某座显%(allin_marks)
+    #    后,其 stack 跌幅 = 该座全下的【晚回声】(%/牌型/横幅盖住,直到结算才显跌后值)或结算
+    #    噪声,**非新下注** → 删。全下本身随后由下方 allin_marks 路径在【决策街=首%时刻】补回。
+    #    **按座**:只删"显%座"自己的晚跌;不动其他可读座(多人边池里非全下者%没出、仍真打,
+    #    规则保证%只在全员 all-in 才显 → 它们的下注必在%之前,不受影响)。修 all-in 街错 FP。
+    if allin_marks:
+        first_mark = {s: min(ts) for s, ts in allin_marks.items() if ts}
+        margin = config.get("lock_margin", 0.5)
+        n0 = len(res.actions)
+        res.actions = [a for a in res.actions
+                       if not (a.seat in first_mark and a.t > first_mark[a.seat] + margin)]
+        if len(res.actions) < n0:
+            res.notes.append(f"全下封盘线抑制 {n0 - len(res.actions)} 笔(显%座%后的晚回声/结算,非下注)")
+
     # 🔧 BUG2 修:all-in 识别 —— 读取层标记某座 stack 区显胜率%(筹码被盖)→ all-in。
     #    金额 = 标记前最后已知 stack(他把剩余全推);若该座该街已有动作捕获则跳过(防重复)。
     if allin_marks:
@@ -617,6 +631,23 @@ def _self_test():
     wins_b = segment_hands(ss_b, [], {"hand_starts": [0, 2, 11, 22], "tol": 2.0, "boundary_merge": 1.0})
     assert len(wins_b) == 4, wins_b  # 4 手窗
     print(f"✅ T132 按钮切手:button移座 {starts} → {len(wins_b)} 手窗")
+
+    # T140 全下封盘线抑制(规则:%⟺该座all-in⟺此后不行动):显%座%后的晚跌=回声/结算,删;
+    #   全下在决策街(首%)补;**按座**不动多人边池里可读的非全下座。
+    comm_a = [(0, 0), (5, 3), (7, 4), (9, 5)]  # preflop[0,5) flop[5,7) turn[7,9) river[9,)
+    cfg_a = {"seats": [0, 1], "bb": 4, "ante": 0, "pot": 1000, "tol": 2.0, "settle_guard": -1}
+    # ① heads-up:limp@2 + 全下决策%@4(preflop),晚跌注册@8(river) → river回声删、全下补preflop
+    r_a = reconstruct({0: [(0, 500), (.5, 500), (2, 496), (2.5, 496), (8, 0), (8.5, 0)],
+                       1: [(0, 500), (.5, 500), (2, 496), (2.5, 496), (8.5, 4), (9, 4)]},
+                      comm_a, cfg_a, allin_marks={0: [4.0]})
+    assert not any(a.seat == 0 and a.street == "river" for a in r_a.actions), r_a.actions
+    assert any(a.seat == 0 and a.atype == "all_in" and a.street == "preflop" for a in r_a.actions), r_a.actions
+    # ② 多人边池:seat0全下(%@4,晚跌@8) + seat1翻牌真下注@6(可读无%)→ seat1不被误删
+    r_b = reconstruct({0: [(0, 500), (2, 400), (2.5, 400), (8, 0), (8.5, 0)],
+                       1: [(0, 1000), (.5, 1000), (6, 950), (6.5, 950)]},
+                      comm_a, cfg_a, allin_marks={0: [4.0]})
+    assert any(a.seat == 1 and a.t >= 6 for a in r_b.actions), r_b.actions  # 边池下注保留
+    print("✅ T140 全下封盘线:晚回声删+全下补决策街;多人边池可读座保留")
 
 
 if __name__ == "__main__":
