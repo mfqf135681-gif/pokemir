@@ -97,14 +97,17 @@ def count_community(img, community_rois, white_th=170, frac_th=0.12):
 
 
 def build_series_real(session, frames, stack_rois, community_rois, start, end, decimate,
-                      white_th=170, frac_th=0.12):
-    """Win 路径:逐帧读 → stack_series / community_series。公共牌用白占比(不用 CNN)。"""
+                      white_th=170, frac_th=0.12, button_rois=None):
+    """Win 路径:逐帧读 → stack_series / community_series (+ button_series 若给 button_rois)。
+    公共牌用白占比(不用 CNN)。T138:按钮也读 → 守恒路径也能用按钮权威切手
+    (治公共牌假 reset 把 1 手切碎)。"""
     import cv2
     from recognition.ocr import OCREngine
     ocr = OCREngine(gpu=True, name="replay")
     stack_series = {s: [] for s in stack_rois}
     allin_marks = {s: [] for s in stack_rois}  # BUG2:stack 区显胜率% 的时刻 → all-in
     community_series = []
+    button_series = []  # T138:D 按钮白占比 argmax → 切手权威(比公共牌 reset 稳)
     fdir = Path(session) / "frames"
     for k, (i, fn, t) in enumerate(frames):
         if t < start or t > end or (k % decimate):
@@ -118,7 +121,14 @@ def build_series_real(session, frames, stack_rois, community_rois, start, end, d
             if is_ai:
                 allin_marks[s].append(t)
         community_series.append((t, count_community(img, community_rois, white_th, frac_th)))
-    return stack_series, community_series, allin_marks
+        if button_rois:  # 同 build_truth_series:白占比 argmax 定 D 座(超阈才认,否则 None)
+            best_s, best_wf = None, 0.0
+            for s, (l, tt, w, h) in button_rois.items():
+                wf = _white_frac(img[tt:tt + h, l:l + w], white_th)
+                if wf > best_wf:
+                    best_s, best_wf = s, wf
+            button_series.append((t, best_s if best_wf > frac_th else None))
+    return stack_series, community_series, allin_marks, button_series
 
 
 # ── §17 持久信号试验(T129):读 action 词 + amount 下注区,验街内持久 + 可读性 ──
@@ -842,9 +852,15 @@ def main():
         hand_starts = _recon.hand_starts_from_button(button_series)
         print(f"  D 按钮移座 {len(hand_starts)} 次 → 按钮权威切手")
     else:
-        stack_series, community_series, allin_marks = build_series_real(
+        button_rois = load_button_rois(profile_path)  # T138:守恒路径也用按钮权威切手
+        stack_series, community_series, allin_marks, button_series = build_series_real(
             args.session, frames, stack_rois, community_rois, args.start, args.end, args.decimate,
-            args.white_th, args.frac_th)
+            args.white_th, args.frac_th, button_rois)
+        hand_starts = _recon.hand_starts_from_button(button_series) if button_series else None
+        if hand_starts:
+            print(f"  D 按钮移座 {len(hand_starts)} 次 → 按钮权威切手(守恒路径,治公共牌假reset切碎)")
+        else:
+            print("  ⚠️ 无按钮信号 → 回退公共牌/派彩切手(可能被假reset切碎)")
 
     if args.dump_stacks:
         # 校准辅助:抽几帧打印每个板位的白占比(看空板 vs 有牌差多少,定 --frac-th)
