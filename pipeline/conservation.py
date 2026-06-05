@@ -46,13 +46,15 @@ def conservation_status(chip_movement, pot):
 
 
 def chip_movement_from_stacks(stack_series, fuse=None):
-    """Σ每座首个稳态 − Σ每座末个稳态 = 离开各座的总筹码(应≈pot)。
+    """Σ每座首个稳态 − Σ每座末个稳态(=派彩后)= 桌面净筹码变化(守恒手应≈rake≈0)。
 
     stack_series: {seat: [(t, val|None), ...]}。
     fuse: 可选平台融合函数(如 reconstruct.fuse_plateaus),传则用平台首末值抗噪;
           不传则取原始序列首末个非 None 读数。
-    与视图 sum_init/sum_final 对应:视图读 raw_data 存的 player_stacks_initial/final,
-    本函数从 stack 时间序列首末稳态重算同一量(回放无 raw_data 时用)。
+    ⚠️ 末态【取派彩后】是对的:守恒口径是"桌面总量守恒"(cm≈rake),赢家那笔涨抵消别家的输。
+       负 cm(Σ末>Σ初=桌面凭空多筹码)的真因不是派彩,而是**输家的下注没被末态 stack 反映**
+       (漏抓→末态读高),与 recall 漏抓同源——见 change-log。
+    与视图 sum_init/sum_final 对应(视图读 raw_data 存的 initial/final;本函数从时间序列重算)。
     """
     sum_init = 0.0
     sum_final = 0.0
@@ -125,7 +127,11 @@ def _self_test():
     # 全 None 座跳过、不污染
     ss2 = {1: [(0, 500), (5, 200)], 3: [(0, None), (5, None)]}
     assert chip_movement_from_stacks(ss2) == 300, chip_movement_from_stacks(ss2)
-    print("✅ chip_movement 核通过:Σ首稳态−Σ末稳态,空座跳过")
+    # 守恒口径:末态取【派彩后】是对的——赢家1000→900(下100)→1100(派彩),输家1000→900;
+    # Σ初2000−Σ末(1100+900=2000)=0=守恒(rake≈0)。不可截派彩,否则守恒手被误判CHECK。
+    ss_cons = {0: [(0, 1000), (5, 900), (9, 1100)], 1: [(0, 1000), (5, 900)]}
+    assert chip_movement_from_stacks(ss_cons) == 0, chip_movement_from_stacks(ss_cons)
+    print("✅ chip_movement 核通过:Σ首稳态−Σ末稳态(派彩后),空座跳过、守恒手 cm≈0")
 
     # ③ summarize + 桶计数
     recs = [(7, 896), (-184, 1210), (0, None), (76, 705)]
