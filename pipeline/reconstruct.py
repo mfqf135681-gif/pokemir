@@ -126,15 +126,22 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
     rise_ts = []  # 派彩 rise 时刻(结算锚:首个 rise = 本手结算开始,§19.12)
     for s in seats:
         plats = fuse_plateaus(stack_series.get(s, []), tol=tol)
-        drops, rises = detect_drops(plats)
+        drops, _rises = detect_drops(plats)
         last_t = plats[-1][0] if plats else None
         last_v = plats[-1][1] if plats else None
         for (t, chips) in drops:
             is_allin = (last_v is not None and last_v <= tol and t == last_t)
             raw.append((t, s, chips, is_allin))
-        for (t, amt) in rises:
-            rise_ts.append(t)
-            res.notes.append(f"seat{s}@{t}: stack 涨 {amt}(派彩/补码,非动作)")
+        # 🔧 §19.12+ 结算锚【只认从正持有上升的 rise】= 真派彩;从 ≈0 爬起(0→X)= 补码/重买/
+        #   读 artifact(如兜底误补起手 0),**不锚结算** —— 否则手中段一个假 0→X 把 cutoff
+        #   拉进手里、误删真实下注(实测 hand5:兜底补 seat0 起手0 → rise 前移到228 → turn74@242 被吞)。
+        #   ⚠️ 代价:全下赢家若起于 0(0→派彩)也被排除该锚 → 该手少一道结算抑制(precision 微险,recall 安全)。
+        for i in range(1, len(plats)):
+            prev_v, cur_v = plats[i - 1][1], plats[i][1]
+            if cur_v - prev_v > tol:
+                res.notes.append(f"seat{s}@{plats[i][0]}: stack 涨 {cur_v - prev_v:.0f}(派彩/补码,非动作)")
+                if prev_v > tol:  # 仅从正持有上升才锚结算
+                    rise_ts.append(plats[i][0])
 
     # 🔧 BUG1+精度修:强制注簇排除 —— 手起始的强制投入(已在 res.forced),不计自愿。
     #    含 ante(各≈ante)+ SB 合并(ante+sb)+ BB 合并(ante+bb)。
