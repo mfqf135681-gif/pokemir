@@ -10,10 +10,18 @@ r"""tools/build_digit_templates.py — 从真值文件采 stack 数字模板 →
 ⚠️ 复制粘贴友好:全短参数,真值走 --harvest-file(文件,不在命令行粘长串)。
 
 用法(Win,先 git pull):
+  # stack(大白字,无图标)→ 各区独立文件名带 _stack
   .\.venv\Scripts\python.exe tools\build_digit_templates.py ^
       --session data\recordings\20260603_121925 ^
       --harvest-file tools\truth_digit_121925.txt ^
-      --out rois\digit_templates_party_poker_8.json
+      --out rois\digit_templates_party_poker_8_stack.json
+
+  # amount(下注区,小粗字+筹码图标)→ --field amount --icon-prefix(右侧图标座列 --icon-right-seats)
+  .\.venv\Scripts\python.exe tools\build_digit_templates.py ^
+      --field amount --icon-prefix --icon-right-seats 5,6,7 ^
+      --session data\recordings\<amount录像> ^
+      --harvest-file tools\truth_amount_<ts>.txt ^
+      --out rois\digit_templates_party_poker_8_amount.json
 """
 import argparse
 import json
@@ -50,10 +58,18 @@ def main():
                     help="多源:各真值文件对应的录像(与 --harvest-file 同序);省则全用 --session")
     ap.add_argument("--out", required=True, help="模板 JSON 输出路径")
     ap.add_argument("--ink-th", type=int, default=digit_reader.INK_TH)
+    # amount 下注区图标处理(忠实复制 digit_probe.py:261-263 实证逻辑;座有左右之分)
+    ap.add_argument("--icon-prefix", action="store_true",
+                    help="amount 下注区:crop 含筹码图标 → 切格>真值位数时丢多余格对齐。"
+                         "stack/pot 无图标,不要开。")
+    ap.add_argument("--icon-right-seats", default="",
+                    help="这些座筹码图标在数字【右】侧(取左 len 格);其余在左(取右 len 格)。如 '5,6,7'。"
+                         "镜像 UI 渲染(同 player-id phash 左右镜像现象)——设错边把图标采成数字污染池。")
     args = ap.parse_args()
 
     import cv2
 
+    icon_right = {int(x) for x in args.icon_right_seats.split(",") if x.strip()}
     prof = json.loads((Path(_ROOT) / "rois" / f"{args.profile}.json").read_text(encoding="utf-8"))
     seat_rois = {s["seat_index"]: s[args.field] for s in prof["seats"] if s.get(args.field)}
 
@@ -90,6 +106,10 @@ def main():
                 if g is None:
                     print(f"  ⚠️ 读不到 {fdir/fn}"); continue
                 cells = cells_of(g)
+                # amount:筹码图标在数字旁 → 切格>真值位数时丢图标格(忠实复制 digit_probe.py:261-263)。
+                # icon_right 座图标在右(取左 len 格),其余在左(取右 len 格)。设错边=污染池。
+                if args.icon_prefix and len(cells) > len(val):
+                    cells = cells[:len(val)] if si in icon_right else cells[-len(val):]
                 if len(cells) != len(val):
                     print(f"  跳过 {fn} s{si} 真值'{val}'({len(val)}位)→切{len(cells)}格(不齐)")
                     skipped += 1
@@ -115,7 +135,8 @@ def main():
     for fdir, fn, si, val in harvested:
         img = cv2.imread(str(fdir / fn))
         l, t, w, h = seat_rois[si]
-        got = reader.read(img[t:t + h, l:l + w])
+        # live 读法是 classify 丢 '?'(位置无关),故自检用 allow_icon=icon_prefix 对齐 live
+        got = reader.read(img[t:t + h, l:l + w], allow_icon=args.icon_prefix)
         if str(got) == val:
             ok += 1
         else:

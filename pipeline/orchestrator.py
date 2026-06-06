@@ -210,16 +210,33 @@ class PipelineOrchestrator:
         # ATTENTION_MODE=0 时永远空 {}.
         self._attention_focus_results: dict = {}
 
-        # 2026-06-05 杠杆A:数字配方 reader(DIGIT_RECIPE_LIVE 时接管 stack 读取)。
-        self._digit_reader = None
+        # 2026-06-05 杠杆A → 2026-06-06 各区独立模板:DIGIT_RECIPE_LIVE 时配方接管数字读取。
+        # 用户拍板「各区用自己模板」(治 cut1 用 stack 模板读 amount 的 3↔4;零跨区耦合)。
+        # 文件名 digit_templates_{profile}_{zone}.json,缺则回退 default(stack)→ 向后兼容、
+        # 未采的区不退化。_digit_reader = default/stack(仍作"配方是否生效"哨兵)。
+        self._digit_reader = None       # default(=stack)reader;热路径 guard 仍看它
+        self._zone_readers: dict = {}   # {zone: DigitReader} 各区独立
         if DIGIT_RECIPE_LIVE:
-            tmpl = Path(ROI_CONFIG_DIR) / f"digit_templates_{profile}.json"
-            if tmpl.is_file():
-                from pipeline.digit_reader import DigitReader
-                self._digit_reader = DigitReader.load(str(tmpl))
-                logger.info(f"[杠杆A] DigitReader 接管 stack 读取(模板 {tmpl.name},EasyOCR 仅兜底)")
+            from pipeline.digit_reader import DigitReader
+            base = Path(ROI_CONFIG_DIR)
+            for zone in ("stack", "amount", "pot", "potprev", "herobet"):
+                f = base / f"digit_templates_{profile}_{zone}.json"
+                if f.is_file():
+                    self._zone_readers[zone] = DigitReader.load(str(f))
+                    logger.info(f"[各区模板] {zone} ← {f.name}")
+            # default/stack:优先 _stack.json,否则旧单文件 digit_templates_{profile}.json
+            if "stack" in self._zone_readers:
+                self._digit_reader = self._zone_readers["stack"]
             else:
-                logger.warning(f"[杠杆A] DIGIT_RECIPE_LIVE=1 但无模板 {tmpl} → 仍用 EasyOCR")
+                legacy = base / f"digit_templates_{profile}.json"
+                if legacy.is_file():
+                    self._digit_reader = DigitReader.load(str(legacy))
+                    self._zone_readers["stack"] = self._digit_reader
+                    logger.info(f"[各区模板] stack ← {legacy.name}(legacy 单文件)")
+            if self._digit_reader is None:
+                logger.warning("[各区模板] DIGIT_RECIPE_LIVE=1 但无任何模板 → 仍用 EasyOCR")
+            else:
+                logger.info(f"[各区模板] 已载 {sorted(self._zone_readers)};EasyOCR 仅兜底")
 
         # T117(2026-06-01):fold-miss 精准探针 v2 — per-seat per-hand fold_area
         # 读取画像累积 {seat: {empty:int, unparsed:[str], digit:[str]}}。
@@ -1696,6 +1713,11 @@ class PipelineOrchestrator:
         text = self.ocr.read_text(img, allowlist="0123456789.%")
         return self._stack_text_to_chips(text, seat_idx)
 
+    def _reader_for(self, zone: str):
+        """各区独立模板:取该区 DigitReader;缺则回退 default(stack)reader(向后兼容、
+        未采区不退化)。返回 None 仅当配方整体未启用。"""
+        return self._zone_readers.get(zone, self._digit_reader)
+
     def _stack_chips_recipe(self, crop, seat_idx: int | None = None) -> float | None:
         """杠杆A 共享读法:配方主读 stack(读空回落 EasyOCR,认 %=all-in→None)。
         flag 关 / 无 reader → 纯 EasyOCR。供热路径 + _detect_empty_seats 复用。"""
@@ -2358,7 +2380,8 @@ class PipelineOrchestrator:
                         crop = getattr(self, "_batched_amount_crops", {}).get(sidx)
                         if crop is None:
                             crop = self.capturer.capture_roi(seat_roi.amount_area)
-                        v = self._digit_reader.read(crop, allow_icon=True)
+                        # 各区模板:amount 专用 reader(无 _amount.json 则回退 stack/default)
+                        v = self._reader_for("amount").read(crop, allow_icon=True)
                         if v is not None:
                             amount_text = str(int(v))
                         else:
