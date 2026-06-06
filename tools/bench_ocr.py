@@ -46,6 +46,23 @@ def collect_rois(obj, out):
                 collect_rois(v, out)
 
 
+# 数字区 = 配方能替的子集(座级 stack/amount + 表级 pot)。文本(id/动作词)留 EasyOCR。
+NUMERIC_KEYS = ("stack", "amount", "pot_size", "pot_size_previous")
+
+
+def collect_numeric_rois(prof, out):
+    """只收数字区 ROI(配方替换范围),供 D 配方路 + A_num 公平对照。"""
+    for s in prof.get("seats", []):
+        for k in ("stack", "amount"):
+            v = s.get(k)
+            if isinstance(v, list) and len(v) == 4:
+                out.append(tuple(int(x) for x in v))
+    for k in ("pot_size", "pot_size_previous"):
+        v = prof.get(k)
+        if isinstance(v, list) and len(v) == 4:
+            out.append(tuple(int(x) for x in v))
+
+
 def main():
     ap = argparse.ArgumentParser(description="OCR 吞吐 benchmark(T125)")
     ap.add_argument("--frame", required=True, help="一张真实录制帧 PNG")
@@ -54,6 +71,9 @@ def main():
     ap.add_argument("--allowlist", default="0123456789.弃跟加让下注牌kK万%", help="测速用合并 allowlist")
     ap.add_argument("--batch-size", type=int, default=32,
                     help="识别器 GPU batch_size(EasyOCR 默认 1=不批!§12 重测关键)")
+    ap.add_argument("--digit-templates", default="",
+                    help="配方模板 JSON(build_digit_templates.py 产):加 D 配方路 + A_num 公平对照"
+                         "(EasyOCR vs 配方,仅数字区 stack/amount/pot)。空则试 rois/digit_templates_<profile>.json")
     args = ap.parse_args()
 
     try:
@@ -120,6 +140,37 @@ def main():
     print("==========================================")
     print("注:C 用单一合并 allowlist 一次读完所有 ROI = 速度上界;真用需按 allowlist 分 2-3 组")
     print("    (仍远少于 A 的逐 ROI),实际介于 B/C 之间。目标看能否冲 4-10Hz。")
+
+    # ── D 配方(DigitReader)+ A_num 公平对照:仅数字区(配方替换范围)──
+    tmpl = args.digit_templates or str(Path("rois") / f"digit_templates_{args.profile}.json")
+    if not Path(tmpl).is_file():
+        print(f"\n[D 配方对照] 跳过:无模板 {tmpl}(先跑 build_digit_templates.py 生成)")
+    else:
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pipeline"))
+            import digit_reader
+            rdr = digit_reader.DigitReader.load(tmpl)
+        except Exception as e:
+            print(f"\n[D 配方对照] 跳过:加载 {tmpl} 失败 ({e})")
+            rdr = None
+        num_rois = []
+        collect_numeric_rois(prof, num_rois)
+        num_rois = [(l, t, w, h) for (l, t, w, h) in num_rois
+                    if w > 3 and h > 3 and l >= 0 and t >= 0 and l + w <= W and t + h <= H]
+        if rdr is not None and num_rois:
+            num_crops = [frame[t:t + h, l:l + w].copy() for (l, t, w, h) in num_rois]
+            rdr.read(num_crops[0])  # warm
+            # A_num:EasyOCR 逐 ROI 只读数字区(= 配方替换的那部分,公平对照)
+            ms_a_num = bench(lambda: [ocr.read_text(c, allowlist="0123456789") for c in num_crops], args.iters)
+            # D:配方逐 ROI 读数字区
+            ms_d = bench(lambda: [rdr.read(c) for c in num_crops], args.iters)
+            print("\n========== 数字区:EasyOCR vs 配方(公平对照)==========")
+            print(f"数字 ROI 数: {len(num_crops)} / 全 ROI {len(rois)}(其余文本/动作词仍走 EasyOCR)")
+            print(f"A_num EasyOCR 逐ROI(数字区): {ms_a_num:8.1f} ms → {hz(ms_a_num):5.2f} Hz")
+            print(f"D     配方 DigitReader      : {ms_d:8.1f} ms → {hz(ms_d):5.2f} Hz  (×{ms_a_num/ms_d:.1f} vs A_num)" if ms_d > 0 else f"D 配方: {ms_d:.1f} ms")
+            print("====================================================")
+            print("注:配方仅替数字区;生产 tick ≈ 配方(数字)+ EasyOCR(文本/动作词,见 A−A_num 的差)。")
+            print("    本工具测【处理】成本;【截屏】成本(杠杆D 整帧vs逐ROI grab)需 Win 实屏单独探。")
 
 
 if __name__ == "__main__":
