@@ -2838,44 +2838,38 @@ class PipelineOrchestrator:
           L2: brightness peak — button icon 通常高对比,亮度 outlier
           L3: 全部 fail → fallback seat=0(同原行为)+ 落 diag WARN
         """
-        candidates = []  # (seat_index, ocr_text, brightness)
+        # 2026-06-06:改用【白占比 argmax】定 D 座(忠实复制 replay_reconstruct._white_frac +
+        # build_series_real:152-158,white_th=170/frac_th=0.12)。原 L1=OCR"D"第一个命中在
+        # live 把 seat0 假"D"短路成永远 seat0(多人桌实测 27 手只在 0/2,见 button.detected),
+        # 而夹具/T139 用的正是白占比(不OCR)且验过稳 → 验过的方法没上 live(同 amount 模板坑)。
+        WHITE_TH, FRAC_TH = 170, 0.12
+        candidates = []  # (seat_index, white_frac, brightness)
         button_seat = None
         method = None
-
+        best_seat, best_wf = None, 0.0
         for seat_roi in self.roi_manager.rois.seat_regions:
             if seat_roi.button_indicator is None:
                 continue
             img = self.capturer.capture_roi(seat_roi.button_indicator)
-            if img.size == 0:
+            if img.size == 0 or img.ndim != 3:
                 continue
-            text = self.ocr.read_text(img, allowlist="D")
-            brightness = float(img.mean())
-            candidates.append((seat_roi.seat_index, text, brightness))
-            # L1: OCR D 命中
-            if "D" in text.upper() and button_seat is None:
-                button_seat = seat_roi.seat_index
-                method = "L1-ocr"
+            # 三通道都 > white_th 的像素占比(D 钮纯白高对比;空座/felt≈0)。
+            # mss=BGRA 4通道:alpha=255≥white_th,不改 min → 与夹具 BGR 三通道同结果。
+            wf = float((img.min(axis=2) > WHITE_TH).mean())
+            candidates.append((seat_roi.seat_index, round(wf, 3), round(float(img.mean()), 1)))
+            if wf > best_wf:
+                best_seat, best_wf = seat_roi.seat_index, wf
 
-        # L2: brightness peak fallback(OCR 全 fail 时)
-        # T13-tune(2026-05-28):实测数据 button seat 亮度 163-188,非 button
-        # seat 102-119,outlier 极强但 ratio 1.5 太严(实际 1.37-1.58)。
-        # 放宽 ratio 1.3 + 加绝对阈值 150 双重 OR,任一命中即 button。
-        if button_seat is None and len(candidates) >= 2:
-            sorted_by_b = sorted(candidates, key=lambda x: x[2], reverse=True)
-            max_b = sorted_by_b[0][2]
-            second_b = sorted_by_b[1][2]
-            ratio_ok = (second_b > 0 and max_b / second_b >= 1.3)
-            absolute_ok = (max_b >= 150)
-            if ratio_ok or absolute_ok:
-                button_seat = sorted_by_b[0][0]
-                method = "L2-brightness"
-
-        if button_seat is None:
-            button_seat = 0
-            method = "L3-fallback"
-            logger.warning(f"Button detection 全 fail,fallback seat=0. Candidates: {candidates}")
+        if best_seat is not None and best_wf > FRAC_TH:
+            button_seat = best_seat
+            method = "white-frac"
+            logger.info(f"Button detected at seat {button_seat} via white-frac (wf={best_wf:.3f})")
         else:
-            logger.info(f"Button detected at seat {button_seat} via {method}")
+            # 无座超阈 = 这帧没看清 D(过渡/遮挡)→ 诚实 None,不再 fallback seat=0
+            # (那是 T13 假阳根源:位置宁可空也不给错座)。下游已有 button=None 守卫。
+            button_seat = None
+            method = "none"
+            logger.warning(f"Button white-frac all < {FRAC_TH} (best={best_wf:.3f}) → None. Candidates: {candidates}")
 
         # T13 diag:每手记录 button 检测方法 + 候选,便于事后审视
         diag.emit(
@@ -2883,10 +2877,10 @@ class PipelineOrchestrator:
             {
                 "button_seat": button_seat,
                 "method": method,
-                "candidates": [{"seat": c[0], "ocr": c[1], "brightness": round(c[2], 1)} for c in candidates],
+                "candidates": [{"seat": c[0], "white_frac": c[1], "brightness": c[2]} for c in candidates],
             },
             hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
-            level="INFO" if method != "L3-fallback" else "WARN",
+            level="INFO" if method == "white-frac" else "WARN",
         )
 
         self.roi_manager.button_seat_index = button_seat
