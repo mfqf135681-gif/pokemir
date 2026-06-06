@@ -460,6 +460,57 @@ def reconcile_underread_amount(action, amount, stack_delta, margin=8, ratio=2):
     return amount, None
 
 
+def reconstruct_hand_chips(initial, final, pot=None, sb=0, bb=0, ante=0):
+    """#226 筹码级重建(2026-06-06):从手末全座 stack 端点重建每手 per-seat 净额 + 赢家 + rake。
+
+    依据(实测验证):per-hand stack 端点(`player_stacks_initial`/`final`,全座)是可靠桩
+    (本会话 24/25 手守恒到 rake 级),per-action 读取噪声(~53%)不影响此层。
+    端点**只能可靠定**:① 每人净额(final−initial)② 赢家(净额>0)③ rake(=−Σ净额)
+    ④ 输家投入(=净损,精确)。**赢家投入/绝对底池端点定不了**(winner_contrib∈[0,初始]),
+    只能用 pot 读交叉验证 + sanity 标记。纯逻辑,可 Linux 单测。
+
+    initial/final: {seat:int → stack:float}。pot:读到的底池(可选,仅交叉验证)。
+    返回 dict:net{座→净额} / winners / losers / rake / sum_loss / conservation_ok /
+             pot_read / pot_plausible(通过sanity才给) / flags。
+    """
+    seats = sorted(set(initial) & set(final))
+    flags = []
+    if not seats:
+        return {"net": {}, "winners": [], "losers": [], "rake": None, "sum_loss": 0.0,
+                "conservation_ok": False, "pot_read": pot, "pot_plausible": None,
+                "flags": ["no_common_seats"]}
+    if (set(initial) | set(final)) - set(seats):
+        flags.append("partial_seats")
+    net = {s: round(final[s] - initial[s], 1) for s in seats}
+    sum_net = sum(net.values())
+    tol = max(2.0, 0.5 * bb)                       # 净额噪声容忍(< 半 BB 当 0)
+    winners = sorted([s for s in seats if net[s] > tol])
+    losers = sorted([s for s in seats if net[s] < -tol])
+    rake = round(-sum_net, 1)
+    sum_loss = round(sum(-net[s] for s in losers), 1)
+    # 守恒:Σ净额应是小负(=rake);大正=rebuy/买入,过大负=离场/快照错
+    rake_ceiling = max(3 * bb, 0.08 * (pot or 0), 30)
+    conservation_ok = (-rake_ceiling <= sum_net <= tol)
+    if sum_net > tol:
+        flags.append(f"rebuy/chips_added(Σnet={sum_net:+.0f})")
+    elif sum_net < -rake_ceiling:
+        flags.append(f"excess_loss(Σnet={sum_net:+.0f})")
+    if not winners:
+        flags.append("no_winner")
+    elif len(winners) > 1:
+        flags.append(f"split/multi_winner{winners}")
+    # pot 交叉验证:端点定不了绝对底池,但赢家匹配投入 ≤ 输家总投入 → pot ≲ 2×输家投入
+    pot_plausible = None
+    if pot and len(winners) == 1:
+        if pot > 2.5 * max(sum_loss, 1):
+            flags.append(f"pot_suspect(读{pot:.0f}≫2.5×输家投入{sum_loss:.0f}→疑超读)")
+        else:
+            pot_plausible = pot
+    return {"net": net, "winners": winners, "losers": losers, "rake": rake,
+            "sum_loss": sum_loss, "conservation_ok": conservation_ok,
+            "pot_read": pot, "pot_plausible": pot_plausible, "flags": flags}
+
+
 def corroborate_boundaries(candidates, cluster_win=6.0, anchor="button", min_signals=2):
     """多信号交叉印证切手(T139):candidates=[(t, signal_name),...]。
     按时间聚类(相邻 ≤cluster_win 归一簇),一簇是【真边界】当:
@@ -734,6 +785,30 @@ def _self_test():
     m3, c3, *_ = button_move_online(5, None, 0, 3, num_seats=8, debounce=2, max_skip=4)  # 5→3 倒退/远跳 %8=6>4 拒
     assert m3 is False and c3 == 5, (m3, c3)
     print("✅ button_move_online 在线去抖:顺时针持稳切/单帧不切/倒退拒/None不动")
+
+    # 2026-06-06 #226 reconstruct_hand_chips(端点筹码级重建)——实测 4 手验证
+    # 24f5(干净):MP(s4) 输296 / BTN(s7) 赢,pot 622 合理
+    r = reconstruct_hand_chips(
+        {0:359,1:314,2:865,3:144,4:545,5:630,6:164,7:760},
+        {0:355,1:308,2:857,3:140,4:249,5:626,6:160,7:1074}, pot=622, sb=2, bb=4, ante=4)
+    assert r["winners"] == [7] and r["net"][7] == 314 and r["net"][4] == -296, r
+    assert r["rake"] == 12 and r["sum_loss"] == 326 and r["conservation_ok"], r
+    assert r["pot_plausible"] == 622 and not r["flags"], r
+    # 5e60(pot 超读):赢家净 +100 但 pot 读 1441 ≫ 2.5×输家 → pot_suspect,净额仍对
+    r2 = reconstruct_hand_chips(
+        {0:382,1:1586,2:391,3:887,4:706,5:431,6:512,7:1676},
+        {0:378,1:1550,2:387,3:851,4:700,5:425,6:500,7:1776}, pot=1441, sb=2, bb=4, ante=4)
+    assert r2["winners"] == [7] and r2["net"][7] == 100, r2
+    assert r2["pot_plausible"] is None and any("pot_suspect" in f for f in r2["flags"]), r2
+    # 0809(动作捕获错赢家=BB;端点纠正:真赢家是 s5 把把买顺)
+    r3 = reconstruct_hand_chips(
+        {0:498,1:1107,2:189,3:2129,4:760,5:286,6:1126,7:591},
+        {0:494,1:1103,2:185,3:1945,4:752,5:486,6:1122,7:587}, pot=502, sb=2, bb=4, ante=4)
+    assert r3["winners"] == [5] and r3["net"][5] == 200 and r3["net"][3] == -184, r3
+    # rebuy 离群(Σnet 大正)→ conservation_ok False + flag
+    r4 = reconstruct_hand_chips({0:100,1:200}, {0:96,1:473}, pot=50, sb=1, bb=2, ante=2)
+    assert not r4["conservation_ok"] and any("rebuy" in f or "chips_added" in f for f in r4["flags"]), r4
+    print("✅ reconstruct_hand_chips:净额/赢家/rake精确·pot超读flag·纠错赢家·rebuy异常")
 
     # 2026-06-06 amount 漏读兜底 reconcile_underread_amount
     assert reconcile_underread_amount("call", 2, 25) == (25, reconcile_underread_amount("call", 2, 25)[1])

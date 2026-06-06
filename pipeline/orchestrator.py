@@ -16,7 +16,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
 from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT
-from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button
+from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips
 from difflib import get_close_matches
 
 import cv2
@@ -1095,6 +1095,22 @@ class PipelineOrchestrator:
             if cur.raw_data is None:
                 cur.raw_data = {}
             cur.raw_data["player_stacks_final"] = final_stacks
+            # #226(2026-06-06):端点筹码级重建——每手 per-seat 净额/赢家/rake(可靠桩,
+            # per-action 噪声不影响)。存 raw_data 供画像/复盘;纯逻辑见 reconstruct_hand_chips。
+            try:
+                _init = {int(k): v for k, v in (cur.raw_data.get("player_stacks_initial") or {}).items()}
+                _final = {int(k): v for k, v in final_stacks.items()}
+                _bl = cur.raw_data.get("blind_level") or {}
+                _recon = reconstruct_hand_chips(
+                    _init, _final, pot=self.tracker.latest_pot_bb,
+                    sb=_bl.get("sb") or 0, bb=_bl.get("bb") or 0, ante=_bl.get("ante") or 0)
+                cur.raw_data["chip_reconstruction"] = _recon
+                if _recon["winners"]:
+                    logger.info(f"[#226重建] 赢家 seat{_recon['winners']} "
+                                f"净{[_recon['net'][w] for w in _recon['winners']]} rake{_recon['rake']} "
+                                f"{'⚠ '+';'.join(_recon['flags']) if _recon['flags'] else 'OK'}")
+            except Exception:
+                logger.warning("chip_reconstruction failed", exc_info=True)
             # #12a Insurance inference from stack pattern (用户假说):
             #   went-all-in players whose stack_final is non-zero AND non-round
             #   = likely bought insurance (payout came back as random number).
