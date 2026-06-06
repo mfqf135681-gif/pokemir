@@ -423,6 +423,26 @@ def button_move_online(confirmed, pending, pending_count, btn_now,
     return False, confirmed, pending, pending_count
 
 
+def blinds_from_button(button, active_seats, num_seats):
+    """从按钮在【活跃集】(card_marker phash 判在手的座)里顺时针定 SB/BB 座(2026-06-06)。
+    **关键:走活跃集的下一位/下下一位,不盲目 D+1/D+2**——占座≠发牌(带入审核/坐下未发等),
+    必须跳过非活跃座。
+    - 3+ 活跃:SB=按钮后第一个活跃座、BB=第二个;
+    - 单挑(活跃=2):按钮=SB、对家=BB(德州规则);
+    - 活跃<2 或 button=None:返 (None, None)。
+    返回 (sb_seat, bb_seat)。纯逻辑,可 Linux 单测。ante 由 caller 派给全活跃集。"""
+    act = set(active_seats)
+    if button is None or len(act) < 2:
+        return None, None
+    after_active = [(button + k) % num_seats for k in range(1, num_seats)
+                    if (button + k) % num_seats in act]
+    if len(act) == 2:
+        return button, (after_active[0] if after_active else None)   # 单挑:按钮=SB
+    sb = after_active[0] if len(after_active) >= 1 else None
+    bb = after_active[1] if len(after_active) >= 2 else None
+    return sb, bb
+
+
 def reconcile_underread_amount(action, amount, stack_delta, margin=8, ratio=2):
     """下注区 amount 漏读兜底(2026-06-06,用户脑内复盘机制):**当前街最后一个行动者跟注**时,
     筹码一进池街就翻,下注区显示真额的时间窗极短 → 抓帧常卡在该玩家自己盲注筹码(2/4)那一瞬,
@@ -727,6 +747,16 @@ def _self_test():
     assert reconcile_underread_amount("call", 4, None) == (4, None)   # stack空 → 不动(回退下注区)
     assert reconcile_underread_amount("call", None, 30) == (None, None)
     print("✅ reconcile_underread_amount:漏读兜stack跌幅/一致不动/小差不兜/ratio护栏/stack空回退")
+
+    # 2026-06-06 blinds_from_button(活跃集走位定 SB/BB,跳空座)
+    assert blinds_from_button(7, {0,1,2,3,4,5,6,7}, 8) == (0, 1)      # 满座:D7→SB0/BB1
+    assert blinds_from_button(7, {1,2,3}, 8) == (1, 2)                # 跳空座0:D7→SB1/BB2
+    assert blinds_from_button(2, {2,5,7}, 8) == (5, 7)                # D2→下一活跃5/下下一7
+    assert blinds_from_button(3, {3,6}, 8) == (3, 6)                  # 单挑:D=SB3,对家BB6
+    assert blinds_from_button(7, {7,0,4}, 8) == (0, 4)                # 环绕:D7→SB0/BB4(跳1235)
+    assert blinds_from_button(5, {5}, 8) == (None, None)             # 活跃<2
+    assert blinds_from_button(None, {1,2,3}, 8) == (None, None)      # 无按钮
+    print("✅ blinds_from_button:满座/跳空座/环绕/单挑(D=SB)/活跃不足/无按钮")
 
     # T140 全下封盘线抑制(规则:%⟺该座all-in⟺此后不行动):显%座%后的晚跌=回声/结算,删;
     #   全下在决策街(首%)补;**按座**不动多人边池里可读的非全下座。

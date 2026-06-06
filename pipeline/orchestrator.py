@@ -16,7 +16,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
 from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE, SHADOW_POINTER, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT
-from pipeline.reconstruct import button_move_online, reconcile_underread_amount
+from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button
 from difflib import get_close_matches
 
 import cv2
@@ -247,6 +247,13 @@ class PipelineOrchestrator:
         self._btn_pending_count = 0
         if BUTTON_CUT:
             logger.info("[step2b] BUTTON_CUT=1:换手走按钮权威(白占比+在线去抖)+总底池兜底;hero/公共牌reset 触发关闭")
+
+        # 2026-06-06:桌规录入(SB/BB/ante)。提供则按【按钮+精确活跃集(card_marker)】确定性派
+        # 强制注,绕开 OCR 盲注抖动(#230);未提供 → 回落 OCR _detect_blind_levels。
+        self._table_blinds = self._read_table_blinds()
+        if self._table_blinds:
+            t = self._table_blinds
+            logger.info(f"[桌规] SB={t['sb']} BB={t['bb']} ante={t['ante']} → 按钮+活跃集确定性派盲注/前注(免OCR)")
 
         # T117(2026-06-01):fold-miss 精准探针 v2 — per-seat per-hand fold_area
         # 读取画像累积 {seat: {empty:int, unparsed:[str], digit:[str]}}。
@@ -631,7 +638,9 @@ class PipelineOrchestrator:
 
         # T17(2026-05-28):抓 SB/BB 强制下注金额 → blind_level
         # 依赖 button_seat_index 准确(T13 fix 后 ✅)
-        self._detect_blind_levels()
+        # 2026-06-06:桌规已录入 → 盲注值权威来自用户输入,跳过 OCR(治 #230 抖动);_inject 走桌规路径。
+        if not self._table_blinds:
+            self._detect_blind_levels()
 
         # Capture each seat's platform user-ID before any in-hand action obscures it
         self._capture_player_ids()
@@ -699,6 +708,82 @@ class PipelineOrchestrator:
         # raw_data.synthetic=True marker 让 dashboard / Path B 区分 真 OCR vs 合成.
         self._inject_post_events(db)
 
+    def _seat_position(self, seat_idx):
+        """seat → Position(取 tracker 位置映射,兜底 BTN;ante 的 position 仅元数据)。"""
+        from events.models import Position
+        pv = self.tracker._position_map.get(seat_idx)
+        if pv:
+            try:
+                return Position(pv)
+            except ValueError:
+                pass
+        return Position.BTN
+
+    def _emit_forced_event(self, db, hand, seat_idx, action_type, amount, position):
+        """造 1 条 synthetic 强制注 event(POST_SB/BB/ANTE)+ 持久化。玩家未知则跳(不伪造名污染画像)。"""
+        if self.tracker.is_skippable_seat(seat_idx):
+            return
+        player_name = self.tracker.player_id_map.get(seat_idx)
+        if not player_name:
+            diag.emit("post.injection_skipped",
+                      {"reason": "player_unknown", "seat": seat_idx, "action": action_type.value},
+                      hand_id=hand.id)
+            return
+        stack_before = self.tracker._prev_stack.get(seat_idx)
+        stack_after = (stack_before - amount) if stack_before is not None else None
+        event = self.tracker.normalizer.create_event(
+            hand=hand, player_name=player_name, position=position,
+            action_type=action_type, amount=amount, facing_action=None)
+        event.confidence_score = 0.95
+        event.raw_data = {
+            "synthetic": True, "source": "table_blind_injection",
+            "stack_before": stack_before, "stack_after": stack_after,
+            "stack_delta": amount, "blind_level_source": "table_input",
+        }
+        if db is not None:
+            try:
+                self.event_repo.create(db, event)
+            except Exception:
+                logger.warning(f"forced inject seat_{seat_idx} {action_type.value} failed", exc_info=True)
+                return
+        diag.emit("post.injection_done",
+                  {"seat": seat_idx, "player": player_name, "action": action_type.value,
+                   "amount": amount, "source": "table_input"}, hand_id=hand.id)
+
+    def _inject_forced_from_blinds(self, db):
+        """桌规录入路径(2026-06-06):按钮 + 精确活跃集(card_marker)→ `blinds_from_button` 定
+        SB/BB 座(走活跃集下一/下下位,跳空座),ante 给全活跃座。用户输入值,**不读 OCR 盲注**。"""
+        from events.models import Position
+        hand = self.tracker.current_hand
+        raw = hand.raw_data or {}
+        button = raw.get("button_seat_index")
+        num_seats = self.roi_manager.rois.num_seats
+        active = self._detect_active_set()
+        sb_seat, bb_seat = blinds_from_button(button, active, num_seats)
+        tb = self._table_blinds
+        sb_amt, bb_amt, ante = tb["sb"], tb["bb"], tb["ante"]
+        hand.raw_data = {**raw,
+                         "blind_level": {"sb": sb_amt, "bb": bb_amt, "ante": ante},
+                         "blind_level_source": "table_input",
+                         "active_set": sorted(active), "sb_seat": sb_seat, "bb_seat": bb_seat}
+        if sb_seat is None or bb_seat is None:
+            diag.emit("post.injection_skipped",
+                      {"reason": "blinds_from_button_none", "button": button,
+                       "active": sorted(active), "num_seats": num_seats}, hand_id=hand.id)
+            logger.warning(f"[桌规派注] 活跃集 {sorted(active)} / 按钮 {button} → 定不出 SB/BB,跳过")
+            return
+        logger.info(f"[桌规派注] 活跃集{sorted(active)} 按钮{button} → SB=s{sb_seat}({sb_amt}) "
+                    f"BB=s{bb_seat}({bb_amt}) ante={ante}×{len(active)}座")
+        # ante 给全活跃座 + SB/BB 给算出的座(分条 POST event,与 reconstruct forced 分开累加一致)
+        plan = []
+        if ante and ante > 0:
+            for s in sorted(active):
+                plan.append((s, ActionType.POST_ANTE, ante, self._seat_position(s)))
+        plan.append((sb_seat, ActionType.POST_SB, sb_amt, Position.SB))
+        plan.append((bb_seat, ActionType.POST_BB, bb_amt, Position.BB))
+        for seat_idx, atype, amount, pos in plan:
+            self._emit_forced_event(db, hand, seat_idx, atype, amount, pos)
+
     def _inject_post_events(self, db):
         """T65:hand-start 注入 SB/BB POST events,seq=1,2,synthetic=True.
 
@@ -711,6 +796,10 @@ class PipelineOrchestrator:
         """
         hand = self.tracker.current_hand
         if hand is None:
+            return
+        # 2026-06-06:桌规已录入 → 按钮+精确活跃集确定性派强制注(免 OCR,治 #230);否则走下方 OCR 路径。
+        if self._table_blinds:
+            self._inject_forced_from_blinds(db)
             return
         raw = hand.raw_data or {}
         button = raw.get("button_seat_index")
@@ -2871,6 +2960,71 @@ class PipelineOrchestrator:
                 {"sb_seat": sb_idx, "bb_seat": bb_idx, "blinds": blinds, "button_seat": button_seat},
                 hand_id=self.tracker.current_hand.id,
             )
+
+    def _read_table_blinds(self):
+        """桌规录入:优先 env(POKEMIR_SB/BB/ANTE),否则交互 prompt(仅 tty)。
+        返回 {'sb','bb','ante'} 或 None(未提供 → 回落 OCR 盲注检测,不阻塞 replay/cron)。"""
+        import sys as _sys
+
+        def _f(k):
+            v = os.getenv(k)
+            try:
+                return float(v) if v not in (None, "") else None
+            except ValueError:
+                return None
+        sb, bb, ante = _f("POKEMIR_SB"), _f("POKEMIR_BB"), _f("POKEMIR_ANTE")
+        if sb is None and bb is None and getattr(_sys.stdin, "isatty", lambda: False)():
+            try:
+                print("【桌规录入】直接回车跳过(回落 OCR 盲注检测):")
+                s = input("  小盲 SB = ").strip()
+                if s:
+                    sb = float(s)
+                    bb = float(input("  大盲 BB = ").strip())
+                    a = input("  前注 ante(无则回车=0)= ").strip()
+                    ante = float(a) if a else 0.0
+            except (EOFError, ValueError, KeyboardInterrupt):
+                return None
+        if sb is None or bb is None:
+            return None
+        return {"sb": sb, "bb": bb, "ante": ante or 0.0}
+
+    @staticmethod
+    def _avg_hash_int(crop):
+        """8x8 average-hash → 64-bit int。**忠实复制 replay_reconstruct._avg_hash**(profile 里
+        card_marker_ref 就是它算的,必须同算法才可比;BGRA→GRAY 适配 mss 4 通道)。⚠️ Win-only。"""
+        import cv2
+        if crop is None or getattr(crop, "size", 0) == 0:
+            return 0
+        code = cv2.COLOR_BGRA2GRAY if (crop.ndim == 3 and crop.shape[2] == 4) else cv2.COLOR_BGR2GRAY
+        g = cv2.resize(cv2.cvtColor(crop, code), (8, 8))
+        m = float(g.mean())
+        bits = 0
+        for v in g.flatten():
+            bits = (bits << 1) | (1 if float(v) > m else 0)
+        return bits
+
+    @staticmethod
+    def _hamming64(a, b):
+        return bin(int(a) ^ int(b)).count("1")
+
+    def _detect_active_set(self, th=8):
+        """精确活跃集(2026-06-06,#228 接 live):每座 card_marker(头像左下两红牌背)avg_hash 对
+        持久参考 card_marker_ref hamming≤th → 在手。治"占座≠发牌"(带入审核/坐下未发)。
+        返回在手座 set。无 card_marker/ref 的座跳过。⚠️ cv2 路径 Win-only 未验。"""
+        active, cands = set(), []
+        for seat_roi in self.roi_manager.rois.seat_regions:
+            if seat_roi.card_marker is None or seat_roi.card_marker_ref is None:
+                continue
+            img = self.capturer.capture_roi(seat_roi.card_marker)
+            if img.size == 0:
+                continue
+            ham = self._hamming64(self._avg_hash_int(img), seat_roi.card_marker_ref)
+            cands.append((seat_roi.seat_index, ham))
+            if ham <= th:
+                active.add(seat_roi.seat_index)
+        diag.emit("active_set.detected", {"active": sorted(active), "hammings": cands, "th": th},
+                  hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
+        return active
 
     def _scan_button_white_frac(self, white_th=170, frac_th=0.12):
         """白占比 argmax 扫各座 button_indicator → (button_seat|None, candidates)。

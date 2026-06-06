@@ -137,6 +137,8 @@ class TableROIs:
                 timer_area=_tuple_to_roi(s["timer"], "seat_timer") if s.get("timer") else None,
                 win_amount_area=_tuple_to_roi(s["win_amount"], "seat_win_amount") if s.get("win_amount") else None,
                 fold_text_area=_tuple_to_roi(s["fold_text"], "seat_fold_text") if s.get("fold_text") else None,
+                card_marker=_tuple_to_roi(s["card_marker"], "seat_card_marker") if s.get("card_marker") else None,
+                card_marker_ref=s.get("card_marker_ref"),
             )
             rois.seat_regions.append(seat)
         return rois
@@ -176,6 +178,10 @@ class SeatROI:
                                                 # 只在 hand 结算 1-2 秒短暂显示;为 Path B 净胜负
                                                 # 统计提供直接信号(无需 stack delta 推算).
                                                 # 紧框 "+" 号 + 数字本身.
+    card_marker: ROIRegion | None = None  # 头像左下两条红牌背(全玩家统一)→ phash 对 card_marker_ref
+                                          # hamming≤8 = 在手(精确活跃集,2026-06-06 接 live;治占座≠发牌)。
+    card_marker_ref: int | None = None    # 该座 card_marker 的持久参考 avg_hash(8x8,64-bit int);
+                                          # 由 replay_reconstruct --capture-ref 采,存 profile JSON。
     fold_text_area: ROIRegion | None = None  # T120(2026-06-01):专职"弃牌"文字 ROL,
                                               # 紧框"弃牌/盖牌"渲染处(独立于多用途 fold_area).
                                               # 配 allowlist=弃牌盖 单用途读 → 治 OCR 认错
