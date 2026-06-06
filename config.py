@@ -54,6 +54,10 @@ BATCH_SEAT_OCR = os.getenv("POKEMIR_BATCH_SEAT_OCR", "1").lower() in ("1", "true
 # =一个 chip 动作)。验证"stack 是否比 timer/动作字幕更可靠地逮住漏掉的动作"。
 # 默认关;POKEMIR_STACK_PROBE=1 测时开。验证通过后再考虑扶正为主驱动。
 STACK_PROBE = os.getenv("POKEMIR_STACK_PROBE", "0").lower() in ("1", "true", "yes")
+# 2026-06-05:shadow_pointer_scan(T48 指针架构实验扫描)总开关。每 tick 对 8 座 timer
+# 各跑一次 EasyOCR(Stage0 实测 ~321ms/tick),但【只 emit diag、未切主链路】=纯实验
+# 开销烧在热路径。默认【关】省这 321ms;需采指针候选数据时 POKEMIR_SHADOW_POINTER=1。
+SHADOW_POINTER = os.getenv("POKEMIR_SHADOW_POINTER", "0").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 

@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE, SHADOW_POINTER
 from difflib import get_close_matches
 
 import cv2
@@ -346,7 +346,9 @@ class PipelineOrchestrator:
             # T48 v3 Stage 1(2026-05-29):指针架构 shadow 扫描,纯 emit diag
             # 不动主表写入(灰度并跑),数据评估后再切主链路.
             # 放在主 seat actions 之前,先用廉价 timer 扫面定位"当前行动玩家".
-            if self.tracker.has_active_hand:
+            # 2026-06-05:默认关(SHADOW_POINTER)——此扫描每 tick 8 座 timer EasyOCR
+            # ~321ms 但只 emit diag、未切主链路 = 纯实验开销。采指针数据时才 =1 开。
+            if SHADOW_POINTER and self.tracker.has_active_hand:
                 t_p = time.perf_counter()
                 self._shadow_pointer_scan(rois)
                 phase_ms["shadow_pointer"] = (time.perf_counter() - t_p) * 1000.0
