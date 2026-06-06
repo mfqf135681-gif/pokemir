@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE, SHADOW_POINTER
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE, SHADOW_POINTER, DIGIT_RECIPE_LIVE
 from difflib import get_close_matches
 
 import cv2
@@ -209,6 +209,17 @@ class PipelineOrchestrator:
         # 格式: {"action_text": str, "amount_text": str, "chip_text": str}
         # ATTENTION_MODE=0 时永远空 {}.
         self._attention_focus_results: dict = {}
+
+        # 2026-06-05 杠杆A:数字配方 reader(DIGIT_RECIPE_LIVE 时接管 stack 读取)。
+        self._digit_reader = None
+        if DIGIT_RECIPE_LIVE:
+            tmpl = Path(ROI_CONFIG_DIR) / f"digit_templates_{profile}.json"
+            if tmpl.is_file():
+                from pipeline.digit_reader import DigitReader
+                self._digit_reader = DigitReader.load(str(tmpl))
+                logger.info(f"[杠杆A] DigitReader 接管 stack 读取(模板 {tmpl.name},EasyOCR 仅兜底)")
+            else:
+                logger.warning(f"[杠杆A] DIGIT_RECIPE_LIVE=1 但无模板 {tmpl} → 仍用 EasyOCR")
 
         # T117(2026-06-01):fold-miss 精准探针 v2 — per-seat per-hand fold_area
         # 读取画像累积 {seat: {empty:int, unparsed:[str], digit:[str]}}。
@@ -2002,6 +2013,7 @@ class PipelineOrchestrator:
         self._batched_fold_text_results = {}
         self._batched_fold_results = {}  # sidx -> (img, text)
         self._batched_stack_results = {}
+        self._batched_stack_crops = {}   # sidx -> img(杠杆A:配方读 stack 用 crop)
         if not BATCH_SEAT_OCR:
             return
         timer_items, ftxt_items, fold_items, stack_items = [], [], [], []
@@ -2037,7 +2049,11 @@ class PipelineOrchestrator:
             texts = self.ocr.read_text_batch([i for _, i in fold_items], allowlist="")
             for (sidx, img), t in zip(fold_items, texts):
                 self._batched_fold_results[sidx] = (img, t)
-        if stack_items:
+        # 杠杆A:配方开 → 留 crop 给 DigitReader、跳过 EasyOCR stack 批读(省那次 OCR);
+        #   配方读空(全下%/不可读)时,消费端再对该 crop 走 EasyOCR 兜底(认 %)。
+        for sidx, img in stack_items:
+            self._batched_stack_crops[sidx] = img
+        if stack_items and not (DIGIT_RECIPE_LIVE and self._digit_reader is not None):
             texts = self.ocr.read_text_batch([i for _, i in stack_items], allowlist="0123456789.%")
             for (sidx, _), t in zip(stack_items, texts):
                 self._batched_stack_results[sidx] = t
@@ -2086,7 +2102,18 @@ class PipelineOrchestrator:
             if seat_roi.stack_area is not None and seat_roi.stack_area.width > 0:
                 _t = time.perf_counter()
                 # T103 R15: %-aware stack OCR(all-in equity returns None)
-                if BATCH_SEAT_OCR and sidx in self._batched_stack_results:
+                if DIGIT_RECIPE_LIVE and self._digit_reader is not None:
+                    # 杠杆A:配方主读(快~10×)。crop 优先用 batch 已抓的,无则现抓。
+                    crop = getattr(self, "_batched_stack_crops", {}).get(sidx)
+                    if crop is None:
+                        crop = self.capturer.capture_roi(seat_roi.stack_area)
+                    v = self._digit_reader.read(crop)
+                    if v is not None:
+                        stack_now = float(v)
+                    else:
+                        # 配方读空(全下%/不可读)→ EasyOCR 兜底(认 %=all-in→None+emit)
+                        stack_now = self._ocr_stack_chips(crop, seat_idx=sidx)
+                elif BATCH_SEAT_OCR and sidx in self._batched_stack_results:
                     stack_now = self._stack_text_to_chips(self._batched_stack_results[sidx], sidx)  # spike A: batched
                 else:
                     stack_img = self.capturer.capture_roi(seat_roi.stack_area)

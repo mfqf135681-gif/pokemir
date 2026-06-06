@@ -31,7 +31,11 @@ MAX_MERGE_W = 14
 def _gray_normalize(crop, normalize=True):
     import cv2
     import numpy as np
-    g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    if crop.ndim == 3:
+        # mss 截屏=BGRA(4通道),cv2.imread=BGR(3通道) → 两者都吃
+        g = cv2.cvtColor(crop, cv2.COLOR_BGRA2GRAY if crop.shape[2] == 4 else cv2.COLOR_BGR2GRAY)
+    else:
+        g = crop
     if normalize:  # p2–p98 拉满量程(治暗黄字卡阈值;digit_probe 默认开)
         lo, hi = float(np.percentile(g, 2)), float(np.percentile(g, 98))
         if hi - lo >= 30:

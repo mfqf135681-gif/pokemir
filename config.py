@@ -58,6 +58,11 @@ STACK_PROBE = os.getenv("POKEMIR_STACK_PROBE", "0").lower() in ("1", "true", "ye
 # 各跑一次 EasyOCR(Stage0 实测 ~321ms/tick),但【只 emit diag、未切主链路】=纯实验
 # 开销烧在热路径。默认【关】省这 321ms;需采指针候选数据时 POKEMIR_SHADOW_POINTER=1。
 SHADOW_POINTER = os.getenv("POKEMIR_SHADOW_POINTER", "0").lower() in ("1", "true", "yes")
+# 2026-06-05 杠杆A:live 热路径 stack 读取走【数字配方】(DigitReader,模板匹配,比 EasyOCR
+# 快~10×,bench 实测)而非 EasyOCR。配方主读、读空(全下%/不可读)回落 EasyOCR(认 %=all-in)。
+# 需 rois/digit_templates_<profile>.json(build_digit_templates.py 产)。默认【关】零行为变化;
+# POKEMIR_DIGIT_RECIPE_LIVE=1 开。先 stack,验准/提速后再推 amount。
+DIGIT_RECIPE_LIVE = os.getenv("POKEMIR_DIGIT_RECIPE_LIVE", "0").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 
