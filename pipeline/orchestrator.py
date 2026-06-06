@@ -16,7 +16,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
 from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE, SHADOW_POINTER, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT
-from pipeline.reconstruct import button_move_online
+from pipeline.reconstruct import button_move_online, reconcile_underread_amount
 from difflib import get_close_matches
 
 import cv2
@@ -2555,6 +2555,16 @@ class PipelineOrchestrator:
                     )
 
                 event.action_type = final_action  # may be overridden
+
+                # step1(2026-06-06):amount 漏读兜底 — last-actor 跟注时下注区显示窗口极短,
+                # 常读成该玩家自己盲注筹码(2/4)而非真额;stack 跌幅不受影响 → 明显 > 下注区即兜底。
+                # 用户翻牌谱钉死 2 例(可乐SB读2/真25、神啊BB读4/真30);纯逻辑已 Linux 单测。
+                new_amount, amount_override_reason = reconcile_underread_amount(
+                    final_action.value, event.amount, stack_delta)
+                if amount_override_reason:
+                    logger.info(f"[amount兜底] seat_{sidx} {amount_override_reason}")
+                    event.amount = new_amount
+
                 event.raw_data = {
                     "action_text": action_text,
                     "stack_before": stack_before,
@@ -2568,6 +2578,7 @@ class PipelineOrchestrator:
                     "current_to_call": self.tracker._street_to_call,
                     "is_first_bet_this_street": not self.tracker._street_has_bet,
                     "override_reason": override_reason,
+                    "amount_override_reason": amount_override_reason,
                 }
                 # P2 Layer 1: physics equation check → confidence_score
                 event.confidence_score = compute_confidence(

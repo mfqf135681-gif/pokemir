@@ -423,6 +423,23 @@ def button_move_online(confirmed, pending, pending_count, btn_now,
     return False, confirmed, pending, pending_count
 
 
+def reconcile_underread_amount(action, amount, stack_delta, margin=8, ratio=2):
+    """下注区 amount 漏读兜底(2026-06-06,用户脑内复盘机制):**当前街最后一个行动者跟注**时,
+    筹码一进池街就翻,下注区显示真额的时间窗极短 → 抓帧常卡在该玩家自己盲注筹码(2/4)那一瞬,
+    读成盲注而非真跟注额。stack 跌幅(净投入)不受此窗口影响 → 当 stack_delta 明显 > 下注区读数
+    (差 ≥margin 且 ≥ratio×)即判漏读,用 stack_delta 当 amount,返 (new_amount, reason);
+    否则原样返 (amount, None)。仅 call/bet/raise、stack 可信(>0)。纯逻辑,可 Linux 单测。
+
+    实证:可乐(SB2)跟allin净投25读成2 / 神啊(BB4)跟到34净投30读成4(用户翻牌谱钉死)。"""
+    if action not in ("call", "bet", "raise"):
+        return amount, None
+    if amount is None or stack_delta is None or stack_delta <= 0:
+        return amount, None
+    if stack_delta - amount >= margin and stack_delta >= ratio * amount:
+        return stack_delta, f"amount {amount}→{stack_delta}(下注区last-actor短窗漏读,stack跌幅兜底)"
+    return amount, None
+
+
 def corroborate_boundaries(candidates, cluster_win=6.0, anchor="button", min_signals=2):
     """多信号交叉印证切手(T139):candidates=[(t, signal_name),...]。
     按时间聚类(相邻 ≤cluster_win 归一簇),一簇是【真边界】当:
@@ -697,6 +714,19 @@ def _self_test():
     m3, c3, *_ = button_move_online(5, None, 0, 3, num_seats=8, debounce=2, max_skip=4)  # 5→3 倒退/远跳 %8=6>4 拒
     assert m3 is False and c3 == 5, (m3, c3)
     print("✅ button_move_online 在线去抖:顺时针持稳切/单帧不切/倒退拒/None不动")
+
+    # 2026-06-06 amount 漏读兜底 reconcile_underread_amount
+    assert reconcile_underread_amount("call", 2, 25) == (25, reconcile_underread_amount("call", 2, 25)[1])
+    assert reconcile_underread_amount("call", 2, 25)[0] == 25      # 可乐:读2/跌25 → 兜25
+    assert reconcile_underread_amount("call", 4, 30)[0] == 30      # 神啊:读4/跌30 → 兜30
+    assert reconcile_underread_amount("call", 4, 4) == (4, None)   # 真BB跟注 amount=stack → 不动
+    assert reconcile_underread_amount("raise", 40, 40) == (40, None)  # 一致 → 不动
+    assert reconcile_underread_amount("call", 10, 14) == (10, None)   # 差4<margin8 → 不动(防stack噪声误兜)
+    assert reconcile_underread_amount("call", 4, 7) == (4, None)      # 7<2×4 ratio不足 → 不动
+    assert reconcile_underread_amount("fold", 0, 30) == (0, None)     # 非chip动作 → 不动
+    assert reconcile_underread_amount("call", 4, None) == (4, None)   # stack空 → 不动(回退下注区)
+    assert reconcile_underread_amount("call", None, 30) == (None, None)
+    print("✅ reconcile_underread_amount:漏读兜stack跌幅/一致不动/小差不兜/ratio护栏/stack空回退")
 
     # T140 全下封盘线抑制(规则:%⟺该座all-in⟺此后不行动):显%座%后的晚跌=回声/结算,删;
     #   全下在决策街(首%)补;**按座**不动多人边池里可读的非全下座。
