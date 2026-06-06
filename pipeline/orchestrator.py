@@ -254,6 +254,12 @@ class PipelineOrchestrator:
         if self._table_blinds:
             t = self._table_blinds
             logger.info(f"[桌规] SB={t['sb']} BB={t['bb']} ante={t['ante']} → 按钮+活跃集确定性派盲注/前注(免OCR)")
+        # P0(2026-06-06):惰性盲注注入状态 + standing per-tick 活跃集。治"按钮切手超前于发牌→
+        # 活跃集空→盲注漏派"(实测 ~19% 手)。开手挂 pending,每 tick 活跃集非空才派(等发牌完成)。
+        # _active_set 整手 per-tick 维护(<1ms/tick),on-change emit = 顺带记 fold 转移(喂 P1)。
+        self._blinds_pending = False
+        self._blinds_attempts = 0
+        self._active_set: set = set()
 
         # T117(2026-06-01):fold-miss 精准探针 v2 — per-seat per-hand fold_area
         # 读取画像累积 {seat: {empty:int, unparsed:[str], digit:[str]}}。
@@ -322,7 +328,7 @@ class PipelineOrchestrator:
     _TICK_PHASES = (
         "capture_frame",  # 杠杆D.1:整窗一次性 grab(替 ~37 次逐区 grab)
         "hero_capture", "hand_detect", "community", "community_reset",
-        "pot", "shadow_pointer", "seat_actions", "showdown", "capture_ids",
+        "pot", "active_set", "shadow_pointer", "seat_actions", "showdown", "capture_ids",
         # T57 seat 子 phase
         "seat_stack_ocr", "seat_timer_ocr", "seat_fold_ocr",
         "seat_action_ocr", "seat_amount_ocr", "seat_avatar_hash",
@@ -428,6 +434,13 @@ class PipelineOrchestrator:
                 t_p = time.perf_counter()
                 self._process_pot(db, rois)
                 phase_ms["pot"] = (time.perf_counter() - t_p) * 1000.0
+
+            # P0(2026-06-06):standing per-tick 活跃集 + 惰性盲注注入(桌规模式)。
+            # 必须在 _process_seat_actions 之前(否则本 tick 真实动作先于合成 POST 入库,seq 乱)。
+            if self._table_blinds and self.tracker.has_active_hand:
+                t_p = time.perf_counter()
+                self._tick_active_set_and_blinds(db)
+                phase_ms["active_set"] = (time.perf_counter() - t_p) * 1000.0
 
             # T48 v3 Stage 1(2026-05-29):指针架构 shadow 扫描,纯 emit diag
             # 不动主表写入(灰度并跑),数据评估后再切主链路.
@@ -706,7 +719,14 @@ class PipelineOrchestrator:
         # (seq=1,2),让 SB/BB 玩家"forced 行动"在数据层显式存在.
         # action_type=POST_*,被 stats SQL whitelist 排除,不算 VPIP.
         # raw_data.synthetic=True marker 让 dashboard / Path B 区分 真 OCR vs 合成.
-        self._inject_post_events(db)
+        # P0(2026-06-06):桌规模式 → 不在此内联注入(此刻发牌可能未完成→活跃集空→漏派),
+        # 改挂 _blinds_pending,由 _tick 每 tick 检查、活跃集非空(发牌完成)才派;重置 per-tick 活跃集。
+        if self._table_blinds:
+            self._blinds_pending = True
+            self._blinds_attempts = 0
+            self._active_set = set()
+        else:
+            self._inject_post_events(db)   # OCR 路径:hand-start 内联(community 未发时盲注 ROI 准)
 
     def _seat_position(self, seat_idx):
         """seat → Position(取 tracker 位置映射,兜底 BTN;ante 的 position 仅元数据)。"""
@@ -750,15 +770,45 @@ class PipelineOrchestrator:
                   {"seat": seat_idx, "player": player_name, "action": action_type.value,
                    "amount": amount, "source": "table_input"}, hand_id=hand.id)
 
-    def _inject_forced_from_blinds(self, db):
+    def _tick_active_set_and_blinds(self, db):
+        """P0(2026-06-06)每 tick:读精确活跃集(standing per-tick 信号)+ on-change 诊断(记 fold
+        转移,喂 P1)+ 惰性盲注注入(发牌完成=活跃集非空才派,治按钮切手超前发牌的 ~19% 漏派)。"""
+        active = self._detect_active_set(emit=False)
+        # on-change 诊断:成员变才记(入场/弃牌/手末)→ 天然就是 fold 转移记录,不每 tick 刷库
+        if active != self._active_set:
+            cc = (self.tracker.current_hand.community_cards or {}) if self.tracker.current_hand else {}
+            street = ("river" if cc.get("river") else "turn" if cc.get("turn")
+                      else "flop" if cc.get("flop") else "preflop")
+            diag.emit("active_set.changed",
+                      {"prev": sorted(self._active_set), "now": sorted(active),
+                       "left": sorted(self._active_set - active),
+                       "joined": sorted(active - self._active_set), "street": street},
+                      hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
+            self._active_set = active
+        # 惰性盲注注入:等发牌完成(活跃非空)才派;非空但定不出 SB/BB 也不再重试(那是按钮/活跃问题非时机)
+        if self._blinds_pending:
+            self._blinds_attempts += 1
+            if active:
+                self._blinds_pending = False
+                self._inject_forced_from_blinds(db, active=active)
+            elif self._blinds_attempts >= 12:   # ~超时(发牌迟迟不检出=异常)→ 放弃,免无限挂
+                self._blinds_pending = False
+                diag.emit("post.injection_skipped",
+                          {"reason": "active_empty_timeout", "attempts": self._blinds_attempts},
+                          hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
+                logger.warning("[桌规派注] 活跃集持续为空(发牌未检出)→ 超时放弃本手盲注注入")
+
+    def _inject_forced_from_blinds(self, db, active=None):
         """桌规录入路径(2026-06-06):按钮 + 精确活跃集(card_marker)→ `blinds_from_button` 定
-        SB/BB 座(走活跃集下一/下下位,跳空座),ante 给全活跃座。用户输入值,**不读 OCR 盲注**。"""
+        SB/BB 座(走活跃集下一/下下位,跳空座),ante 给全活跃座。用户输入值,**不读 OCR 盲注**。
+        active 可由 per-tick 惰性注入传入(已读,免重复);None 则现读。"""
         from events.models import Position
         hand = self.tracker.current_hand
         raw = hand.raw_data or {}
         button = raw.get("button_seat_index")
         num_seats = self.roi_manager.rois.num_seats
-        active = self._detect_active_set()
+        if active is None:
+            active = self._detect_active_set()
         sb_seat, bb_seat = blinds_from_button(button, active, num_seats)
         tb = self._table_blinds
         sb_amt, bb_amt, ante = tb["sb"], tb["bb"], tb["ante"]
@@ -3007,10 +3057,11 @@ class PipelineOrchestrator:
     def _hamming64(a, b):
         return bin(int(a) ^ int(b)).count("1")
 
-    def _detect_active_set(self, th=8):
+    def _detect_active_set(self, th=8, emit=True):
         """精确活跃集(2026-06-06,#228 接 live):每座 card_marker(头像左下两红牌背)avg_hash 对
         持久参考 card_marker_ref hamming≤th → 在手。治"占座≠发牌"(带入审核/坐下未发)。
-        返回在手座 set。无 card_marker/ref 的座跳过。⚠️ cv2 路径 Win-only 未验。"""
+        返回在手座 set。无 card_marker/ref 的座跳过。emit=False 供 per-tick 调用(改走 on-change 诊断,
+        防每 tick 刷库)。⚠️ cv2 路径 Win-only 未验。"""
         active, cands = set(), []
         for seat_roi in self.roi_manager.rois.seat_regions:
             if seat_roi.card_marker is None or seat_roi.card_marker_ref is None:
@@ -3022,8 +3073,9 @@ class PipelineOrchestrator:
             cands.append((seat_roi.seat_index, ham))
             if ham <= th:
                 active.add(seat_roi.seat_index)
-        diag.emit("active_set.detected", {"active": sorted(active), "hammings": cands, "th": th},
-                  hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
+        if emit:
+            diag.emit("active_set.detected", {"active": sorted(active), "hammings": cands, "th": th},
+                      hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
         return active
 
     def _scan_button_white_frac(self, white_th=170, frac_th=0.12):
