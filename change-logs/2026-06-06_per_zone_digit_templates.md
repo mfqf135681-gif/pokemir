@@ -26,6 +26,13 @@ Win-only**,待 Win 端执行。
   (`cells[:len]` 右侧图标座 / `cells[-len:]` 左侧),**逐字复制 digit_probe.py:261-263**
   实证逻辑——非自创(我初版 `cells[1:]` 只管左侧+1格,会误采右侧图标座,已纠)。
 - 自检回读用 `allow_icon=icon_prefix` 对齐 live(live 是 classify 丢 '?',位置无关)。
+- 新 `--validate-file`/`--validate-session`:用建好的模板读**未参与采样**的录像报真泛化准度
+  (镜像自检循环;95% 目标看这个数,非自检自洽数)。
+
+### tools\run_build_amount_templates.cmd(新,现成可跑)
+- 单行命令(避 `^` 续行空格地狱)。**复用 #229 实测确定值**:源=121925+130651,
+  留出验=170343,`--icon-right-seats "5,6,7"`(这桌 5/6/7 座图标在右,已实测非示例)。
+  产 `rois\digit_templates_party_poker_8_amount.json`,live 自动接管。
 
 ## 3. 为什么是两个工具不是一个
 

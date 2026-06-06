@@ -57,6 +57,10 @@ def main():
     ap.add_argument("--harvest-session", action="append", default=[],
                     help="多源:各真值文件对应的录像(与 --harvest-file 同序);省则全用 --session")
     ap.add_argument("--out", required=True, help="模板 JSON 输出路径")
+    ap.add_argument("--validate-file", default="",
+                    help="留出验证真值文件(不参与采样,只用建好的模板回读报准度)。配 --validate-session。")
+    ap.add_argument("--validate-session", default="",
+                    help="留出验证的录像目录(与 --validate-file 配对)。")
     ap.add_argument("--ink-th", type=int, default=digit_reader.INK_TH)
     # amount 下注区图标处理(忠实复制 digit_probe.py:261-263 实证逻辑;座有左右之分)
     ap.add_argument("--icon-prefix", action="store_true",
@@ -147,6 +151,33 @@ def main():
         print(f"  ✗ {fn} s{si} 真值'{val}' → 读 {got}")
     if bad == 0:
         print("✅ 模板自洽(回读全对)。下一步:替 replay 跑 --digit-templates 看全下0能否读出。")
+
+    # 留出验证:用建好的模板读【未参与采样】的录像,报真实泛化准度(95% 目标看这个,非自检)
+    if args.validate_file and args.validate_session:
+        vdir = Path(args.validate_session) / "frames"
+        vblks = _parse_blocks(Path(args.validate_file).read_text(encoding="utf-8").splitlines())
+        vok = vbad = 0
+        vbads = []
+        for fn, vals in vblks:
+            for si, val in enumerate(vals):
+                if not val or not val.isdigit() or si not in seat_rois:
+                    continue
+                img = cv2.imread(str(vdir / fn))
+                if img is None:
+                    continue
+                l, t, w, h = seat_rois[si]
+                got = reader.read(img[t:t + h, l:l + w], allow_icon=args.icon_prefix)
+                if str(got) == val:
+                    vok += 1
+                else:
+                    vbad += 1
+                    vbads.append((fn, si, val, got))
+        tot = vok + vbad
+        pct = (100.0 * vok / tot) if tot else 0.0
+        print(f"\n留出验证({Path(args.validate_file).name},未参与采样):"
+              f"对 {vok} / 错 {vbad} = {pct:.1f}%  ← 这是真泛化准度(对标 95%)")
+        for fn, si, val, got in vbads[:30]:
+            print(f"  ✗ {fn} s{si} 真值'{val}' → 读 {got}")
 
 
 if __name__ == "__main__":
