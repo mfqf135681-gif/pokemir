@@ -33,14 +33,7 @@ USE_GPU = os.getenv("POKEMIR_USE_GPU", "0").lower() in ("1", "true", "yes")
 # 预期 OCR 总耗时 ~1.4s → ~200ms,tick 4.9s → 2.5-3s.
 # 启用方式:POKEMIR_OCR_BATCH=1.前提 USE_GPU=1 才有意义.
 OCR_BATCH = os.getenv("POKEMIR_OCR_BATCH", "0").lower() in ("1", "true", "yes")
-# Phase 1.5 v3.2 (2026-05-31 T89):注意力机制 + 双 OCR + Seat 5/Hand 12 状态机
-# + §12 摊牌专项 + 13 规则盲点.Step 1 of 9-step execution sequence
-# (详 requirement-discussions/2026-05-30_phase-1-5-attention-mechanism-design.md
-#  §11.4). 默认 0 = 旧 path 100% 不变 (T80/T82 模块躺仓库不集成).
-# 后续 Step 2-9 实施时,所有新 path 包 `if ATTENTION_MODE:` 守卫,旧 path
-# 保 fallback. **回滚靠 env var 而非双轨代码** (per §11.3 陷阱 4).
-# 启用方式:POKEMIR_ATTENTION_MODE=1.前提 USE_GPU=1 + OCR_BATCH=1 已生效.
-ATTENTION_MODE = os.getenv("POKEMIR_ATTENTION_MODE", "0").lower() in ("1", "true", "yes")
+# (2026-06-06 P3 退役:ATTENTION_MODE 双OCR/attention 实验整套删除——从未上 live、用户判定弃。)
 # 2026-06-01:spent-investigation 探针总开关(fold_probe / p3.text_priority /
 # showdown.dark_cards_area 等调查已结束的 observability)。默认关 = 不写 DB,
 # 减 transition 尖刺 + DB clutter。需要时 POKEMIR_VERBOSE_DIAG=1 重新打开。
@@ -50,14 +43,8 @@ VERBOSE_DIAG = os.getenv("POKEMIR_VERBOSE_DIAG", "0").lower() in ("1", "true", "
 # 2026-06-01 A/B 验证:tick 0.32→1.08Hz、pot-gap 丢失 29.4%→18.5% → 默认开。
 # 回退:POKEMIR_BATCH_SEAT_OCR=0(逐座旧路径)。
 BATCH_SEAT_OCR = os.getenv("POKEMIR_BATCH_SEAT_OCR", "1").lower() in ("1", "true", "yes")
-# 2026-06-01 stack-drop 探针:每 tick 记 stack 下跌(规则:筹码守恒,stack 掉=投了钱
-# =一个 chip 动作)。验证"stack 是否比 timer/动作字幕更可靠地逮住漏掉的动作"。
-# 默认关;POKEMIR_STACK_PROBE=1 测时开。验证通过后再考虑扶正为主驱动。
-STACK_PROBE = os.getenv("POKEMIR_STACK_PROBE", "0").lower() in ("1", "true", "yes")
-# 2026-06-05:shadow_pointer_scan(T48 指针架构实验扫描)总开关。每 tick 对 8 座 timer
-# 各跑一次 EasyOCR(Stage0 实测 ~321ms/tick),但【只 emit diag、未切主链路】=纯实验
-# 开销烧在热路径。默认【关】省这 321ms;需采指针候选数据时 POKEMIR_SHADOW_POINTER=1。
-SHADOW_POINTER = os.getenv("POKEMIR_SHADOW_POINTER", "0").lower() in ("1", "true", "yes")
+# (2026-06-06 P3 退役:STACK_PROBE stack-drop 探针、SHADOW_POINTER T48 指针扫描 均删——
+#  纯实验探针/gated 默认关、从未切主链路。)
 # 2026-06-05 杠杆A:live 热路径 stack 读取走【数字配方】(DigitReader,模板匹配,比 EasyOCR
 # 快~10×,bench 实测)而非 EasyOCR。配方主读、读空(全下%/不可读)回落 EasyOCR(认 %=all-in)。
 # 需 rois/digit_templates_<profile>.json(build_digit_templates.py 产)。默认【关】零行为变化;

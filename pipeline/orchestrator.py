@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE, SHADOW_POINTER, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT
 from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button
 from difflib import get_close_matches
 
@@ -183,33 +183,10 @@ class PipelineOrchestrator:
         self.card_recognizer = CardRecognizer()
         self.action_recognizer = ActionRecognizer()
         # T72(2026-05-29):config.USE_GPU 控制 EasyOCR GPU 模式.
-        # T97 (Phase 1.5 v3.2 Step 3.2,2026-05-31):双 OCR instance Wire.
-        # OCR-1 "global":全局扫(timer-region + id-region + multi-pot),
-        #                 instance-level default_allowlist 收窄到 attention 字符集.
-        # OCR-2 "focus":  当前 timer seat 抓(action + amount + chip),
-        #                 dynamic per-call allowlist.
-        # ATTENTION_MODE=0 时 self.ocr_focus = None(不分配 VRAM).
-        # Pattern D 协作 logic 在 Sub-step 3.3 接入(本 sub-step 仅 wire).
-        from config import USE_GPU, ATTENTION_MODE
-        # OCR-1 全局(name + default_allowlist 仅 attention mode 实际用,
-        # legacy mode 仍调用 read_text(..., allowlist=...) 覆盖,行为不变)
-        self.ocr = OCREngine(
-            gpu=USE_GPU,
-            name="global",
-            default_allowlist="弃牌跟注让牌加下0123456789" if ATTENTION_MODE else "",
-        )
-        # OCR-2 专注 — lazy init only when ATTENTION_MODE=1(避免 mode=0 浪费 VRAM)
-        self.ocr_focus: OCREngine | None = (
-            OCREngine(gpu=USE_GPU, name="focus") if ATTENTION_MODE else None
-        )
-        if ATTENTION_MODE:
-            logger.info(
-                f"Phase 1.5 v3.2 双 OCR wired: ocr=global / ocr_focus=focus"
-            )
-        # T99 Step 3.3b: 每 tick OCR-2 focus 结果存这,Step 3.3c merge logic 读
-        # 格式: {"action_text": str, "amount_text": str, "chip_text": str}
-        # ATTENTION_MODE=0 时永远空 {}.
-        self._attention_focus_results: dict = {}
+        # 单 OCR 引擎(2026-06-06 P3:删 双OCR/attention 实验,ocr_focus 退役)。
+        # 调用方每次 read_text(..., allowlist=...) 覆盖,故 default_allowlist="" 即可。
+        from config import USE_GPU
+        self.ocr = OCREngine(gpu=USE_GPU, name="global", default_allowlist="")
 
         # 2026-06-05 杠杆A → 2026-06-06 各区独立模板:DIGIT_RECIPE_LIVE 时配方接管数字读取。
         # 用户拍板「各区用自己模板」(治 cut1 用 stack 模板读 amount 的 3↔4;零跨区耦合)。
@@ -328,15 +305,13 @@ class PipelineOrchestrator:
     _TICK_PHASES = (
         "capture_frame",  # 杠杆D.1:整窗一次性 grab(替 ~37 次逐区 grab)
         "hero_capture", "hand_detect", "community", "community_reset",
-        "pot", "active_set", "shadow_pointer", "seat_actions", "showdown", "capture_ids",
+        "pot", "active_set", "seat_actions", "showdown", "capture_ids",
         # T57 seat 子 phase
         "seat_stack_ocr", "seat_timer_ocr", "seat_fold_ocr",
         "seat_action_ocr", "seat_amount_ocr", "seat_avatar_hash",
         "seat_parse_persist",
-        # T99 Phase 1.5 v3.2 attention focus OCR(2026-05-31 加入聚合)
-        "attention_focus_ocr",
         # 2026-06-01 spike A:定位 seat_actions 未计时 gap(~410ms)
-        "seat_artifact", "seat_pattern_d",
+        "seat_artifact",
         # 2026-06-05:hand 转换拆分(startup 卡)+ 整 seat 循环 + detect_empty/showdown
         "hand_end", "hand_start", "detect_empty", "showdown_cnn", "seat_loop",
     )
@@ -442,28 +417,6 @@ class PipelineOrchestrator:
                 self._tick_active_set_and_blinds(db)
                 phase_ms["active_set"] = (time.perf_counter() - t_p) * 1000.0
 
-            # T48 v3 Stage 1(2026-05-29):指针架构 shadow 扫描,纯 emit diag
-            # 不动主表写入(灰度并跑),数据评估后再切主链路.
-            # 放在主 seat actions 之前,先用廉价 timer 扫面定位"当前行动玩家".
-            # 2026-06-05:默认关(SHADOW_POINTER)——此扫描每 tick 8 座 timer EasyOCR
-            # ~321ms 但只 emit diag、未切主链路 = 纯实验开销。采指针数据时才 =1 开。
-            if SHADOW_POINTER and self.tracker.has_active_hand:
-                t_p = time.perf_counter()
-                self._shadow_pointer_scan(rois)
-                phase_ms["shadow_pointer"] = (time.perf_counter() - t_p) * 1000.0
-
-            # T99 Step 3.3b: Pattern D OCR-2 attention focus 抓.
-            # 接在 shadow_pointer_scan 后(_pointer_state["current_seat"] 已更新).
-            # ATTENTION_MODE=0 / ocr_focus None / 无 active hand → 跳过.
-            # 结果存 self._attention_focus_results 给 Step 3.3c merge logic 读.
-            from config import ATTENTION_MODE as _ATTN_MODE
-            if _ATTN_MODE and self.ocr_focus and self.tracker.has_active_hand:
-                t_p = time.perf_counter()
-                focus_seat = self.get_focus_seat()
-                self._attention_focus_results = self._capture_focus_seat_ocr(
-                    rois, focus_seat
-                )
-                phase_ms["attention_focus_ocr"] = (time.perf_counter() - t_p) * 1000.0
 
             # 5. Seat actions — writes raw_data with stack_delta + pot_delta evidence
             if self.tracker.has_active_hand:
@@ -883,7 +836,7 @@ class PipelineOrchestrator:
             (sb_seat, ActionType.POST_SB, sb_amount, Position.SB),
             (bb_seat, ActionType.POST_BB, bb_amount, Position.BB),
         ):
-            # T92 Step 2.3 ATTENTION_MODE-gated skip
+            # fold/empty 座 → 跳过
             if self.tracker.is_skippable_seat(seat_idx):
                 diag.emit(
                     "post.injection_skipped",
@@ -1376,163 +1329,6 @@ class PipelineOrchestrator:
         decision_time_ms = int((time.time() - started_at) * 1000)
         self.tracker._pending_decision_time[sidx] = decision_time_ms
 
-    # ── Phase 1.5 v3.2 Step 3.3a (T98, 2026-05-31): Pattern D focus seat ──
-    # OCR-2 "focus" 抓 timer seat 的 action + amount + chip.
-    # 当前 sub-step: helper methods ready,**未 wire 进 _tick**(3.3b 接入).
-    # ATTENTION_MODE=0 时这些方法返回 None / 空 dict,不影响 legacy path.
-
-    def get_focus_seat(self) -> int | None:
-        """返回 OCR-2 真该抓的 focus seat(刚行动完那个).
-
-        T108 fix(2026-05-31):原读 current_seat = timer 在的人(正在 think,
-        action overlay 还未出现).真该读 just_acted_seat = timer 刚从此座
-        跳走的人(action overlay 显示在他身上).
-
-        Time window:仅返回 2s 内刚行动的 seat(避免 stale).
-        """
-        if not self.tracker.has_active_hand:
-            return None
-        state = self.tracker._pointer_state
-        if not state:
-            return None
-        just_acted = state.get("just_acted_seat")
-        just_acted_at = state.get("just_acted_at")
-        if just_acted is None or just_acted_at is None:
-            return None
-        # 仅 2s 内的 just-acted 才有效(action overlay 一般 1-2s)
-        if time.time() - just_acted_at > 2.0:
-            return None
-        return just_acted
-
-    # ── Phase 1.5 v3.2 Step 3.4 (T101): Multi-pot observation framework ──
-    # 完整 multi-pot 需 Win 端 UI verify(side pot ROI 划定 — 现 rois/party_poker_*.json
-    # 仅有主底池 pot_size).本 sub-step 仅 framework stub,**Win 端 UI 实操后**
-    # 再加 side_pot_1, side_pot_2 等 ROI + 真 OCR.
-    # 当前结构:返回 {"main_pot": float|None, "side_pot_count": 0}.
-    # 未来扩展:从 v_ring_beam_insurance_v2 / D28 边池分解 view cross-validate.
-
-    def _observe_multi_pot(self, rois) -> dict:
-        """Step 3.4 framework — 观察 multi-pot 状态(当前仅 main pot).
-
-        ATTENTION_MODE=0 → 返回 {"main_pot": None, "side_pot_count": 0}.
-        ATTENTION_MODE=1 → 抓 main pot,side_pots 暂空(待 Win 端 UI verify).
-        """
-        from config import ATTENTION_MODE
-        result = {"main_pot": None, "side_pot_count": 0}
-        if not ATTENTION_MODE:
-            return result
-        # 抓 main pot — 复用 OCR-1(default_allowlist 已含 digits)
-        if rois is None or getattr(rois, "pot_size", None) is None:
-            return result
-        try:
-            pot_img = self.capturer.capture_roi(rois.pot_size)
-            if pot_img is not None and pot_img.size > 0:
-                pot_text = self.ocr.read_text(pot_img, allowlist="0123456789.")
-                from recognition.actions import ActionRecognizer
-                main_pot_amount = ActionRecognizer._extract_amount(pot_text)
-                result["main_pot"] = main_pot_amount
-                diag.emit(
-                    "pattern_d.pot_observation",
-                    {"main_pot": main_pot_amount,
-                     "side_pot_count": 0,
-                     "source": "ocr_global_pot_size"},
-                    hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
-                )
-        except Exception as e:
-            logger.debug(f"_observe_multi_pot failed: {e!r}")
-        return result
-
-    def _pattern_d_merge_action(self, sidx: int, current_action_text: str) -> str:
-        """T100 Step 3.3c: Pattern D OCR-2 fallback for action_text.
-
-        若 ATTENTION_MODE=1 + 当前 seat 是 focus + legacy 抓空 + OCR-2 有数据 →
-        用 OCR-2 结果填补.最简 merge(无冲突仲裁,Ring beam 仲裁是 3.3c-extended).
-        """
-        from config import ATTENTION_MODE
-        if not ATTENTION_MODE:
-            return current_action_text
-        if current_action_text:
-            return current_action_text  # legacy 已抓到,保留
-        if sidx != self.get_focus_seat():
-            return current_action_text
-        ocr2_text = self._attention_focus_results.get("action_text", "")
-        if not ocr2_text:
-            return current_action_text
-        # Fallback fires:
-        diag.emit(
-            "pattern_d.ocr2_action_fallback",
-            {"seat": sidx, "action_text": ocr2_text, "source": "ocr_focus"},
-            hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
-        )
-        return ocr2_text
-
-    def _pattern_d_merge_amount(self, sidx: int, current_amount_text: str) -> str:
-        """T100 Step 3.3c: Pattern D OCR-2 fallback for amount_text."""
-        from config import ATTENTION_MODE
-        if not ATTENTION_MODE:
-            return current_amount_text
-        if current_amount_text:
-            return current_amount_text
-        if sidx != self.get_focus_seat():
-            return current_amount_text
-        ocr2_text = self._attention_focus_results.get("amount_text", "")
-        if not ocr2_text:
-            return current_amount_text
-        diag.emit(
-            "pattern_d.ocr2_amount_fallback",
-            {"seat": sidx, "amount_text": ocr2_text, "source": "ocr_focus"},
-            hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
-        )
-        return ocr2_text
-
-    def _capture_focus_seat_ocr(self, rois, focus_seat: int | None) -> dict:
-        """Pattern D OCR-2 capture:抓 focus seat 的 action + amount + chip.
-
-        Args:
-            rois: ROI 配置对象(rois.seat_regions[idx] 找对应 seat)
-            focus_seat: 由 get_focus_seat() 决定的 timer seat index
-
-        Returns:
-            dict — 至少含 keys {"action_text", "amount_text", "chip_text"};
-            ATTENTION_MODE=0 或 ocr_focus None 或 focus_seat None → 返回 {}
-        """
-        from config import ATTENTION_MODE
-        if not ATTENTION_MODE or self.ocr_focus is None or focus_seat is None:
-            return {}
-
-        seat = next(
-            (s for s in rois.seat_regions if s.seat_index == focus_seat),
-            None,
-        )
-        if seat is None:
-            return {}
-
-        out: dict = {"action_text": "", "amount_text": "", "chip_text": ""}
-        # action(SeatROI.action_area)
-        if seat.action_area is not None and seat.action_area.width > 0:
-            img = self.capturer.capture_roi(seat.action_area)
-            if img is not None and img.size > 0:
-                out["action_text"] = self.ocr_focus.read_text(
-                    img, allowlist=ACTION_OCR_ALLOWLIST
-                )
-        # T102 hotfix:用 amount_area(not amount)— SeatROI dataclass 正确字段名
-        if seat.amount_area is not None and seat.amount_area.width > 0:
-            img = self.capturer.capture_roi(seat.amount_area)
-            if img is not None and img.size > 0:
-                out["amount_text"] = self.ocr_focus.read_text(
-                    img, allowlist="0123456789.k万"
-                )
-        # chip(SeatROI.stack_area)— T103 R15: %-aware
-        if seat.stack_area is not None and seat.stack_area.width > 0:
-            img = self.capturer.capture_roi(seat.stack_area)
-            if img is not None and img.size > 0:
-                # 用 % 加入 allowlist 检测 all-in equity;chip_text 含 "%" 时
-                # 调用方应判定 all-in equity 而非筹码
-                out["chip_text"] = self.ocr_focus.read_text(
-                    img, allowlist="0123456789.%"
-                )
-        return out
-
     def _detect_hero_seat_index(self, rois) -> int | None:
         """检测 hero 自己的座位 index(几何上 seat.cards_area 与 hero_card_1 重叠)。
 
@@ -1634,7 +1430,7 @@ class PipelineOrchestrator:
             if sidx == hero_seat_idx:
                 # Hero 自己的牌走 rois.hero_card_1/2 独立捕获,摊牌主链路不重复处理
                 continue
-            # T92 Step 2.3 ATTENTION_MODE-gated skip
+            # fold/empty 座 → 跳过
             if self.tracker.is_skippable_seat(sidx):
                 continue
             # Throttle: limit per-seat CNN to 1 Hz
@@ -2093,97 +1889,6 @@ class PipelineOrchestrator:
         self.tracker._roi_force_refresh_at[roi_key] = tick_now
         return text, img
 
-    def _shadow_pointer_scan(self, rois) -> None:
-        """T48 v3 Stage 1(2026-05-29):指针架构 shadow 扫描.
-
-        用户 insight:timer 是 UI 给的免费"当前行动玩家"指针,call/raise 86%
-        命中,fold 70% 无 timer = auto-fold(玩家离桌/preset).
-
-        Stage 1 只 emit diag,不动主表,让用户用 SQL 对比新候选 vs 主表 actions
-        来量化这套架构的准度,confident 后再切主链路(Stage 2-4).
-
-        每 tick 廉价扫 8 seats 的 timer_area:
-          - 找到 timer 活跃 seat → 这是 current_to_act
-          - 跟上 tick last_timer_seat 不同 → emit pointer.timer_moved
-          - 上 tick 有 timer 这 tick 没 → emit pointer.action_inferred
-            (玩家行动了,timer 消失)
-        """
-        if not self.tracker.has_active_hand:
-            return
-
-        # Layer 1: 廉价扫 8 seats timer(只 digit OCR,小 ROI,~10ms 每 seat)
-        timer_seat = None
-        timer_value = None
-        for seat in rois.seat_regions:
-            sidx = seat.seat_index
-            if seat.timer_area is None or seat.timer_area.width == 0:
-                continue
-            # T92 Step 2.3 ATTENTION_MODE-gated skip (consolidates fold+empty)
-            if self.tracker.is_skippable_seat(sidx):
-                continue
-            timer_img = self.capturer.capture_roi(seat.timer_area)
-            timer_text = self.ocr.read_text(timer_img, allowlist="0123456789s ")
-            m = re.search(r"\b(\d{1,2})\b", timer_text or "") if timer_text else None
-            if m and 0 <= int(m.group(1)) <= 60:
-                timer_seat = sidx
-                timer_value = int(m.group(1))
-                break  # 德州规则:每时刻只 1 个玩家行动 → 找到 1 个就够
-
-        state = self.tracker._pointer_state
-        last_seat = state.get("last_timer_seat")
-        now_ts = time.time()
-
-        if timer_seat is not None:
-            # timer 活跃中
-            if last_seat != timer_seat:
-                # T50 fix(2026-05-29):timer 直接从 A 跳到 B 时,A 行动了!
-                # 原 bug:只在 timer_seat is None 时 emit action_inferred,
-                # 漏了"timer 从 A 跳到 B"这种"快速行动 + 下家立刻 timer"场景.
-                # 数据证实:46 hands 应该 ~250 action_inferred,实际只 11.
-                if last_seat is not None:
-                    diag.emit(
-                        "pointer.action_inferred",
-                        {"seat": last_seat,
-                         "last_timer_value": state.get("last_timer_value"),
-                         "reason": "timer_moved_to_next",
-                         "next_seat": timer_seat},
-                        hand_id=self.tracker.current_hand.id,
-                    )
-                    # T108 Pattern D fix:A 刚行动完(timer 从 A 跳走)→ 记录给 OCR-2 抓
-                    state["just_acted_seat"] = last_seat
-                    state["just_acted_at"] = now_ts
-                # 指针移动了(或第一次检测到)
-                diag.emit(
-                    "pointer.timer_moved",
-                    {"from_seat": last_seat, "to_seat": timer_seat,
-                     "value": timer_value,
-                     "expected_pointer": state.get("current_seat")},
-                    hand_id=self.tracker.current_hand.id,
-                )
-                state["last_timer_seat"] = timer_seat
-                state["current_seat"] = timer_seat
-            state["last_timer_value"] = timer_value
-            state["last_timer_at"] = now_ts
-        else:
-            # timer 不活跃
-            if last_seat is not None:
-                # timer 刚消失 — 大概率上 seat 行动了
-                dt = now_ts - (state.get("last_timer_at") or now_ts)
-                if dt < 5.0:  # 近期失踪
-                    diag.emit(
-                        "pointer.action_inferred",
-                        {"seat": last_seat,
-                         "last_timer_value": state.get("last_timer_value"),
-                         "time_since_timer": round(dt, 2)},
-                        hand_id=self.tracker.current_hand.id,
-                    )
-                # T108 Pattern D fix:timer 消失 = last_seat 刚行动完 → 记录给 OCR-2
-                state["just_acted_seat"] = last_seat
-                state["just_acted_at"] = now_ts
-                # 清 timer 状态,等下个 seat 的 timer 出现
-                state["last_timer_seat"] = None
-                state["last_timer_value"] = None
-
     def _pre_batch_action_amount_ocr(self, rois):
         """T73(2026-05-29):pre-batch action + amount OCR before sequential seat loop.
 
@@ -2204,7 +1909,7 @@ class PipelineOrchestrator:
         amount_items = []
         for seat_roi in rois.seat_regions:
             sidx = seat_roi.seat_index
-            # T92 Step 2.3 ATTENTION_MODE-gated skip
+            # fold/empty 座 → 跳过
             if self.tracker.is_skippable_seat(sidx):
                 continue
             if seat_roi.action_area is not None and seat_roi.action_area.width > 0:
@@ -2307,7 +2012,6 @@ class PipelineOrchestrator:
             "seat_parse_persist": 0.0,
             # 2026-06-01 spike A:未计时 gap 定位
             "seat_artifact": 0.0,
-            "seat_pattern_d": 0.0,
         }
         # T73:pre-batch(OCR_BATCH=0 时 noop)
         _t = time.perf_counter()
@@ -2326,7 +2030,7 @@ class PipelineOrchestrator:
             # 剩余 ticks 全跳过。fold 是用户 2026-05-29 观察"灰头像+弃牌字稳定显示"
             # 提的 insight,empty 是空座位"+号+背景色"同样稳定。一个 guard 治死人
             # 复活 + 空座 TempUser 噪音两个 P1 bug。
-            # T92 Step 2.3 ATTENTION_MODE-gated skip
+            # fold/empty 座 → 跳过
             if self.tracker.is_skippable_seat(sidx):
                 continue
 
@@ -2365,17 +2069,6 @@ class PipelineOrchestrator:
                     logger.debug(f"seat_{sidx} stack OCR jump {prev_stack}→{stack_now}, "
                                  f"likely digit miss, keeping prev")
                     stack_now = prev_stack
-                # 2026-06-01 stack-drop 探针:stack 掉(≥1bb)= 该玩家投了钱 = 一个 chip
-                # 动作。规则铁律(筹码守恒),持久信号,不怕预设/瞬态/多人快。离线对照
-                # pot-gap silent 看它能否逮住漏掉的动作。POKEMIR_STACK_PROBE=1 才开。
-                if (STACK_PROBE and stack_now is not None and prev_stack is not None
-                        and prev_stack - stack_now >= 4):
-                    diag.emit(
-                        "stack.drop_observed",
-                        {"seat": sidx, "prev": prev_stack, "now": stack_now,
-                         "delta": prev_stack - stack_now},
-                        hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
-                    )
 
             # fold_area is a MULTI-PURPOSE overlay zone at the avatar center.
             # WePoker shows different things at different game states:
@@ -2507,7 +2200,7 @@ class PipelineOrchestrator:
                 # state for this seat). Used at hand-end to detect真摊牌 vs hallucination.
                 else:
                     self._finalize_timer(sidx)
-                    # T92 Step 2.3 ATTENTION_MODE-gated: 仅非 skippable seat 更新 idle baseline
+                    # 仅非 skippable(fold/empty)座更新 idle baseline
                     if not self.tracker.is_skippable_seat(sidx) and fold_img.size > 0:
                         _t = time.perf_counter()
                         self.tracker._idle_avatar_hash[sidx] = _avg_hash_64(fold_img)
@@ -2538,11 +2231,6 @@ class PipelineOrchestrator:
                         ensemble=True,
                     )
                     sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
-
-                # T100 Step 3.3c: Pattern D OCR-2 action fallback merge.
-                _t = time.perf_counter()
-                action_text = self._pattern_d_merge_action(sidx, action_text or "")
-                sub_ms["seat_pattern_d"] += (time.perf_counter() - _t) * 1000.0
 
                 # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
                 # parser regex (\d+\.?\d*) will pull the number from the combined text
@@ -2576,10 +2264,6 @@ class PipelineOrchestrator:
                             ensemble=False,
                         )
                         sub_ms["seat_amount_ocr"] += (time.perf_counter() - _t) * 1000.0
-                    # T100 Step 3.3c: Pattern D OCR-2 amount fallback merge.
-                    _t = time.perf_counter()
-                    amount_text = self._pattern_d_merge_amount(sidx, amount_text or "")
-                    sub_ms["seat_pattern_d"] += (time.perf_counter() - _t) * 1000.0
                     if amount_text:
                         action_text = f"{action_text} {amount_text}"
 
