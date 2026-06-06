@@ -1,8 +1,8 @@
 # 主题:性能与 live 转向(破 1Hz + 走出温室)
 
-> 最近更新:2026-06-05 立 + 当日复盘(context7 官方源校验 + 新增截屏盲区)
-> 涉及讨论:1 份(2026-06-05 讨论 + 代码侦察,本文即正文,无 archive)
-> 当前状态:**讨论 + 读码侦察快照,未实现(推断 + 离线 n=1,live 数未进)**。下一步 = Stage 0 **全 tick 拆解**定盘。
+> 最近更新:2026-06-06 **实测收口**(杠杆A/D 落地 + 细计时定位 + ⭐DB网络=真瓶颈 → 本地库)
+> 涉及讨论:2026-06-05 讨论+侦察 → 2026-06-06 live 实测落地(本文即正文,无 archive)
+> 当前状态:**已实测落地**。tick **0.2-0.5Hz → 0.95-1.9Hz**;真瓶颈是【DB 网络写】非 OCR/截屏(见 §0)。下一刀=EasyOCR 批读(fold/action)走 card_marker/砍。
 > **校验来源标注**:`(官方)`=context7 官方文档证实;`(实测)`=本仓库 A/B;`(代码)`=读源码事实;`(博客/待验)`=网络博客,中等可信,需本地实测。
 
 关联:[[2026-06-01_95pct-constraint-solver-paradigm]]、[[主题-识别栈]]、[[主题-基础设施]]、[[主题-产品形态]]、[[主题-DDD架构]]。
@@ -14,11 +14,31 @@
 
 | 时间 | 子主题 | 状态 | 关键决策 | 原文 |
 |:---|:---|:---|:---|:---|
-| 2026-06-05 | live 转向 + tick 性能作战图(含参照差分闸门) | 讨论定向,待实现 | 走出温室 / 配方替 OCR 数字区 / **四杠杆**破 1Hz(+截屏整帧化)/ 闸门列 Stage 2 / Stage 0 = 全 tick 拆解 | 本文正文 |
+| **2026-06-06** | **实测收口:DB 网络=真瓶颈 → 本地库** | **已落地** | 杠杆A(配方读stack)+ 杠杆D(整帧抓)上;细计时揪出 gap=每动作同步DB写(Win→VPS 197ms RTT);DB 迁 Win 本地 PG18 → persist 354→0.5ms、tick 翻 2-4× | §0 |
+| 2026-06-05 | live 转向 + tick 性能作战图(含参照差分闸门) | 讨论定向 | 走出温室 / 配方替 OCR 数字区 / 四杠杆破 1Hz / 闸门 Stage 2 | §1-6 |
 
 ---
 
 ## 当前结论
+
+### §0 实测收口(2026-06-06)⭐ 真瓶颈是 DB 网络写,不是 OCR/截屏
+
+**经过**:杠杆A(配方读 stack,live 10× 已验)+ 杠杆D(整窗抓一次替 37 次 grab)落地后,tick 仍随活跃座摆、有个 **329-929ms 的"谜之 gap"**(任何子计时器都没抓到)。**我两次猜错**(以为 gap=37次grab→D 没用、又以为=GPU异步藏的OCR);**用户从早就质疑 Win↔VPS 网络延迟,被我用 `db_pct≈0` 这个【量错了东西的指标】否决**(db_pct 只计 commit,不计每动作的 `event_repo.create` INSERT 往返)。给 seat 循环加细计时(`seat_parse_persist`)后,**真相现形**:
+
+| 指标 | 写 VPS(Win→VPS 197ms Tailscale) | 写 Win 本地 PG18 |
+|---|---|---|
+| **persist**(每动作 INSERT) | 41–354ms | **0–1.5ms** |
+| **seat_loop**(谜之 gap) | 329–929ms | **8–26ms** |
+| **hand_start**(startup 卡,用户肉眼观察) | 520ms+(曾飙 22s) | 首手 CNN 204、后续 0 |
+| tick median / Hz | 700–2300ms / 0.2–0.5Hz | **254–799ms / 0.95–1.9Hz** |
+
+**定论**:**tick 的真瓶颈一直是【每个动作一次同步 DB 写、走 197ms Tailscale 往返】**——翻前动作密 → 写得多 → 用户观察的"牌局开始卡一下"。**OCR/截屏都是次要**(杠杆 A 真有用但小、杠杆 D 几乎没用因 grab 本就 12ms)。修法=**DB 迁 Win 本地**(原生 PG18;pipeline 写 localhost 微秒级、Claude 走 Tailscale `100.77.23.17` 偶读)。详细搭建踩坑(原生 PG18 占 5432 冲突 docker / psycopg2 中文 locale GBK 报错 / #210 id 无 server_default 致 diag 裸 INSERT 失败)= 一晚的 ops 史,见 session 转录。
+
+**下一刀(现在干净)**:tick 剩下大头只有 EasyOCR 批读 `fold_ocr ~250` + `action_ocr ~200` → 走 **card_marker 参照差分(判弃牌/活跃)+ 动作词砍/模板化**(杠杆 B),端掉这 ~450ms,冲 4-8Hz。persist/seat_loop/capture/community 全已个位数。
+
+**教训(刻进 [[feedback-data-driven-mandate]])**:断言"X 无影响"前必测【那条具体路径】,别拿 proxy 指标(db_pct≠INSERT延迟)；用户基于物理直觉(高延迟)的 push back 是对的。
+
+---
 
 ### §1 战略:走出温室
 
