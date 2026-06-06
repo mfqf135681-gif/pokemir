@@ -57,9 +57,12 @@ def main():
     seat_rois = {s["seat_index"]: s[args.field] for s in prof["seats"] if s.get(args.field)}
     fdir = Path(args.session) / "frames"
 
+    import time
     blocks = _parse_truth(args.truth)
     ok = bad = miss = 0
     errs = []
+    t0 = time.perf_counter()
+    print("\n=== 逐条对比(每行=一次真实读取;crop均值=证明确实裁到了像素)===")
     for fn, vals in blocks:
         img = cv2.imread(str(fdir / fn))
         if img is None:
@@ -68,7 +71,11 @@ def main():
             if not truth or not truth.isdigit() or si not in seat_rois:
                 continue
             l, t, w, h = seat_rois[si]
-            got = reader.read(img[t:t + h, l:l + w])
+            crop = img[t:t + h, l:l + w]
+            cmean = float(crop.mean()) if crop.size else -1.0
+            got = reader.read(crop)
+            mark = "✓" if str(got) == truth else "✗"
+            print(f"  {fn} s{si}: 真值 {truth:>5} → 配方读 {str(got):>5} {mark}   (crop {w}x{h} 均值{cmean:.0f})")
             if got is None:
                 miss += 1
                 errs.append((fn, si, truth, "None(读空/回落)"))
@@ -77,14 +84,13 @@ def main():
             else:
                 bad += 1
                 errs.append((fn, si, truth, str(got)))
+    dt = time.perf_counter() - t0
 
     tot = ok + bad + miss
     print(f"\n=== 生产配方 stack 准度(对眼标真值)===")
-    print(f"  样本 {tot}(座×帧)  对 {ok}  错 {bad}  读空 {miss}")
+    print(f"  样本 {tot}(座×帧)  对 {ok}  错 {bad}  读空 {miss}  | 耗时 {dt*1000:.0f}ms({dt*1000/max(tot,1):.1f}ms/次,亚秒正常)")
     if tot:
         print(f"  ★ 准确率 {ok}/{tot} = {100.0*ok/tot:.1f}%   (含读空算未命中;纯读对率 {ok}/{ok+bad}={100.0*ok/(ok+bad) if ok+bad else 0:.1f}%)")
-    for fn, si, truth, got in errs[:40]:
-        print(f"  ✗ {fn} s{si} 真值 {truth} → {got}")
     if not errs:
         print("  ✅ 全对,无错项。")
 
