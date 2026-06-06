@@ -1999,6 +1999,7 @@ class PipelineOrchestrator:
         """
         self._batched_action_results = {}
         self._batched_amount_results = {}
+        self._batched_amount_crops = {}   # cut1:配方读 amount 用 crop
         from config import OCR_BATCH
         if not OCR_BATCH:
             return
@@ -2029,8 +2030,10 @@ class PipelineOrchestrator:
             for (sidx, _), text in zip(action_items, results):
                 self._batched_action_results[sidx] = text
 
-        # Phase 3: batch amount OCR
-        if amount_items:
+        # Phase 3: batch amount OCR(cut1:配方开→留 crop、跳 EasyOCR 批读;消费端配方读+兜底)
+        for sidx, img in amount_items:
+            self._batched_amount_crops[sidx] = img
+        if amount_items and not (DIGIT_RECIPE_LIVE and self._digit_reader is not None):
             images = [img for (_, img) in amount_items]
             results = self.ocr.read_text_batch(
                 images, allowlist="0123456789.", scale=3
@@ -2349,8 +2352,23 @@ class PipelineOrchestrator:
                 # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
                 # parser regex (\d+\.?\d*) will pull the number from the combined text
                 if action_text and seat_roi.amount_area is not None:
+                    # cut1:配方主读 amount(allow_icon 丢筹码图标留数字),读空回落 EasyOCR。
+                    if DIGIT_RECIPE_LIVE and self._digit_reader is not None:
+                        _t = time.perf_counter()
+                        crop = getattr(self, "_batched_amount_crops", {}).get(sidx)
+                        if crop is None:
+                            crop = self.capturer.capture_roi(seat_roi.amount_area)
+                        v = self._digit_reader.read(crop, allow_icon=True)
+                        if v is not None:
+                            amount_text = str(int(v))
+                        else:
+                            amount_text, _ = self._capture_with_diff_trigger(
+                                roi_key=f"seat_{sidx}_amount", roi=seat_roi.amount_area,
+                                allowlist="0123456789.", ensemble=False)
+                        self.tracker._last_roi_text[f"seat_{sidx}_amount"] = amount_text
+                        sub_ms["seat_amount_ocr"] += (time.perf_counter() - _t) * 1000.0
                     # T73:OCR_BATCH 优先用 pre-batch.
-                    if OCR_BATCH and sidx in self._batched_amount_results:
+                    elif OCR_BATCH and sidx in self._batched_amount_results:
                         amount_text = self._batched_amount_results[sidx]
                         self.tracker._last_roi_text[f"seat_{sidx}_amount"] = amount_text
                     else:

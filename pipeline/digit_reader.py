@@ -70,11 +70,13 @@ class DigitReader:
         self.normalize = normalize
 
     # —— 纯 decode(无 cv2;Linux 可测):cells + classify → int|None ——
-    def _decode(self, cells, classify):
-        """cells→数字串(借 digit_ocr.parse_number)。含图标'?'/胜率'%'/空 → None(兜底拒读,
-        保持 EasyOCR 的空,不瞎补)。"""
+    def _decode(self, cells, classify, allow_icon=False):
+        """cells→数字串(借 digit_ocr.parse_number)。胜率'%'/空 → None;图标'?' 默认拒(stack),
+        allow_icon=True 时丢图标留数字(amount 下注区)。"""
         digits, flags = digit_ocr.parse_number(cells, classify, min_cell_w=1)
-        if not digits or flags["has_icon"] or flags["has_pct"]:
+        # allow_icon=True(amount 下注区):前导筹码图标=非数字格('?'),parse_number 已只抽数字、
+        # 图标自动丢弃,故不因 has_icon 拒读(stack 无图标→has_icon='?'是误读→仍拒)。
+        if not digits or flags["has_pct"] or (flags["has_icon"] and not allow_icon):
             return None
         try:
             return int(digits)
@@ -90,9 +92,10 @@ class DigitReader:
                 best, best_s = ch, s
         return best if best_s >= self.score_th else "?"
 
-    def read(self, crop):
+    def read(self, crop, allow_icon=False):
         """crop(BGR 或灰度 ndarray)→ int|None。⚠️ cv2 路径 Win-only。
-        无模板 → None(安全默认:不接管 = 等于没兜底)。"""
+        无模板 → None(安全默认:不接管 = 等于没兜底)。
+        allow_icon:amount 下注区有前导筹码图标 → True 丢图标留数字;stack 用默认 False。"""
         if not self.exemplars:
             return None
         if crop is None or getattr(crop, "size", 0) == 0:
@@ -102,7 +105,7 @@ class DigitReader:
                                         GAP_TH, MIN_GAP, MIN_CELL_W, MAX_MERGE_W)
         if not cells:
             return None
-        return self._decode(cells, lambda c: self._match(g[:, c[0]:c[1] + 1]))
+        return self._decode(cells, lambda c: self._match(g[:, c[0]:c[1] + 1]), allow_icon)
 
     # —— 持久化(glyph 存 2D int 列表)——
     def save(self, path):
@@ -137,8 +140,12 @@ def _self_test():
     assert r._decode([(0, 4), (6, 10), (12, 16)], mk("128")) == 128
     # 孤立单 "0"(全下场景核心)
     assert r._decode([(0, 9)], mk("0")) == 0
-    # 含图标 '?' → None(拒读,不瞎补)
+    # 含图标 '?' → None(stack 默认拒读,不瞎补)
     assert r._decode([(0, 8), (10, 14)], mk("?5")) is None
+    # allow_icon=True(amount):图标'?'丢掉、留数字 → 28(前导图标 ?28)
+    assert r._decode([(0, 8), (10, 14), (16, 20)], mk("?28"), allow_icon=True) == 28
+    # allow_icon 仍拒胜率%(那是 all-in 非下注)
+    assert r._decode([(0, 4), (6, 8)], mk("3%"), allow_icon=True) is None
     # 含胜率 '%' → None(那是胜率非筹码)
     assert r._decode([(0, 4), (6, 8)], mk("3%")) is None
     # 全非数字 / 空 → None
