@@ -237,6 +237,10 @@ class PipelineOrchestrator:
         self._blinds_pending = False
         self._blinds_attempts = 0
         self._active_set: set = set()
+        # P2a(2026-06-06):活跃集 silent-fold 救援状态。_hand_dealt_seats=本手见过牌的座,
+        # _seat_gone_ticks=各座 card_marker 连续消失帧数(去抖)。补 fold_ocr 漏的弃牌。
+        self._hand_dealt_seats: set = set()
+        self._seat_gone_ticks: dict = {}
 
         # T117(2026-06-01):fold-miss 精准探针 v2 — per-seat per-hand fold_area
         # 读取画像累积 {seat: {empty:int, unparsed:[str], digit:[str]}}。
@@ -678,6 +682,8 @@ class PipelineOrchestrator:
             self._blinds_pending = True
             self._blinds_attempts = 0
             self._active_set = set()
+            self._hand_dealt_seats = set()
+            self._seat_gone_ticks = {}
         else:
             self._inject_post_events(db)   # OCR 路径:hand-start 内联(community 未发时盲注 ROI 准)
 
@@ -738,6 +744,24 @@ class PipelineOrchestrator:
                        "joined": sorted(active - self._active_set), "street": street},
                       hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
             self._active_set = active
+
+        # P2a(2026-06-06):活跃集 silent-fold 救援——补 fold_ocr 漏的弃牌(P1:活跃集召回严格>fold_ocr)。
+        # 安全收口:① 仅 preflop/flop/turn(river 摊牌亮牌会让 card_marker 消失→留 2b 加护栏);
+        # ② 去抖 2 帧(灭 P1 的 0.6% 闪读);③ 已被 fold_ocr 标过的不重复(标 _folded_seats 后
+        #   is_skippable 让 _process_seat_actions 跳过该座 → 不双发 FOLD);④ fold_ocr 全留不删。
+        if self.tracker.current_hand is not None:
+            cc = self.tracker.current_hand.community_cards or {}
+            cur_street = ("river" if cc.get("river") else "turn" if cc.get("turn")
+                          else "flop" if cc.get("flop") else "preflop")
+            self._hand_dealt_seats |= active   # 本手见过牌的座(累积)
+            for s in list(self._hand_dealt_seats):
+                if s in active:
+                    self._seat_gone_ticks[s] = 0
+                    continue
+                self._seat_gone_ticks[s] = self._seat_gone_ticks.get(s, 0) + 1
+                if (cur_street != "river" and self._seat_gone_ticks[s] >= 2
+                        and s not in self.tracker._folded_seats):
+                    self._rescue_silent_fold(db, s, cur_street)
         # 惰性盲注注入:等发牌完成(活跃非空)才派;非空但定不出 SB/BB 也不再重试(那是按钮/活跃问题非时机)
         if self._blinds_pending:
             self._blinds_attempts += 1
@@ -750,6 +774,32 @@ class PipelineOrchestrator:
                           {"reason": "active_empty_timeout", "attempts": self._blinds_attempts},
                           hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
                 logger.warning("[桌规派注] 活跃集持续为空(发牌未检出)→ 超时放弃本手盲注注入")
+
+    def _rescue_silent_fold(self, db, seat, street):
+        """P2a:活跃集确认某座 card_marker 持续消失(非 river,去抖过)= silent fold,fold_ocr 漏读 → 补。
+        标 _folded_seats(→该座后续被 skip)+ 合成 FOLD action_event(玩家已知才落,不伪造名)+ 诊断。
+        与 fold_ocr 互补:这里只补 fold_ocr 没标过的(去重见 caller)。"""
+        self.tracker._folded_seats.add(seat)
+        try:
+            self.tracker.mirror_seat_state(seat, SeatLifecycle.FOLDED)
+        except Exception:
+            pass
+        hand = self.tracker.current_hand
+        player_name = self.tracker.player_id_map.get(seat)
+        diag.emit("fold.activeset_rescue",
+                  {"seat": seat, "street": street, "player": player_name},
+                  hand_id=hand.id if hand else None)
+        logger.info(f"[P2a fold救援] seat_{seat} card_marker 持续消失({street})= silent fold,fold_ocr 漏读 → 补")
+        if player_name and hand is not None and db is not None:
+            try:
+                event = self.tracker.normalizer.create_event(
+                    hand=hand, player_name=player_name, position=self._seat_position(seat),
+                    action_type=ActionType.FOLD, amount=None, facing_action=None)
+                event.confidence_score = 0.9
+                event.raw_data = {"synthetic": True, "source": "activeset_fold_rescue", "street": street}
+                self.event_repo.create(db, event)
+            except Exception:
+                logger.warning(f"activeset fold rescue event seat_{seat} failed", exc_info=True)
 
     def _inject_forced_from_blinds(self, db, active=None):
         """桌规录入路径(2026-06-06):按钮 + 精确活跃集(card_marker)→ `blinds_from_button` 定
