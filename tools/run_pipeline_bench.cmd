@@ -8,5 +8,11 @@ REM so OCR hits real content. No table = phase STRUCTURE still valid, OCR ms und
 REM
 REM Let it run ~1-2 min (watch a few "[tick stats]" lines), then press Ctrl-C to stop.
 REM Usage (activated .venv):  tools\run_pipeline_bench.cmd
+REM
+REM CLEAN-MEASURE config (2026-06-05): shadow_pointer now OFF by default (code);
+REM SHOWDOWN_DUMP off here = no per-hand disk writes in the transition path.
+REM For a TRUE steady-state, point at a REAL/stable WePoker table (not a static/blank screen,
+REM which makes _start_new_hand misfire and inflates hand_detect).
 set POKEMIR_USE_GPU=1
+set POKEMIR_SHOWDOWN_DUMP=0
 python main.py pipeline --profile party_poker_8
