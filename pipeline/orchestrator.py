@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE, SHADOW_POINTER, DIGIT_RECIPE_LIVE
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE, SHADOW_POINTER, DIGIT_RECIPE_LIVE, FRAME_CAPTURE
 from difflib import get_close_matches
 
 import cv2
@@ -286,6 +286,7 @@ class PipelineOrchestrator:
     # 保证 _phase_durations 各 list 同步长度.
     # T57(2026-05-29):新增 seat_* 子 phase(seat_actions 内拆出).
     _TICK_PHASES = (
+        "capture_frame",  # 杠杆D.1:整窗一次性 grab(替 ~37 次逐区 grab)
         "hero_capture", "hand_detect", "community", "community_reset",
         "pot", "shadow_pointer", "seat_actions", "showdown", "capture_ids",
         # T57 seat 子 phase
@@ -313,6 +314,12 @@ class PipelineOrchestrator:
         phase_ms: dict = {}
 
         try:
+            # 杠杆D.1:整窗抓一次进缓存,本 tick 所有 capture_roi 从缓存切片(替~37次独立grab)。
+            if FRAME_CAPTURE:
+                t_p = time.perf_counter()
+                self.capturer.refresh_frame()
+                phase_ms["capture_frame"] = (time.perf_counter() - t_p) * 1000.0
+
             # 1. Capture hero cards
             t_p = time.perf_counter()
             hero_1 = self.capturer.capture_roi(rois.hero_card_1)

@@ -63,6 +63,10 @@ SHADOW_POINTER = os.getenv("POKEMIR_SHADOW_POINTER", "0").lower() in ("1", "true
 # 需 rois/digit_templates_<profile>.json(build_digit_templates.py 产)。默认【关】零行为变化;
 # POKEMIR_DIGIT_RECIPE_LIVE=1 开。先 stack,验准/提速后再推 amount。
 DIGIT_RECIPE_LIVE = os.getenv("POKEMIR_DIGIT_RECIPE_LIVE", "0").lower() in ("1", "true", "yes")
+# 2026-06-05 杠杆D.1:每 tick 抓【一次整窗】存缓存,capture_roi 从缓存切片,替掉~37 次
+# 独立 mss grab(Stage0 实测 seat_actions 里 ~900ms 未计时=这些 grab)。像素字节级等价、
+# 行为不变。默认【关】零变化;POKEMIR_FRAME_CAPTURE=1 开。单次 grab 仍慢则 D.2 换 DXcam。
+FRAME_CAPTURE = os.getenv("POKEMIR_FRAME_CAPTURE", "0").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 
