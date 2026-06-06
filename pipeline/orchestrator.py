@@ -297,6 +297,8 @@ class PipelineOrchestrator:
         "attention_focus_ocr",
         # 2026-06-01 spike A:定位 seat_actions 未计时 gap(~410ms)
         "seat_artifact", "seat_pattern_d",
+        # 2026-06-05:hand 转换拆分(startup 卡)+ 整 seat 循环 + detect_empty/showdown
+        "hand_end", "hand_start", "detect_empty", "showdown_cnn", "seat_loop",
     )
 
     def _tick(self):
@@ -312,6 +314,8 @@ class PipelineOrchestrator:
         db_total_ms = 0.0
         # T56(2026-05-29):本 tick 各 phase 累积 ms.
         phase_ms: dict = {}
+        # 2026-06-05:跨方法的细计时收集器(_detect_empty/showdown 等写这,末尾并入 phase_ms)。
+        self._tick_extra_ms: dict = {}
 
         try:
             # 杠杆D.1:整窗抓一次进缓存,本 tick 所有 capture_roi 从缓存切片(替~37次独立grab)。
@@ -326,15 +330,21 @@ class PipelineOrchestrator:
             hero_2 = self.capturer.capture_roi(rois.hero_card_2)
             phase_ms["hero_capture"] = (time.perf_counter() - t_p) * 1000.0
 
-            # 2. Detect new hand
+            # 2. Detect new hand(2026-06-05:拆 hand_end / hand_start 计时,定位 startup 卡)
             t_p = time.perf_counter()
             if self.tracker.has_active_hand:
                 if self.tracker.check_hero_cards(hero_1, hero_2):
+                    _te = time.perf_counter()
                     self._end_current_hand(db)
+                    self._tick_extra_ms["hand_end"] = (time.perf_counter() - _te) * 1000.0
+                    _ts = time.perf_counter()
                     self._start_new_hand(db, hero_1, hero_2)
+                    self._tick_extra_ms["hand_start"] = (time.perf_counter() - _ts) * 1000.0
             else:
                 if self._hero_cards_present(hero_1, hero_2):
+                    _ts = time.perf_counter()
                     self._start_new_hand(db, hero_1, hero_2)
+                    self._tick_extra_ms["hand_start"] = (time.perf_counter() - _ts) * 1000.0
             phase_ms["hand_detect"] = (time.perf_counter() - t_p) * 1000.0
 
             # 3. Community cards
@@ -433,6 +443,8 @@ class PipelineOrchestrator:
                 db.close()
                 db_total_ms += (time.perf_counter() - db_t) * 1000.0
 
+        # 2026-06-05:并入跨方法细计时(hand_end/hand_start/detect_empty/showdown_cnn 等)。
+        phase_ms.update(self._tick_extra_ms)
         # T56(2026-05-29):未执行的 phase 补 0,确保 batch 同步长度.
         for name in self._TICK_PHASES:
             self.tracker._phase_durations.setdefault(name, []).append(
@@ -585,7 +597,10 @@ class PipelineOrchestrator:
 
         # T46-A(2026-05-29):hand-start 扫描空座(全 0 phash + stack 无数字
         # 双确认)→ add to _empty_seats → action loop 顶部统一 skip,跟 fold 同治。
+        _de = time.perf_counter()
         self._detect_empty_seats()
+        if hasattr(self, "_tick_extra_ms"):
+            self._tick_extra_ms["detect_empty"] = (time.perf_counter() - _de) * 1000.0
 
         # T48 v3(2026-05-29):指针状态机 hand-start init.
         # UTG = (button + 3) % num_seats(preflop 第一个行动玩家).
@@ -896,7 +911,10 @@ class PipelineOrchestrator:
                 cur.raw_data["insurance_inferred"] = insurance_results
             # Showdown card detection: scan non-folded seats' fold_area with CNN.
             # WePoker reveals 2 hole cards at avatar center at showdown.
+            _sc = time.perf_counter()
             showdown_cards = self._capture_showdown_cards()
+            if hasattr(self, "_tick_extra_ms"):
+                self._tick_extra_ms["showdown_cnn"] = (time.perf_counter() - _sc) * 1000.0
             if showdown_cards:
                 cur.raw_data["showdown_cards"] = showdown_cards
 
@@ -1678,6 +1696,15 @@ class PipelineOrchestrator:
         text = self.ocr.read_text(img, allowlist="0123456789.%")
         return self._stack_text_to_chips(text, seat_idx)
 
+    def _stack_chips_recipe(self, crop, seat_idx: int | None = None) -> float | None:
+        """杠杆A 共享读法:配方主读 stack(读空回落 EasyOCR,认 %=all-in→None)。
+        flag 关 / 无 reader → 纯 EasyOCR。供热路径 + _detect_empty_seats 复用。"""
+        if DIGIT_RECIPE_LIVE and self._digit_reader is not None:
+            v = self._digit_reader.read(crop)
+            if v is not None:
+                return float(v)
+        return self._ocr_stack_chips(crop, seat_idx=seat_idx)
+
     def _stack_text_to_chips(self, text: str, seat_idx: int | None = None) -> float | None:
         """2026-06-01 spike A:stack OCR 文本 → 筹码值的后处理(从 _ocr_stack_chips
         拆出,使批处理路径能复用)。"%" = all-in 胜率显示 → None。"""
@@ -1782,7 +1809,8 @@ class PipelineOrchestrator:
             if seat.stack_area is not None and seat.stack_area.width > 0:
                 stack_img = self.capturer.capture_roi(seat.stack_area)
                 # T103 R15: %-aware(all-in equity returns None,触发 stack_empty)
-                stack_empty = (self._ocr_stack_chips(stack_img, seat_idx=sidx) is None)
+                # 杠杆A:这 8 次 stack 读也走配方(快赢,削 startup 卡)。
+                stack_empty = (self._stack_chips_recipe(stack_img, seat_idx=sidx) is None)
             if avatar_zero and stack_empty:
                 self.tracker._empty_seats.add(sidx)
                 # T91 Step 2.2 mirror to seat_lifecycle (shadow)
@@ -2092,6 +2120,7 @@ class PipelineOrchestrator:
         self._pre_batch_seat_state_ocr(rois)
         sub_ms["seat_fold_ocr"] += (time.perf_counter() - _t) * 1000.0
 
+        _loop_t0 = time.perf_counter()  # 2026-06-05:整 seat 循环计时(确认 gap 在循环内)
         for seat_roi in rois.seat_regions:
             sidx = seat_roi.seat_index
 
@@ -2574,7 +2603,9 @@ class PipelineOrchestrator:
                     continue
 
                 if db is not None:
+                    _pt = time.perf_counter()
                     self.event_repo.create(db, event)
+                    sub_ms["seat_parse_persist"] += (time.perf_counter() - _pt) * 1000.0
 
                 # T1 Visual debug artifacts: low-confidence events get a screenshot
                 # dump for human review. User can browse data/review/<hand_id>/ +
@@ -2616,6 +2647,7 @@ class PipelineOrchestrator:
             if stack_now is not None:
                 self.tracker._prev_stack[sidx] = stack_now
 
+        sub_ms["seat_loop"] = (time.perf_counter() - _loop_t0) * 1000.0  # 整循环体(=gap+在循环OCR)
         # T57(2026-05-29):传 sub_ms 给 _tick 用,merge 进 phase_ms.
         self.tracker._seat_subphase_ms = sub_ms
 
