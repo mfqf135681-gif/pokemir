@@ -30,7 +30,7 @@ class HandModel(Base):
     result = Column(JSONB)
     raw_data = Column(JSONB)
     pot_size_final = Column(Float)
-    created_at = Column(DateTime(timezone=True), server_default="now()")
+    created_at = Column(DateTime(timezone=True), server_default=text("now()"))
 
     action_events = relationship(
         "ActionEventModel", back_populates="hand",
@@ -57,7 +57,7 @@ class ActionEventModel(Base):
     timestamp = Column(DateTime(timezone=True))
     raw_data = Column(JSONB)
     confidence_score = Column(Float, default=1.0)
-    created_at = Column(DateTime(timezone=True), server_default="now()")
+    created_at = Column(DateTime(timezone=True), server_default=text("now()"))
 
     hand = relationship("HandModel", back_populates="action_events")
     corrections = relationship(
