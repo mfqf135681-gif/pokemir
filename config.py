@@ -67,6 +67,12 @@ DIGIT_RECIPE_LIVE = os.getenv("POKEMIR_DIGIT_RECIPE_LIVE", "0").lower() in ("1",
 # 独立 mss grab(Stage0 实测 seat_actions 里 ~900ms 未计时=这些 grab)。像素字节级等价、
 # 行为不变。默认【关】零变化;POKEMIR_FRAME_CAPTURE=1 开。单次 grab 仍慢则 D.2 换 DXcam。
 FRAME_CAPTURE = os.getenv("POKEMIR_FRAME_CAPTURE", "0").lower() in ("1", "true", "yes")
+
+# 2026-06-06 step 2b:按钮权威切手(观战模式)。每 tick 白占比扫按钮 → 顺时针单调+在线去抖,
+# 确认 D 移座 = 换手(reconstruct.button_move_online)。开时:换手只认按钮 + "总底池"兜底,
+# 关掉 hero换牌/公共牌reset 触发(治公共牌 reset 过切——实测 btn=5 连两手=一手被劈两半)。
+# 默认【关】零变化;POKEMIR_BUTTON_CUT=1 开(需 live 验证按钮检测先轮转正常)。
+BUTTON_CUT = os.getenv("POKEMIR_BUTTON_CUT", "0").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 

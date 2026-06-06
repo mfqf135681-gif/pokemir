@@ -393,6 +393,36 @@ def button_moves_monotonic(button_series, num_seats=8, min_hold=3.0, max_skip=4)
     return out
 
 
+def button_move_online(confirmed, pending, pending_count, btn_now,
+                       num_seats=8, debounce=2, max_skip=4):
+    """`button_moves_monotonic` 的【在线流式】版(live 切手用):给当前状态 + 本帧按钮读数,
+    返回 (moved, new_confirmed, new_pending, new_pending_count)。
+
+    与 batch 版同两道误读过滤,但去抖改成【连续 debounce 帧读到同一顺时针新座才提交】
+    (batch 是回看持有时长;live 看不到未来,用帧计数):
+      - btn_now=None(本帧没看清 D)→ 不动状态;
+      - 回到已确认座 → 清候选;
+      - 非顺时针(倒退/远跳,(new-cur)%num_seats∉[1,max_skip])→ 当误读忽略;
+      - 顺时针新座:同座累计,≥debounce → moved=True、confirmed 推进。
+    纯逻辑、无 cv2,可 Linux 单测。"""
+    if btn_now is None:
+        return False, confirmed, pending, pending_count
+    if confirmed is None:
+        return False, btn_now, None, 0                       # 首次锚定,不算移动
+    if btn_now == confirmed:
+        return False, confirmed, None, 0                     # 回到已确认 → 清候选
+    if not (1 <= (btn_now - confirmed) % num_seats <= max_skip):
+        return False, confirmed, pending, pending_count      # 倒退/远跳 = 误读,忽略
+    # 顺时针候选:去抖累积
+    if btn_now == pending:
+        pending_count += 1
+    else:
+        pending, pending_count = btn_now, 1
+    if pending_count >= debounce:
+        return True, btn_now, None, 0                        # 持稳 → 提交移动 = 换手
+    return False, confirmed, pending, pending_count
+
+
 def corroborate_boundaries(candidates, cluster_win=6.0, anchor="button", min_signals=2):
     """多信号交叉印证切手(T139):candidates=[(t, signal_name),...]。
     按时间聚类(相邻 ≤cluster_win 归一簇),一簇是【真边界】当:
@@ -649,6 +679,24 @@ def _self_test():
     wins_b = segment_hands(ss_b, [], {"hand_starts": [0, 2, 11, 22], "tol": 2.0, "boundary_merge": 1.0})
     assert len(wins_b) == 4, wins_b  # 4 手窗
     print(f"✅ T132 按钮切手:button移座 {starts} → {len(wins_b)} 手窗")
+
+    # 2026-06-06 在线去抖 button_move_online(live 切手):喂逐帧读数,debounce=2
+    st = (None, None, 0)  # (confirmed, pending, pending_count)
+    cuts = []
+    # 6→6(锚)→7,7(持稳2帧=切)→7→None→0,0(切)→倒退6(拒)→0→1(仅1帧不切)
+    for i, b in enumerate([6, 6, 7, 7, 7, None, 0, 0, 6, 0, 1]):
+        moved, *st = button_move_online(st[0], st[1], st[2], b, num_seats=8, debounce=2)
+        if moved:
+            cuts.append((i, st[0]))
+    assert cuts == [(3, 7), (7, 0)], cuts  # 仅 7 与 0 各持稳2帧时切;6→7 第2帧、0 第2帧;倒退6被拒
+    # 单帧闪到顺时针新座(只1帧)不切;None 不动状态
+    m1, c1, p1, pc1 = button_move_online(5, None, 0, 6, num_seats=8, debounce=2)
+    assert m1 is False and c1 == 5 and p1 == 6 and pc1 == 1, (m1, c1, p1, pc1)
+    m2, *_ = button_move_online(5, 6, 1, 6, num_seats=8, debounce=2)  # 第2帧 → 切
+    assert m2 is True, (m2,)
+    m3, c3, *_ = button_move_online(5, None, 0, 3, num_seats=8, debounce=2, max_skip=4)  # 5→3 倒退/远跳 %8=6>4 拒
+    assert m3 is False and c3 == 5, (m3, c3)
+    print("✅ button_move_online 在线去抖:顺时针持稳切/单帧不切/倒退拒/None不动")
 
     # T140 全下封盘线抑制(规则:%⟺该座all-in⟺此后不行动):显%座%后的晚跌=回声/结算,删;
     #   全下在决策街(首%)补;**按座**不动多人边池里可读的非全下座。

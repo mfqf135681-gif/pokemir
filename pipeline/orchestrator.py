@@ -15,7 +15,8 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE, SHADOW_POINTER, DIGIT_RECIPE_LIVE, FRAME_CAPTURE
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, STACK_PROBE, SHADOW_POINTER, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT
+from pipeline.reconstruct import button_move_online
 from difflib import get_close_matches
 
 import cv2
@@ -238,6 +239,15 @@ class PipelineOrchestrator:
             else:
                 logger.info(f"[各区模板] 已载 {sorted(self._zone_readers)};EasyOCR 仅兜底")
 
+        # 2026-06-06 step 2b:按钮权威切手在线去抖状态(BUTTON_CUT 开时用)。
+        # confirmed=已确认按钮座;pending/_count=候选顺时针新座的连续帧计数(见
+        # reconstruct.button_move_online)。跨手持续,不在 _start_new_hand 重置。
+        self._btn_confirmed = None
+        self._btn_pending = None
+        self._btn_pending_count = 0
+        if BUTTON_CUT:
+            logger.info("[step2b] BUTTON_CUT=1:换手走按钮权威(白占比+在线去抖)+总底池兜底;hero/公共牌reset 触发关闭")
+
         # T117(2026-06-01):fold-miss 精准探针 v2 — per-seat per-hand fold_area
         # 读取画像累积 {seat: {empty:int, unparsed:[str], digit:[str]}}。
         # hand-end(_end_current_hand)仅对"确认 silent 弃牌"座位 emit,去掉 v1
@@ -349,19 +359,41 @@ class PipelineOrchestrator:
 
             # 2. Detect new hand(2026-06-05:拆 hand_end / hand_start 计时,定位 startup 卡)
             t_p = time.perf_counter()
-            if self.tracker.has_active_hand:
-                if self.tracker.check_hero_cards(hero_1, hero_2):
-                    _te = time.perf_counter()
-                    self._end_current_hand(db)
-                    self._tick_extra_ms["hand_end"] = (time.perf_counter() - _te) * 1000.0
+            button_cut = False
+            if BUTTON_CUT:
+                # step 2b:每 tick 白占比扫按钮 → 在线去抖+顺时针单调,确认 D 移座 = 换手(权威)。
+                # 治公共牌 reset 过切(实测 btn=5 连两手=一手被劈两半,见 button-authority 切手)。
+                btn_now, _ = self._scan_button_white_frac()
+                button_cut, self._btn_confirmed, self._btn_pending, self._btn_pending_count = \
+                    button_move_online(self._btn_confirmed, self._btn_pending,
+                                       self._btn_pending_count, btn_now,
+                                       num_seats=self.roi_manager.rois.num_seats)
+                if button_cut:
+                    logger.info(f"[step2b] 按钮移座 → seat {self._btn_confirmed},换手")
+                    if self.tracker.has_active_hand:
+                        _te = time.perf_counter()
+                        self._end_current_hand(db)
+                        self._tick_extra_ms["hand_end"] = (time.perf_counter() - _te) * 1000.0
                     _ts = time.perf_counter()
                     self._start_new_hand(db, hero_1, hero_2)
                     self._tick_extra_ms["hand_start"] = (time.perf_counter() - _ts) * 1000.0
-            else:
-                if self._hero_cards_present(hero_1, hero_2):
-                    _ts = time.perf_counter()
-                    self._start_new_hand(db, hero_1, hero_2)
-                    self._tick_extra_ms["hand_start"] = (time.perf_counter() - _ts) * 1000.0
+
+            if not button_cut:
+                if self.tracker.has_active_hand:
+                    # hero 换牌触发:BUTTON_CUT 开时关闭(观战=按钮权威;hero ROI 是静态 chrome)
+                    if not BUTTON_CUT and self.tracker.check_hero_cards(hero_1, hero_2):
+                        _te = time.perf_counter()
+                        self._end_current_hand(db)
+                        self._tick_extra_ms["hand_end"] = (time.perf_counter() - _te) * 1000.0
+                        _ts = time.perf_counter()
+                        self._start_new_hand(db, hero_1, hero_2)
+                        self._tick_extra_ms["hand_start"] = (time.perf_counter() - _ts) * 1000.0
+                else:
+                    # 无活跃手 → 启动首手(两模式都需起点;BUTTON_CUT 下首手由此起,之后靠按钮切)
+                    if self._hero_cards_present(hero_1, hero_2):
+                        _ts = time.perf_counter()
+                        self._start_new_hand(db, hero_1, hero_2)
+                        self._tick_extra_ms["hand_start"] = (time.perf_counter() - _ts) * 1000.0
             phase_ms["hand_detect"] = (time.perf_counter() - t_p) * 1000.0
 
             # 3. Community cards
@@ -373,7 +405,9 @@ class PipelineOrchestrator:
             # 3b. Observer-mode hand-start fallback: if hero cards are not
             # available (default ROI = stable browser chrome, never changes),
             # use community count drop from > 0 to 0 as the new-hand signal.
-            if self.tracker.has_active_hand and self.tracker.community_just_reset():
+            # BUTTON_CUT 开时【关闭】此触发(它是过切元凶:公共牌假 reset 把一手劈多手);
+            # 换手交按钮权威,"总底池"标签(_process_pot)仍作结算兜底。
+            if self.tracker.has_active_hand and self.tracker.community_just_reset() and not BUTTON_CUT:
                 t_p = time.perf_counter()
                 logger.info("Community reset detected → starting new hand (observer mode)")
                 self._end_current_hand(db)
@@ -2827,6 +2861,26 @@ class PipelineOrchestrator:
                 hand_id=self.tracker.current_hand.id,
             )
 
+    def _scan_button_white_frac(self, white_th=170, frac_th=0.12):
+        """白占比 argmax 扫各座 button_indicator → (button_seat|None, candidates)。
+        供 per-hand 定位(_detect_button_position)+ per-tick 切手(2b)共用。
+        忠实复制 replay_reconstruct._white_frac:三通道都 > white_th 的像素占比,取最白座,
+        超 frac_th 才认否则 None。mss=BGRA 4 通道 alpha=255≥th 不改 min,与夹具 BGR 同结果。
+        ⚠️ cv2 路径 Win-only 未验。"""
+        candidates = []  # (seat_index, white_frac, brightness)
+        best_seat, best_wf = None, 0.0
+        for seat_roi in self.roi_manager.rois.seat_regions:
+            if seat_roi.button_indicator is None:
+                continue
+            img = self.capturer.capture_roi(seat_roi.button_indicator)
+            if img.size == 0 or img.ndim != 3:
+                continue
+            wf = float((img.min(axis=2) > white_th).mean())
+            candidates.append((seat_roi.seat_index, round(wf, 3), round(float(img.mean()), 1)))
+            if wf > best_wf:
+                best_seat, best_wf = seat_roi.seat_index, wf
+        return (best_seat if best_wf > frac_th else None), candidates
+
     def _detect_button_position(self):
         """Scan each seat's button_indicator ROI to find dealer button (seat_index).
 
@@ -2842,34 +2896,16 @@ class PipelineOrchestrator:
         # build_series_real:152-158,white_th=170/frac_th=0.12)。原 L1=OCR"D"第一个命中在
         # live 把 seat0 假"D"短路成永远 seat0(多人桌实测 27 手只在 0/2,见 button.detected),
         # 而夹具/T139 用的正是白占比(不OCR)且验过稳 → 验过的方法没上 live(同 amount 模板坑)。
-        WHITE_TH, FRAC_TH = 170, 0.12
-        candidates = []  # (seat_index, white_frac, brightness)
-        button_seat = None
-        method = None
-        best_seat, best_wf = None, 0.0
-        for seat_roi in self.roi_manager.rois.seat_regions:
-            if seat_roi.button_indicator is None:
-                continue
-            img = self.capturer.capture_roi(seat_roi.button_indicator)
-            if img.size == 0 or img.ndim != 3:
-                continue
-            # 三通道都 > white_th 的像素占比(D 钮纯白高对比;空座/felt≈0)。
-            # mss=BGRA 4通道:alpha=255≥white_th,不改 min → 与夹具 BGR 三通道同结果。
-            wf = float((img.min(axis=2) > WHITE_TH).mean())
-            candidates.append((seat_roi.seat_index, round(wf, 3), round(float(img.mean()), 1)))
-            if wf > best_wf:
-                best_seat, best_wf = seat_roi.seat_index, wf
-
-        if best_seat is not None and best_wf > FRAC_TH:
-            button_seat = best_seat
+        button_seat, candidates = self._scan_button_white_frac()
+        if button_seat is not None:
             method = "white-frac"
-            logger.info(f"Button detected at seat {button_seat} via white-frac (wf={best_wf:.3f})")
+            logger.info(f"Button detected at seat {button_seat} via white-frac")
         else:
             # 无座超阈 = 这帧没看清 D(过渡/遮挡)→ 诚实 None,不再 fallback seat=0
             # (那是 T13 假阳根源:位置宁可空也不给错座)。下游已有 button=None 守卫。
             button_seat = None
             method = "none"
-            logger.warning(f"Button white-frac all < {FRAC_TH} (best={best_wf:.3f}) → None. Candidates: {candidates}")
+            logger.warning(f"Button white-frac all below threshold → None. Candidates: {candidates}")
 
         # T13 diag:每手记录 button 检测方法 + 候选,便于事后审视
         diag.emit(
