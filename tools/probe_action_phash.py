@@ -76,11 +76,12 @@ def main():
     ap.add_argument("--text-mask", action="store_true",
                     help="用色盲+归一化文字形状 hash(治下注多色 + 各座位置不一);否则用 _avg_hash_64")
     ap.add_argument("--sat-text-th", type=int, default=60, help="抠白字的饱和上限(<=判文字)")
+    ap.add_argument("--grid", type=int, default=16, help="text-mask hash 网格(8粗/16细,分加注下注;须与参考同)")
     ap.add_argument("--val-text-th", type=int, default=100, help="抠白字的亮度下限(>=判文字)")
     ap.add_argument("--dump", action="store_true")
     args = ap.parse_args()
 
-    hashfn = (lambda c: text_shape_hash(c, args.sat_text_th, args.val_text_th)) if args.text_mask else _avg_hash_64
+    hashfn = (lambda c: text_shape_hash(c, args.sat_text_th, args.val_text_th, args.grid)) if args.text_mask else _avg_hash_64
     if args.text_mask:
         log.info("hash 模式:色盲+归一化文字形状(text-mask)")
 

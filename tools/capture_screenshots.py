@@ -96,9 +96,10 @@ def main():
     print(f"\n\n共 {len(captures)} 张 → {outdir}")
     if labeled:
         anchors = ",".join(f"f_{fn:06d}:{s}:{a}" for fn, s, a in labeled)
-        print("\n===== 直接粘这条补锚(--append 进现有参考)=====")
-        print(f'python tools\\build_action_refs.py --frames-dir "{outdir}" "data\\recordings\\20260603_121925\\frames" '
-              f'--profile {args.profile} --anchors "{anchors}" --append')
+        print("\n===== 直接粘这条建参考(全新重录;grid16 细分加注/下注)=====")
+        print(f'python tools\\build_action_refs.py --frames-dir "{outdir}" '
+              f'--profile {args.profile} --anchors "{anchors}" --grid 16 --threshold 40')
+        print("(补缺座而非全建,则改 --append 并把现有录像目录一并加到 --frames-dir)")
 
 
 if __name__ == "__main__":

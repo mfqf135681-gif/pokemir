@@ -42,6 +42,7 @@ def main():
     ap.add_argument("--max-frames", type=int, default=600)
     ap.add_argument("--sat-th", type=int, default=60)
     ap.add_argument("--val-th", type=int, default=100)
+    ap.add_argument("--grid", type=int, default=16, help="hash 网格(8粗/16细,分加注下注)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--threshold", type=int, default=12, help="输出 refs 的 live match 阈值(多参考后可比单参考略松)")
     ap.add_argument("--margin", type=int, default=0)
@@ -82,7 +83,7 @@ def main():
         fp = next((f for f in seed_files if fsub in os.path.basename(f)), None)
         if fp is None:
             log.error(f"种子锚帧在第一目录没找到: {fsub}"); sys.exit(2)
-        h = text_shape_hash(crop_action(cv2.imread(fp), int(seat_s)), args.sat_th, args.val_th)
+        h = text_shape_hash(crop_action(cv2.imread(fp), int(seat_s)), args.sat_th, args.val_th, args.grid)
         if not h:
             log.error(f"种子锚 {tok} 抠不出文字"); sys.exit(2)
         seeds[word] = h
@@ -103,7 +104,7 @@ def main():
             c = crop_action(frame, sidx)
             if c is None:
                 continue
-            h = text_shape_hash(c, args.sat_th, args.val_th)
+            h = text_shape_hash(c, args.sat_th, args.val_th, args.grid)
             if not h:
                 continue
             best_w, best_d = None, 999
@@ -139,7 +140,7 @@ def main():
     # 4) 写 refs + 报覆盖
     out = args.out or os.path.join("rois", f"action_refs_{args.profile}.json")
     payload = {"version": 1, "profile": args.profile, "auto_collected": True,
-               "sat_th": args.sat_th, "val_th": args.val_th,
+               "sat_th": args.sat_th, "val_th": args.val_th, "grid": args.grid,
                "match_threshold": args.threshold, "margin": args.margin, "refs": out_refs}
     with open(out, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)

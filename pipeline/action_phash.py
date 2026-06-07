@@ -33,13 +33,14 @@ def text_norm_img(crop, sat_th=60, val_th=100):
     return cv2.resize(text, (32, 16), interpolation=cv2.INTER_AREA)
 
 
-def text_shape_hash(crop, sat_th=60, val_th=100):
-    """归一化文字形状 8×8 aHash → 64-char "0/1" 串(同 _avg_hash_64 格式);无字 → ""。"""
+def text_shape_hash(crop, sat_th=60, val_th=100, grid=8):
+    """归一化文字形状 grid×grid aHash → grid²-char "0/1" 串;无字 → ""。
+    grid 越大越细(8=64位粗;16=256位,能分'加注/下注'这种1字之差)。build/live 须同 grid。"""
     import cv2
     norm = text_norm_img(crop, sat_th, val_th)
     if norm is None:
         return ""
-    thumb = cv2.resize(norm, (8, 8), interpolation=cv2.INTER_AREA)
+    thumb = cv2.resize(norm, (grid, grid), interpolation=cv2.INTER_AREA)
     bits = (thumb > thumb.mean()).astype(int).flatten()
     return "".join(str(b) for b in bits)
 
@@ -69,20 +70,20 @@ def match_hash(qhash, refs, threshold, margin=0):
 class ActionPhashReader:
     """live 动作识别器:载参考文件,crop → 中文动作词或 None。"""
 
-    def __init__(self, refs, sat_th=60, val_th=100, threshold=10, margin=0):
+    def __init__(self, refs, sat_th=60, val_th=100, threshold=10, margin=0, grid=8):
         self.refs = refs
         self.sat_th, self.val_th = sat_th, val_th
-        self.threshold, self.margin = threshold, margin
+        self.threshold, self.margin, self.grid = threshold, margin, grid
 
     @classmethod
     def load(cls, path):
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
         return cls(d["refs"], d.get("sat_th", 60), d.get("val_th", 100),
-                   int(d.get("match_threshold", 10)), int(d.get("margin", 0)))
+                   int(d.get("match_threshold", 10)), int(d.get("margin", 0)), int(d.get("grid", 8)))
 
     def match(self, crop):
         """crop → 中文动作词(过牌/加注/跟注/下注)或 None(无动作)。返回值直接喂 parse。"""
-        r = match_hash(text_shape_hash(crop, self.sat_th, self.val_th),
+        r = match_hash(text_shape_hash(crop, self.sat_th, self.val_th, self.grid),
                        self.refs, self.threshold, self.margin)
         return r[0] if r else None
