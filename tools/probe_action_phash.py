@@ -48,8 +48,32 @@ def sat_frac(crop):
     return float((cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)[..., 1] > 80).mean())
 
 
-# 动作→期望色相区间(cv2 H 0-179):加注橙 / 跟注·下注蓝 / 让牌绿
+# 动作→期望色相区间(cv2 H 0-179):仅自动认座用;下注实测多色,认座请手填 seat
 EXPECT_HUE = {"raise": (0, 30), "call": (95, 140), "bet": (95, 140), "check": (45, 95)}
+
+
+def text_norm_img(crop, sat_th=60, val_th=100):
+    """抠白字(饱和<sat_th 且 亮>val_th,排除高饱和底色)→ 文字外接框裁出 → resize 32×16 二值图。
+    去底色(治下注多色)+ 去位置/尺度(治各座ROI相对位置不一)。无字 → None。"""
+    if crop is None or crop.size == 0:
+        return None
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    mask = ((hsv[..., 1] < sat_th) & (hsv[..., 2] > val_th)).astype(np.uint8)
+    ys, xs = np.where(mask)
+    if len(xs) < 4:
+        return None
+    text = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1] * 255
+    return cv2.resize(text, (32, 16), interpolation=cv2.INTER_AREA)
+
+
+def text_shape_hash(crop, sat_th=60, val_th=100):
+    """归一化文字形状 8×8 aHash。返回 64-char "0/1"(同 _avg_hash_64 格式,可同 _hamming);无字 → ""。"""
+    norm = text_norm_img(crop, sat_th, val_th)
+    if norm is None:
+        return ""
+    thumb = cv2.resize(norm, (8, 8), interpolation=cv2.INTER_AREA)
+    bits = (thumb > thumb.mean()).astype(int).flatten()
+    return "".join(str(b) for b in bits)
 
 
 def hist_bar(counts, labels, width=40):
@@ -72,8 +96,16 @@ def main():
     ap.add_argument("--anchors", required=True,
                     help="逗号分隔 frame_substr:seat:action,如 f_000097:0:check,f_000200:3:raise")
     ap.add_argument("--thresholds", default="6,8,10,12")
+    ap.add_argument("--text-mask", action="store_true",
+                    help="用色盲+归一化文字形状 hash(治下注多色 + 各座位置不一);否则用 _avg_hash_64")
+    ap.add_argument("--sat-text-th", type=int, default=60, help="抠白字的饱和上限(<=判文字)")
+    ap.add_argument("--val-text-th", type=int, default=100, help="抠白字的亮度下限(>=判文字)")
     ap.add_argument("--dump", action="store_true")
     args = ap.parse_args()
+
+    hashfn = (lambda c: text_shape_hash(c, args.sat_text_th, args.val_text_th)) if args.text_mask else _avg_hash_64
+    if args.text_mask:
+        log.info("hash 模式:色盲+归一化文字形状(text-mask)")
 
     from capture.roi import ROIManager
 
@@ -134,10 +166,24 @@ def main():
         crop = crop_action(frame, seat)
         if crop is None:
             log.error(f"锚 {tok} 裁不出 crop(座/坐标)"); sys.exit(2)
-        refs.setdefault(act, []).append(_avg_hash_64(crop))
+        refs.setdefault(act, []).append(hashfn(crop))
         ref_crops.setdefault(act, []).append(crop)
         log.info(f"参考 [{act}] ← {os.path.basename(fp)} seat{seat} hue={mean_hue(crop):.0f}")
     log.info(f"动作参考: {{ {', '.join(f'{a}:{len(h)}个' for a,h in refs.items())} }}")
+    if args.text_mask:
+        empties = [a for a, hs in refs.items() if any(h == "" for h in hs)]
+        if empties:
+            log.warning(f"⚠️ 这些动作参考抠不出文字(空 hash): {empties} → 调 --sat-text-th/--val-text-th")
+        if args.dump:
+            dbg = os.path.join("tools", "output", "action_phash", "_ref_textmask")
+            os.makedirs(dbg, exist_ok=True)
+            for act, cs in ref_crops.items():
+                for k, c in enumerate(cs):
+                    ni = text_norm_img(c, args.sat_text_th, args.val_text_th)
+                    if ni is not None:
+                        cv2.imwrite(os.path.join(dbg, f"{act}_{k}.png"),
+                                    cv2.resize(ni, None, fx=6, fy=6, interpolation=cv2.INTER_NEAREST))
+            log.info(f"参考抠字图 → {dbg}/(眼验 下注/跟注/… 是否抠干净)")
 
     # 2) 扫全录像(子采样 + 强制纳入锚帧)
     sampled = files if len(files) <= args.max_frames else \
@@ -153,7 +199,7 @@ def main():
             c = crop_action(frame, sidx)
             if c is None:
                 continue
-            crops.append((_avg_hash_64(c), mean_hue(c), c, os.path.basename(fp)[:-4], sidx))
+            crops.append((hashfn(c), mean_hue(c), c, os.path.basename(fp)[:-4], sidx))
     log.info(f"采到 {len(crops)} 个 action_area crop")
 
     ths = [int(t) for t in args.thresholds.split(",")]
