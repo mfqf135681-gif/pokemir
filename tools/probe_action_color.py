@@ -109,6 +109,14 @@ def main():
             if do_inspect:
                 kind = "纯色填充(动作?)" if 0 <= vstd < args.vstd_th else "桌布/ID(idle?)"
                 print(f"  seat{sidx}: hue={hue:6.0f} V-std={vstd:7.1f} lap={lap:8.0f} satFrac={sf:.2f} → {kind}")
+                # 存 3× 放大图(文字框±自身宽高)+ 原框 → 看纯色填充在文字外延伸多少,好挑'无字污染'区
+                idir = os.path.join("tools", "output", "color_probe", "inspect")
+                os.makedirs(idir, exist_ok=True)
+                ex0, ex1 = max(0, a.left - a.width), min(W, a.left + 2 * a.width)
+                ey0, ey1 = max(0, a.top - a.height), min(H, a.top + 2 * a.height)
+                stem = os.path.basename(fp)[:-4]
+                cv2.imwrite(os.path.join(idir, f"{stem}_seat{sidx}_3x.png"), frame[ey0:ey1, ex0:ex1])
+                cv2.imwrite(os.path.join(idir, f"{stem}_seat{sidx}_orig.png"), crop)
 
     if not recs:
         log.error("没采到任何 crop"); sys.exit(2)
