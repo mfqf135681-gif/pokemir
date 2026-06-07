@@ -29,7 +29,7 @@ log = logging.getLogger("build_action_refs")
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--frames-dir", required=True)
+    ap.add_argument("--frames-dir", required=True, nargs="+", help="一个或多个录像帧目录(补锚可跨段;首匹配)")
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--anchors", required=True, help="逗号分隔 frame_substr:seat:label(label∈check/raise/call/bet/fold)")
     ap.add_argument("--out", default=None, help="默认 rois/action_refs_<profile>.json")
@@ -37,18 +37,30 @@ def main():
     ap.add_argument("--margin", type=int, default=0, help=">0 时次优在 margin 内判歧义→None(交游戏状态)")
     ap.add_argument("--sat-th", type=int, default=60)
     ap.add_argument("--val-th", type=int, default=100)
+    ap.add_argument("--append", action="store_true",
+                    help="追加进现有 action_refs JSON(补缺座,不覆盖已采的多座参考)")
     args = ap.parse_args()
 
     from capture.roi import ROIManager
 
-    files = sorted(glob.glob(os.path.join(args.frames_dir, "*.png")))
+    files = []
+    for d in args.frames_dir:
+        files += sorted(glob.glob(os.path.join(d, "*.png")))
     if not files:
         log.error(f"{args.frames_dir} 下没 *.png"); sys.exit(2)
     mgr = ROIManager.from_json(os.path.join("rois", f"{args.profile}.json"))
     seat_roi = {sr.seat_index: sr.action_area for sr in mgr.rois.seat_regions
                 if getattr(sr, "action_area", None) is not None and sr.action_area.width > 3}
 
+    out = args.out or os.path.join("rois", f"action_refs_{args.profile}.json")
     refs = {}
+    base_th, base_margin = args.threshold, args.margin
+    if args.append and os.path.exists(out):  # 追加:载现有参考,新锚续上去
+        with open(out, encoding="utf-8") as f:
+            ex = json.load(f)
+        refs = ex.get("refs", {})
+        base_th, base_margin = int(ex.get("match_threshold", args.threshold)), int(ex.get("margin", args.margin))
+        log.info(f"追加模式:载现有 {out}({', '.join(f'{w}:{len(h)}' for w, h in refs.items())})")
     for tok in args.anchors.split(","):
         tok = tok.strip()
         if not tok:
@@ -80,10 +92,9 @@ def main():
         refs.setdefault(word, []).append(h)
         log.info(f"参考 [{label}→{word}] ← {os.path.basename(fp)} seat{seat}")
 
-    out = args.out or os.path.join("rois", f"action_refs_{args.profile}.json")
     payload = {"version": 1, "profile": args.profile,
                "sat_th": args.sat_th, "val_th": args.val_th,
-               "match_threshold": args.threshold, "margin": args.margin, "refs": refs}
+               "match_threshold": base_th, "margin": base_margin, "refs": refs}
     with open(out, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     log.info(f"✅ 写 {out}: {{ {', '.join(f'{w}:{len(hs)}个' for w, hs in refs.items())} }} "
