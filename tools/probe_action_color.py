@@ -68,7 +68,8 @@ def main():
     ap.add_argument("--sat-pixel-th", type=int, default=80, help="判'有色像素'的饱和阈值")
     ap.add_argument("--vstd-th", type=float, default=18.0, help="填充均匀度阈值:V-std < 判纯色填充(动作)")
     ap.add_argument("--dump", action="store_true", help="dump 低V-std(真动作)样图供眼标")
-    ap.add_argument("--inspect", default=None, help="只看文件名含此子串的帧:逐座打印 hue/V-std/lap")
+    ap.add_argument("--inspect", default=None, help="只看文件名含此子串的帧:逐座打印 hue/V-std/lap + 左右纯填充条")
+    ap.add_argument("--strip-w", type=int, default=5, help="紧贴 action_area 左/右取的纯填充条宽度(px)")
     args = ap.parse_args()
 
     from capture.roi import ROIManager
@@ -117,6 +118,16 @@ def main():
                 stem = os.path.basename(fp)[:-4]
                 cv2.imwrite(os.path.join(idir, f"{stem}_seat{sidx}_3x.png"), frame[ey0:ey1, ex0:ex1])
                 cv2.imwrite(os.path.join(idir, f"{stem}_seat{sidx}_orig.png"), crop)
+                # 左/右纯填充条(派生自 action_area 坐标,无字污染)→ 验哪边落在纯色填充里
+                sw = args.strip_w
+                for tag, sx0, sx1 in [("L", a.left - sw, a.left), ("R", a.left + a.width, a.left + a.width + sw)]:
+                    cx0, cx1 = max(0, sx0), min(W, sx1)
+                    if cx1 - cx0 < 2:
+                        print(f"      {tag}条: 越界跳过"); continue
+                    strip = frame[a.top:a.top + a.height, cx0:cx1]
+                    ssf, shue, svstd, _ = crop_metrics(strip, args.sat_pixel_th)
+                    print(f"      {tag}条({cx0}-{cx1}): hue={shue:6.0f} V-std={svstd:7.1f} satFrac={ssf:.2f}")
+                    cv2.imwrite(os.path.join(idir, f"{stem}_seat{sidx}_strip{tag}.png"), strip)
 
     if not recs:
         log.error("没采到任何 crop"); sys.exit(2)
