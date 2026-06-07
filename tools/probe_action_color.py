@@ -141,7 +141,8 @@ def main():
             if res is None:
                 continue
             sf, hue, vstd, lap, crop = res
-            recs.append((fi, sidx, sf, hue, vstd, lap, crop))
+            box = frame[a.top:a.top + a.height, a.left:a.left + a.width]  # 含动作词,供 dump 放大眼读
+            recs.append((fi, sidx, sf, hue, vstd, lap, box, os.path.basename(fp)[:-4]))
             if do_inspect:
                 kind = "纯色填充(动作?)" if 0 <= vstd < args.vstd_th else "桌布/ID(idle?)"
                 print(f"  seat{sidx}: hue={hue:6.0f} V-std={vstd:7.1f} lap={lap:8.0f} satFrac={sf:.2f} → {kind}")
@@ -201,9 +202,10 @@ def main():
             per_bin.setdefault(int(r[3] // 15) * 15, []).append(r)
         saved = 0
         for b, rs in sorted(per_bin.items()):
-            for r in rs[:8]:
-                cv2.imwrite(os.path.join(outdir, f"hue{b:03d}_vstd{int(r[4]):03d}_frame{r[0]:04d}_seat{r[1]}.png"), r[6]); saved += 1
-        print(f"\n④ dump {saved} 张【低V-std=真动作】样图 → {outdir}/(名带 hue/vstd/seat;眼标'哪 hue=哪动作')")
+            for r in rs[:12]:
+                big = cv2.resize(r[6], None, fx=6, fy=6, interpolation=cv2.INTER_NEAREST)  # 放大动作框,读得出字
+                cv2.imwrite(os.path.join(outdir, f"hue{b:03d}_vstd{int(r[4]):03d}_{r[7]}_seat{r[1]}.png"), big); saved += 1
+        print(f"\n④ dump {saved} 张【低V-std=真动作】放大动作框 → {outdir}/(名带 hue/vstd/原帧/座;按 hue 看,读动作词对色)")
 
 
 if __name__ == "__main__":
