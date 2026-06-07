@@ -199,6 +199,11 @@ def main():
             hb = list(range(0, 181, 15)); hh, _ = np.histogram(hues, bins=hb)
             top = sorted(zip(hh.tolist(), [f"H{hb[i]}" for i in range(len(hb)-1)]), reverse=True)[:3]
             print(f"  @hamming≤{th}: {len(idx)} 命中  色相 top: {', '.join(f'{l}×{c}' for c,l in top if c)}")
+            # 命中座分布:验位置归一——单参考若只在自己采集那座命中=位置归一没生效
+            _sc = {}
+            for i in idx:
+                _sc[crops[i][4]] = _sc.get(crops[i][4], 0) + 1
+            print(f"      命中座分布: {', '.join(f's{s}×{n}' for s, n in sorted(_sc.items()))}")
         # dump 最近命中(放大动作框,眼标)
         if args.dump:
             outdir = os.path.join("tools", "output", "action_phash", act)
