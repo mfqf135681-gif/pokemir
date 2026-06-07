@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY
 from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips
 from difflib import get_close_matches
 
@@ -1907,6 +1907,39 @@ class PipelineOrchestrator:
     # Tuning thread:实测后调.
     _DIFF_THRESHOLD = 3.0
 
+    def _get_tick_frame_grey(self):
+        """#237:整帧灰度图,每 tick 算一次缓存(recognize-only 用,避免逐座 cvtColor 整帧)。
+        无 D.1 缓存帧(FRAME_CAPTURE 关 / 尚未 refresh)→ None → 调用方回退 read_text。"""
+        tick = self.tracker._global_tick_counter
+        if getattr(self, "_frame_grey_tick", None) == tick:
+            return self._frame_grey
+        frame = self.capturer.get_cached_frame()
+        if frame is None or frame.size == 0:
+            grey = None
+        elif frame.ndim == 3 and frame.shape[2] == 4:
+            grey = cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
+        elif frame.ndim == 3:
+            grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            grey = frame  # 已是单通道
+        self._frame_grey = grey
+        self._frame_grey_tick = tick
+        return grey
+
+    def _recognize_only_roi(self, roi, allowlist):
+        """#237:recognize-only 读单个 ROI。用每 tick 缓存的整帧灰度图 + roi 帧内框,
+        跳过 CRAFT 检测。返回 None = 无法走此路(无缓存帧 / 坐标越界)→ 调用方回退 read_text。"""
+        grey = self._get_tick_frame_grey()
+        if grey is None:
+            return None
+        h, w = grey.shape[:2]
+        x0, y0 = roi.left, roi.top
+        x1, y1 = roi.left + roi.width, roi.top + roi.height
+        if x0 < 0 or y0 < 0 or x1 > w or y1 > h or x1 <= x0 or y1 <= y0:
+            return None
+        out = self.ocr.recognize_boxes(grey, [[x0, x1, y0, y1]], allowlist=allowlist)
+        return out[0] if out else ""
+
     def _capture_with_diff_trigger(self, roi_key: str, roi,
                                     allowlist: str = "",
                                     ensemble: bool = False,
@@ -1948,8 +1981,13 @@ class PipelineOrchestrator:
                 )
                 return cached_text, img
 
-        # 真做 OCR
-        text = self.ocr.read_text(img, allowlist=allowlist, ensemble=ensemble)
+        # 真做 OCR.#237:flag 开 → recognize-only(跳检测,与上面 diff 缓存叠加);
+        # 无缓存帧/坐标越界 → _recognize_only_roi 返 None → 回退 read_text(零风险)。
+        text = None
+        if OCR_RECOGNIZE_ONLY:
+            text = self._recognize_only_roi(roi, allowlist)
+        if text is None:
+            text = self.ocr.read_text(img, allowlist=allowlist, ensemble=ensemble)
         self.tracker._last_roi_img[roi_key] = img
         self.tracker._last_roi_text[roi_key] = text
         self.tracker._roi_force_refresh_at[roi_key] = tick_now

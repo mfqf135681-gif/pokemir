@@ -149,6 +149,11 @@ class ScreenCapturer:
     def clear_frame(self) -> None:
         self._frame = None
 
+    def get_cached_frame(self):
+        """#237:返回 D.1 缓存的整窗帧(BGRA),无则 None。
+        recognize-only 用它取整帧灰度图,坐标系与 capture_roi 切片一致(帧 [0,0]=窗口原点)。"""
+        return self._frame
+
     def capture_roi(self, roi: ROIRegion) -> np.ndarray:
         """Capture a ROI relative to the current window/monitor origin.
         杠杆D.1:有缓存帧则从中切片(像素与逐区 grab 等价——整窗帧 [0,0]=窗口原点,

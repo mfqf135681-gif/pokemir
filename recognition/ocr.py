@@ -147,6 +147,41 @@ class OCREngine:
                 out[pos] = str(result).strip()
         return out
 
+    def recognize_boxes(self, frame_grey: np.ndarray, boxes: list,
+                        allowlist: str = "", batch_size: int = 16) -> list:
+        """#237(2026-06-07):recognize-only — 跳过 CRAFT 检测，对整帧灰度图的固定框直接识别。
+
+        EasyOCR `reader.recognize(grey, horizontal_list, free_list, detail=0)`：把检测与识别
+        解耦，免掉最贵的检测阶段（控制 bench ×3.1 vs 逐 ROI readtext）。
+
+        Args:
+            frame_grey: 整帧【灰度】图（H×W，调用方负责 BGRA/BGR→GRAY）
+            boxes: list of [x_min, x_max, y_min, y_max]（帧内坐标，与 horizontal_list 同格式）
+            allowlist: 全部框共用一个 allowlist（recognize 限制同 readtext）。空 → instance 默认
+            batch_size: 识别器 batch（recognize 内部对多框批识别）
+
+        Returns:
+            list[str] — 与 boxes 1-1（detail=0 → recognize 按 horizontal_list 顺序返回文本，
+            context7 /jaidedai/easyocr 确认）。失败 / 不齐 → 以 "" 补位占满 len(boxes)。
+        """
+        self._init()
+        if not allowlist:
+            allowlist = self._default_allowlist
+        if not boxes:
+            return []
+        try:
+            kwargs = {"detail": 0, "free_list": [], "batch_size": batch_size}
+            if allowlist:
+                kwargs["allowlist"] = allowlist
+            results = self._reader.recognize(frame_grey, horizontal_list=boxes, **kwargs)
+        except Exception:
+            logger.warning("OCR recognize-only call failed", exc_info=True)
+            return [""] * len(boxes)
+        out = [str(r).strip() if r is not None else "" for r in (results or [])]
+        if len(out) < len(boxes):
+            out += [""] * (len(boxes) - len(out))
+        return out[:len(boxes)]
+
     def _read_one(self, image: np.ndarray, allowlist: str, scale: int) -> str:
         processed = self._preprocess(image, scale=scale)
         try:

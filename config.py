@@ -60,6 +60,13 @@ FRAME_CAPTURE = os.getenv("POKEMIR_FRAME_CAPTURE", "0").lower() in ("1", "true",
 # 关掉 hero换牌/公共牌reset 触发(治公共牌 reset 过切——实测 btn=5 连两手=一手被劈两半)。
 # 默认【关】零变化;POKEMIR_BUTTON_CUT=1 开(需 live 验证按钮检测先轮转正常)。
 BUTTON_CUT = os.getenv("POKEMIR_BUTTON_CUT", "0").lower() in ("1", "true", "yes")
+# 2026-06-07 #237:recognize-only OCR 路径。EasyOCR `reader.recognize(整帧灰度图,固定框)`
+# 跳过最贵的 CRAFT 检测阶段(控制 bench: C=559ms vs A 逐ROI readtext=1750ms,×3.1)。
+# 与 T52 diff 缓存【叠加】:只对"变了的座"用、整帧灰度图每 tick 算一次。默认【关】零变化;
+# POKEMIR_OCR_RECOGNIZE_ONLY=1 开。【依赖 FRAME_CAPTURE=1】(需缓存整帧);无缓存帧/坐标越界
+# 自动回退 read_text。准度 Win 验(bench 只测速)。详见 requirement-discussions/
+# 2026-06-06_capture-frequency-decouple-batch-throughput.md §2/§9。
+OCR_RECOGNIZE_ONLY = os.getenv("POKEMIR_OCR_RECOGNIZE_ONLY", "0").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 
