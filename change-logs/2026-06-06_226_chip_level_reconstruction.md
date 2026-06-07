@@ -40,3 +40,16 @@ excess_loss、no_winner、split/multi_winner、partial_seats。
   底池进度/活跃集fold时序/下注区phash变化时刻 定序)。
 - rake 常数(~12)待确认真rake vs 系统偏移;rebuy 仅 flag 未接入校正(_infer_insurance 雏形)。
 - 单 session ~25 手,待稳态长局扩样本。
+
+### 二期前向引擎候选:PokerKit(context7 实证,2026-06-06)
+**uoftcprg/PokerKit**(同行评审、纯 Python、**Linux 可测**)——序列重建的"现成锁芯",
+省掉手写德州规则/边池/rake(后两者手写=bug 磁石)。当时查到的 4 原语:
+- `can_complete_bet_or_raise_to(amount)` = **合法性 oracle**(min-raise/max 合法区间,反向搜索要的)
+- state 机 + `check_or_call`/`fold` + `state.stacks`/`status` = **前向引擎**(喂候选序列→算 pot/stack/轮到谁)
+- `state.pot_amounts` = 主池 + **各边池**(all-in 必需)
+- `rake()` 内建可自定义(%+cap+no-flop-no-drop+自定义函数)→ 对口 "rake ~12" 漏点;摸清 WePoker rake 规则后可显式建模
+
+**定性(别当银弹)**:它治**逻辑半边,而逻辑不是瓶颈**(脑子够、1Hz 的眼睛是命门)。
+**必要不充分**——它判合法/算准 pot,但"实际哪条序列"仍靠捕获约束(指针顺序/底池增量/fold时点)坍缩;
+多人多次加注手剪枝后仍可能多条。**不改变"先测捕获、再建序列"的顺序**,只确定真要建时引擎不用自造。
+接时需对表 WePoker ante/straddle → PokerKit 牌局定义(NLHE 应无碍)。
