@@ -2323,15 +2323,29 @@ class PipelineOrchestrator:
                         self.tracker._idle_avatar_hash[sidx] = _avg_hash_64(fold_img)
                         sub_ms["seat_avatar_hash"] += (time.perf_counter() - _t) * 1000.0
 
+            # #240:本座是否走"动作读取"(phash/OCR)——fold/all-in 已在上面经 fold_area 设了
+            # action_text,_need_action_read=False,下面金额拼接跳过它(避免给 fold 读金额)。
+            _need_action_read = action_text is None
             if action_text is None and self._action_phash is not None:
                 # #240(2026-06-07):text-shape phash 二元桩替 action OCR。匹配→中文动作词(喂下方
                 # ActionRecognizer.parse);落空→""(无动作/idle,不回退 OCR——phash 即权威)。
+                # T52 同款 diff 缓存:action_area 未变则复用上次结果(动作持久态→多数 tick 不重算)。
                 _t = time.perf_counter()
                 action_img = self.capturer.capture_roi(seat_roi.action_area)
-                word = self._action_phash.match(action_img)
-                action_text = word if word else ""
-                self.tracker._last_roi_img[f"seat_{sidx}_action"] = action_img
-                self.tracker._last_roi_text[f"seat_{sidx}_action"] = action_text
+                _rk = f"seat_{sidx}_action"
+                _cached = self.tracker._last_roi_img.get(_rk)
+                _tick = self.tracker._global_tick_counter
+                _need_force = (_tick - self.tracker._roi_force_refresh_at.get(_rk, 0)) >= 4
+                if (_cached is not None and not _need_force and action_img is not None
+                        and _cached.shape == action_img.shape
+                        and float(cv2.absdiff(action_img, _cached).sum()) / (action_img.size or 1) < self._DIFF_THRESHOLD):
+                    action_text = self.tracker._last_roi_text.get(_rk, "")  # 未变 → 复用
+                else:
+                    word = self._action_phash.match(action_img)
+                    action_text = word if word else ""
+                    self.tracker._last_roi_img[_rk] = action_img
+                    self.tracker._last_roi_text[_rk] = action_text
+                    self.tracker._roi_force_refresh_at[_rk] = _tick
                 sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
 
             if action_text is None:
@@ -2360,40 +2374,42 @@ class PipelineOrchestrator:
                     )
                     sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
 
-                # Concatenate amount (separate ROI in WePoker — chip-icon + digits beside avatar);
-                # parser regex (\d+\.?\d*) will pull the number from the combined text
-                if action_text and seat_roi.amount_area is not None:
-                    # cut1:配方主读 amount(allow_icon 丢筹码图标留数字),读空回落 EasyOCR。
-                    if DIGIT_RECIPE_LIVE and self._digit_reader is not None:
-                        _t = time.perf_counter()
-                        crop = getattr(self, "_batched_amount_crops", {}).get(sidx)
-                        if crop is None:
-                            crop = self.capturer.capture_roi(seat_roi.amount_area)
-                        # 各区模板:amount 专用 reader(无 _amount.json 则回退 stack/default)
-                        v = self._reader_for("amount").read(crop, allow_icon=True)
-                        if v is not None:
-                            amount_text = str(int(v))
-                        else:
-                            amount_text, _ = self._capture_with_diff_trigger(
-                                roi_key=f"seat_{sidx}_amount", roi=seat_roi.amount_area,
-                                allowlist="0123456789.", ensemble=False)
-                        self.tracker._last_roi_text[f"seat_{sidx}_amount"] = amount_text
-                        sub_ms["seat_amount_ocr"] += (time.perf_counter() - _t) * 1000.0
-                    # T73:OCR_BATCH 优先用 pre-batch.
-                    elif OCR_BATCH and sidx in self._batched_amount_results:
-                        amount_text = self._batched_amount_results[sidx]
-                        self.tracker._last_roi_text[f"seat_{sidx}_amount"] = amount_text
+            # 金额拼接:phash 与 OCR 两路共用(#240 2026-06-07 修——原在 OCR 块内,phash 设了
+            # action_text 就把金额拼接整段跳过 → phash 认出的 call/raise/bet 丢金额)。
+            # _need_action_read 排除 fold-early(给 fold 读金额无意义)。
+            if _need_action_read and action_text and seat_roi.amount_area is not None:
+                from config import OCR_BATCH
+                # cut1:配方主读 amount(allow_icon 丢筹码图标留数字),读空回落 EasyOCR。
+                if DIGIT_RECIPE_LIVE and self._digit_reader is not None:
+                    _t = time.perf_counter()
+                    crop = getattr(self, "_batched_amount_crops", {}).get(sidx)
+                    if crop is None:
+                        crop = self.capturer.capture_roi(seat_roi.amount_area)
+                    # 各区模板:amount 专用 reader(无 _amount.json 则回退 stack/default)
+                    v = self._reader_for("amount").read(crop, allow_icon=True)
+                    if v is not None:
+                        amount_text = str(int(v))
                     else:
-                        _t = time.perf_counter()
                         amount_text, _ = self._capture_with_diff_trigger(
-                            roi_key=f"seat_{sidx}_amount",
-                            roi=seat_roi.amount_area,
-                            allowlist="0123456789.",
-                            ensemble=False,
-                        )
-                        sub_ms["seat_amount_ocr"] += (time.perf_counter() - _t) * 1000.0
-                    if amount_text:
-                        action_text = f"{action_text} {amount_text}"
+                            roi_key=f"seat_{sidx}_amount", roi=seat_roi.amount_area,
+                            allowlist="0123456789.", ensemble=False)
+                    self.tracker._last_roi_text[f"seat_{sidx}_amount"] = amount_text
+                    sub_ms["seat_amount_ocr"] += (time.perf_counter() - _t) * 1000.0
+                # T73:OCR_BATCH 优先用 pre-batch.
+                elif OCR_BATCH and sidx in self._batched_amount_results:
+                    amount_text = self._batched_amount_results[sidx]
+                    self.tracker._last_roi_text[f"seat_{sidx}_amount"] = amount_text
+                else:
+                    _t = time.perf_counter()
+                    amount_text, _ = self._capture_with_diff_trigger(
+                        roi_key=f"seat_{sidx}_amount",
+                        roi=seat_roi.amount_area,
+                        allowlist="0123456789.",
+                        ensemble=False,
+                    )
+                    sub_ms["seat_amount_ocr"] += (time.perf_counter() - _t) * 1000.0
+                if amount_text:
+                    action_text = f"{action_text} {amount_text}"
 
             if not action_text:
                 # No event this tick — still update _prev_stack so the NEXT event has
