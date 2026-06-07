@@ -55,6 +55,37 @@ def crop_metrics(crop_bgr, sat_pixel_th=80):
     return frac, float(np.median(h[mask])), float(np.std(vm)), lap
 
 
+def sample_region(frame, a, region, sw, sat_th):
+    """按 region 取采样区算 metrics。返回 (sf,hue,vstd,lap,crop) 或 None(越界)。
+    stripL/R=紧贴 action_area 左/右 sw 宽纯填充条;stripmin=L,R 里 V-std 更低的。"""
+    Hf, Wf = frame.shape[:2]
+    if a.top < 0 or a.top + a.height > Hf:
+        return None
+    def take(x0, x1):
+        x0c, x1c = max(0, x0), min(Wf, x1)
+        if x1c - x0c < 2:
+            return None
+        return frame[a.top:a.top + a.height, x0c:x1c]
+    spans = {"box": (a.left, a.left + a.width),
+             "stripL": (a.left - sw, a.left),
+             "stripR": (a.left + a.width, a.left + a.width + sw)}
+    if region in spans:
+        c = take(*spans[region])
+        return (*crop_metrics(c, sat_th), c) if c is not None else None
+    # stripmin
+    cands = []
+    for key in ("stripL", "stripR"):
+        c = take(*spans[key])
+        if c is not None:
+            m = crop_metrics(c, sat_th)
+            if m[2] >= 0:
+                cands.append((m, c))
+    if not cands:
+        return None
+    m, c = min(cands, key=lambda mc: mc[0][2])
+    return (*m, c)
+
+
 def hist_bar(counts, labels, width=40):
     mx = max(counts) or 1
     return "\n".join(f"  {lab:>10} | {'█' * int(round(width * c / mx))} {c}" for c, lab in zip(counts, labels))
@@ -70,6 +101,8 @@ def main():
     ap.add_argument("--dump", action="store_true", help="dump 低V-std(真动作)样图供眼标")
     ap.add_argument("--inspect", default=None, help="只看文件名含此子串的帧:逐座打印 hue/V-std/lap + 左右纯填充条")
     ap.add_argument("--strip-w", type=int, default=5, help="紧贴 action_area 左/右取的纯填充条宽度(px)")
+    ap.add_argument("--probe-region", choices=["box", "stripL", "stripR", "stripmin"], default="box",
+                    help="全量扫的采样区:box=紧框(旧/含字污染)/stripL/stripR=纯填充条/stripmin=取L,R里V-std更低的")
     args = ap.parse_args()
 
     from capture.roi import ROIManager
@@ -104,8 +137,10 @@ def main():
         for sidx, a in seats:
             if a.left < 0 or a.top < 0 or a.left + a.width > W or a.top + a.height > H:
                 continue
-            crop = frame[a.top:a.top + a.height, a.left:a.left + a.width]
-            sf, hue, vstd, lap = crop_metrics(crop, args.sat_pixel_th)
+            res = sample_region(frame, a, args.probe_region, args.strip_w, args.sat_pixel_th)
+            if res is None:
+                continue
+            sf, hue, vstd, lap, crop = res
             recs.append((fi, sidx, sf, hue, vstd, lap, crop))
             if do_inspect:
                 kind = "纯色填充(动作?)" if 0 <= vstd < args.vstd_th else "桌布/ID(idle?)"
