@@ -76,8 +76,14 @@ def main():
     files = sorted(glob.glob(os.path.join(args.frames_dir, "*.png")))
     if not files:
         log.error(f"{args.frames_dir} 下没 *.png"); sys.exit(2)
+    sampled = files
     if len(files) > args.max_frames:
-        files = [files[i] for i in np.linspace(0, len(files) - 1, args.max_frames).astype(int)]
+        sampled = [files[i] for i in np.linspace(0, len(files) - 1, args.max_frames).astype(int)]
+    if args.inspect:  # 强制纳入所有匹配 --inspect 的帧(否则被抽样跳过)
+        matches = [f for f in files if args.inspect in os.path.basename(f)]
+        sampled = sorted(set(sampled) | set(matches))
+        log.info(f"--inspect 命中 {len(matches)} 帧,已强制纳入")
+    files = sampled
     log.info(f"扫 {len(files)} 帧")
 
     mgr = ROIManager.from_json(os.path.join("rois", f"{args.profile}.json"))
