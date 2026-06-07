@@ -106,6 +106,26 @@ def main():
     print("      D≪A 而 B≈A     ⟹ 传整帧是开销源,逐座也能快但得传 crop。")
     print("      C≪A            ⟹ 批量 recognize 是真杠杆(印证 bench_ocr path C)。")
 
+    # ── 准度对照:recognize-only 输出 vs read_text 输出(production 现用 read_text)──
+    # 无 ground truth → 只报【一致性】(与现状读法一不一样),不报对错。
+    base_txt = [ocr.read_text(c, allowlist=ACTION_OCR_ALLOWLIST, ensemble=True) for c in crops]
+    bonly_txt = [ocr.recognize_boxes(grey, [b], allowlist=ACTION_OCR_ALLOWLIST)[0] for b in boxes]
+    bat_txt = ocr.recognize_boxes(grey, boxes, allowlist=ACTION_OCR_ALLOWLIST)
+
+    def norm(s):
+        return (s or "").strip()
+    nb = sum(1 for i in range(n) if norm(bonly_txt[i]) == norm(base_txt[i]))
+    nc = sum(1 for i in range(n) if norm(bat_txt[i]) == norm(base_txt[i]))
+    print("\n========== 准度一致性(recognize-only vs read_text 现状读法)==========")
+    print(f"{'框':>3} | {'A read_text':>14} | {'B recog(整帧1框)':>16} | {'C recog(批)':>14} | B=A C=A")
+    for i in range(n):
+        a, b, c = norm(base_txt[i]), norm(bonly_txt[i]), norm(bat_txt[i])
+        print(f"{i:>3} | {a[:14]:>14} | {b[:16]:>16} | {c[:14]:>14} |  {'✓' if b==a else '✗'}   {'✓' if c==a else '✗'}")
+    print("-" * 64)
+    print(f"B(逐座)与现状一致: {nb}/{n}   C(批量)与现状一致: {nc}/{n}")
+    print("判读:一致率高 ⟹ recognize-only 不改读法,可拨默认;低 ⟹ 跳 otsu 伤准,需加回预处理。")
+    print("注:本帧多为静态快照(idle 座显 ID / 部分空),空框两边都空也算一致;关注【非空框是否读得一样】。")
+
 
 if __name__ == "__main__":
     main()
