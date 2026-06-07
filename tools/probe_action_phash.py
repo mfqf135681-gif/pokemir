@@ -42,6 +42,16 @@ def mean_hue(crop):
     return float(np.median(hsv[..., 0][mask])) if mask.any() else -1.0
 
 
+def sat_frac(crop):
+    if crop is None or crop.size == 0:
+        return 0.0
+    return float((cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)[..., 1] > 80).mean())
+
+
+# 动作→期望色相区间(cv2 H 0-179):加注橙 / 跟注·下注蓝 / 让牌绿
+EXPECT_HUE = {"raise": (0, 30), "call": (95, 140), "bet": (95, 140), "check": (45, 95)}
+
+
 def hist_bar(counts, labels, width=40):
     mx = max(counts) or 1
     return "\n".join(f"  {lab:>9} | {'█' * int(round(width * c / mx))} {c}" for c, lab in zip(counts, labels))
@@ -91,15 +101,37 @@ def main():
         tok = tok.strip()
         if not tok:
             continue
-        try:
-            fsub, seat, act = tok.split(":"); seat = int(seat)
-        except ValueError:
-            log.error(f"锚格式错: {tok!r}(应 frame:seat:action)"); sys.exit(2)
+        parts = tok.split(":")
+        if len(parts) != 3:
+            log.error(f"锚格式错: {tok!r}(应 frame:seat:action;seat 可填 * 自动认座)"); sys.exit(2)
+        fsub, seat_s, act = parts
         fp = find_frame(files, fsub)
         if fp is None:
             log.error(f"锚帧没找到: {fsub}"); sys.exit(2)
         anchor_frames.add(fp)
-        crop = crop_action(cv2.imread(fp), seat)
+        frame = cv2.imread(fp)
+        if seat_s.isdigit():
+            seat = int(seat_s)
+        else:
+            # 自动认座:按动作期望色相,在该帧找填充+色相匹配的座(取饱和最高=最清晰填充)
+            rng = EXPECT_HUE.get(act)
+            if rng is None:
+                log.error(f"动作 {act!r} 无期望色相表,自动认座失败,请手填 seat"); sys.exit(2)
+            cands = []
+            for sidx in seat_roi:
+                c = crop_action(frame, sidx)
+                if c is None:
+                    continue
+                hue, sf = mean_hue(c), sat_frac(c)
+                if rng[0] <= hue <= rng[1] and sf > 0.5:
+                    cands.append((sf, sidx, hue))
+            if not cands:
+                log.error(f"自动认座失败:{os.path.basename(fp)} 无 {act}(色相{rng})的座,手填 seat"); sys.exit(2)
+            cands.sort(reverse=True)
+            seat = cands[0][1]
+            log.info(f"自动认座 [{act}] {os.path.basename(fp)} → seat{seat}"
+                     f"(候选 {','.join(f's{s}(h{h:.0f})' for _,s,h in cands)});⚠️同色多座时核对动作词!")
+        crop = crop_action(frame, seat)
         if crop is None:
             log.error(f"锚 {tok} 裁不出 crop(座/坐标)"); sys.exit(2)
         refs.setdefault(act, []).append(_avg_hash_64(crop))
