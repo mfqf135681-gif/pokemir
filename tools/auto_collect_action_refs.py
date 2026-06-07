@@ -33,7 +33,8 @@ log = logging.getLogger("auto_collect_action_refs")
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--frames-dir", required=True)
+    ap.add_argument("--frames-dir", required=True, nargs="+",
+                    help="一个或多个录像帧目录(多段一起扫采齐各座各动作);种子锚从第一个目录解析")
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--seed-anchors", required=True, help="每动作 1 个种子锚 frame:seat:label(用于把各座 crop 分到动作)")
     ap.add_argument("--assign-th", type=int, default=20, help="crop 到种子 hamming ≤ 此 → 归该动作(容跨座漂移;须 < 类间~24)")
@@ -50,9 +51,13 @@ def main():
 
     from capture.roi import ROIManager
 
-    files = sorted(glob.glob(os.path.join(args.frames_dir, "*.png")))
+    files = []
+    for d in args.frames_dir:
+        files += sorted(glob.glob(os.path.join(d, "*.png")))
     if not files:
         log.error(f"{args.frames_dir} 下没 *.png"); sys.exit(2)
+    seed_files = sorted(glob.glob(os.path.join(args.frames_dir[0], "*.png")))  # 种子锚从第一目录解析(避免跨段同名碰撞)
+    log.info(f"{len(args.frames_dir)} 个目录共 {len(files)} 帧")
     mgr = ROIManager.from_json(os.path.join("rois", f"{args.profile}.json"))
     seat_roi = {sr.seat_index: sr.action_area for sr in mgr.rois.seat_regions
                 if getattr(sr, "action_area", None) is not None and sr.action_area.width > 3}
@@ -74,9 +79,9 @@ def main():
             continue
         fsub, seat_s, label = tok.split(":")
         word = LABEL_TO_WORD[label]
-        fp = next((f for f in files if fsub in os.path.basename(f)), None)
+        fp = next((f for f in seed_files if fsub in os.path.basename(f)), None)
         if fp is None:
-            log.error(f"种子锚帧没找到: {fsub}"); sys.exit(2)
+            log.error(f"种子锚帧在第一目录没找到: {fsub}"); sys.exit(2)
         h = text_shape_hash(crop_action(cv2.imread(fp), int(seat_s)), args.sat_th, args.val_th)
         if not h:
             log.error(f"种子锚 {tok} 抠不出文字"); sys.exit(2)
