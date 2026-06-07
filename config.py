@@ -70,9 +70,10 @@ OCR_RECOGNIZE_ONLY = os.getenv("POKEMIR_OCR_RECOGNIZE_ONLY", "0").lower() in ("1
 # 2026-06-07 #240:动作识别走 text-shape phash 二元桩(色盲+位置无关归一化文字形状,替 action OCR)。
 # 每座 action_area → 抠白字 → bbox归一 → 8×8 aHash → 比 rois/action_refs_<profile>.json 参考。
 # 治:下注实测多色 + 各座ROI相对位置不一 + idle 噪声。需先 tools/build_action_refs.py 建参考文件。
-# 默认【关】零变化;POKEMIR_ACTION_PHASH_LIVE=1 开(参考文件缺则自动回退 OCR)。准度 Win 验。
-# 详见 requirement-discussions/2026-06-07_action-recognition-text-shape-phash.md。
-ACTION_PHASH_LIVE = os.getenv("POKEMIR_ACTION_PHASH_LIVE", "0").lower() in ("1", "true", "yes")
+# 默认【开】(2026-06-07 live 验收:四动作全绿+加/下死结解开+phash读字×游戏状态双保险,
+# 12 处 text≠stack 全是 phash 纠正 stack 噪声、phash 零误词)。POKEMIR_ACTION_PHASH_LIVE=0 关回 OCR;
+# 参考文件缺(他桌型)自动回退 OCR,零风险。详见 requirement-discussions/2026-06-07_action-recognition-text-shape-phash.md。
+ACTION_PHASH_LIVE = os.getenv("POKEMIR_ACTION_PHASH_LIVE", "1").lower() in ("1", "true", "yes")
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 
