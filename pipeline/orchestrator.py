@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE
 from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips
 from difflib import get_close_matches
 
@@ -215,6 +215,19 @@ class PipelineOrchestrator:
                 logger.warning("[各区模板] DIGIT_RECIPE_LIVE=1 但无任何模板 → 仍用 EasyOCR")
             else:
                 logger.info(f"[各区模板] 已载 {sorted(self._zone_readers)};EasyOCR 仅兜底")
+
+        # 2026-06-07 #240:动作识别走 text-shape phash 二元桩(替 action OCR)。哨兵 _action_phash;
+        # 参考文件 rois/action_refs_{profile}.json(tools/build_action_refs.py 产)。缺则保持 None → 回退 OCR。
+        self._action_phash = None
+        if ACTION_PHASH_LIVE:
+            from pipeline.action_phash import ActionPhashReader
+            apf = Path(ROI_CONFIG_DIR) / f"action_refs_{profile}.json"
+            if apf.is_file():
+                self._action_phash = ActionPhashReader.load(str(apf))
+                logger.info(f"[动作phash] 已载 {apf.name}: {{ {', '.join(f'{w}:{len(h)}' for w, h in self._action_phash.refs.items())} }}"
+                            f" 阈值={self._action_phash.threshold} → 替 action OCR")
+            else:
+                logger.warning(f"[动作phash] ACTION_PHASH_LIVE=1 但无 {apf.name} → 仍用 action OCR(先跑 build_action_refs.py)")
 
         # 2026-06-06 step 2b:按钮权威切手在线去抖状态(BUTTON_CUT 开时用)。
         # confirmed=已确认按钮座;pending/_count=候选顺时针新座的连续帧计数(见
@@ -2309,6 +2322,17 @@ class PipelineOrchestrator:
                         _t = time.perf_counter()
                         self.tracker._idle_avatar_hash[sidx] = _avg_hash_64(fold_img)
                         sub_ms["seat_avatar_hash"] += (time.perf_counter() - _t) * 1000.0
+
+            if action_text is None and self._action_phash is not None:
+                # #240(2026-06-07):text-shape phash 二元桩替 action OCR。匹配→中文动作词(喂下方
+                # ActionRecognizer.parse);落空→""(无动作/idle,不回退 OCR——phash 即权威)。
+                _t = time.perf_counter()
+                action_img = self.capturer.capture_roi(seat_roi.action_area)
+                word = self._action_phash.match(action_img)
+                action_text = word if word else ""
+                self.tracker._last_roi_img[f"seat_{sidx}_action"] = action_img
+                self.tracker._last_roi_text[f"seat_{sidx}_action"] = action_text
+                sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
 
             if action_text is None:
                 # T73(2026-05-29):OCR_BATCH 时优先用 pre-batch 结果(跳过 _capture_with_diff_trigger).

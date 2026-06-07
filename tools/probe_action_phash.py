@@ -28,6 +28,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pipeline.orchestrator import _avg_hash_64, _hamming  # noqa: E402  复用基桩 hash
+from pipeline.action_phash import text_shape_hash, text_norm_img  # noqa: E402  单一实现,防 harness/live 漂移
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("probe_action_phash")
@@ -50,30 +51,6 @@ def sat_frac(crop):
 
 # 动作→期望色相区间(cv2 H 0-179):仅自动认座用;下注实测多色,认座请手填 seat
 EXPECT_HUE = {"raise": (0, 30), "call": (95, 140), "bet": (95, 140), "check": (45, 95)}
-
-
-def text_norm_img(crop, sat_th=60, val_th=100):
-    """抠白字(饱和<sat_th 且 亮>val_th,排除高饱和底色)→ 文字外接框裁出 → resize 32×16 二值图。
-    去底色(治下注多色)+ 去位置/尺度(治各座ROI相对位置不一)。无字 → None。"""
-    if crop is None or crop.size == 0:
-        return None
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    mask = ((hsv[..., 1] < sat_th) & (hsv[..., 2] > val_th)).astype(np.uint8)
-    ys, xs = np.where(mask)
-    if len(xs) < 4:
-        return None
-    text = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1] * 255
-    return cv2.resize(text, (32, 16), interpolation=cv2.INTER_AREA)
-
-
-def text_shape_hash(crop, sat_th=60, val_th=100):
-    """归一化文字形状 8×8 aHash。返回 64-char "0/1"(同 _avg_hash_64 格式,可同 _hamming);无字 → ""。"""
-    norm = text_norm_img(crop, sat_th, val_th)
-    if norm is None:
-        return ""
-    thumb = cv2.resize(norm, (8, 8), interpolation=cv2.INTER_AREA)
-    bits = (thumb > thumb.mean()).astype(int).flatten()
-    return "".join(str(b) for b in bits)
 
 
 def hist_bar(counts, labels, width=40):
