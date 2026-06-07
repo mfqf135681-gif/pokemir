@@ -15,9 +15,11 @@ import json
 LABEL_TO_WORD = {"check": "过牌", "raise": "加注", "call": "跟注", "bet": "下注", "fold": "弃牌"}
 
 
-def text_norm_img(crop, sat_th=60, val_th=100):
-    """抠白字(S<sat_th 且 V>val_th,排除高饱和底色)→ 文字外接框裁出 → resize 32×16 二值图。
+def text_norm_img(crop, sat_th=60, val_th=100, first_char=False):
+    """抠白字(S<sat_th 且 V>val_th,排除高饱和底色)→ 文字外接框裁出 → resize 二值图。
     去底色(治下注多色)+ 去位置/尺度(治各座 ROI 相对位置不一)。无字 → None。
+    first_char=True:只取【第一个字】(切两字列墨空隙的左半)——四动作首字 跟/加/下/过 互异,
+    避开共享的"注"把加注/下注糊在一起。全词→32×16(2:1);首字→16×16(方)。
     BGR(imread)与 BGRA(mss 截屏)都吃。Win-only(cv2)。"""
     import cv2
     import numpy as np
@@ -29,15 +31,22 @@ def text_norm_img(crop, sat_th=60, val_th=100):
     ys, xs = np.where(mask)
     if len(xs) < 4:
         return None
-    text = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1] * 255
-    return cv2.resize(text, (32, 16), interpolation=cv2.INTER_AREA)
+    text = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    if first_char and text.shape[1] >= 6:
+        w = text.shape[1]
+        colink = text.sum(axis=0).astype(float)
+        lo, hi = int(w * 0.35), max(int(w * 0.65), int(w * 0.35) + 1)
+        split = lo + int(np.argmin(colink[lo:hi])) if hi > lo else w // 2  # 两字间列墨最小处=分界
+        text = text[:, :max(split, 3)]  # 左半=第一个字
+    out = (16, 16) if first_char else (32, 16)
+    return cv2.resize(text * 255, out, interpolation=cv2.INTER_AREA)
 
 
-def text_shape_hash(crop, sat_th=60, val_th=100, grid=8):
+def text_shape_hash(crop, sat_th=60, val_th=100, grid=8, first_char=False):
     """归一化文字形状 grid×grid aHash → grid²-char "0/1" 串;无字 → ""。
-    grid 越大越细(8=64位粗;16=256位,能分'加注/下注'这种1字之差)。build/live 须同 grid。"""
+    grid 越大越细;first_char=True 只 hash 第一个字(治加注/下注共享'注'糊在一起)。build/live 须同参数。"""
     import cv2
-    norm = text_norm_img(crop, sat_th, val_th)
+    norm = text_norm_img(crop, sat_th, val_th, first_char)
     if norm is None:
         return ""
     thumb = cv2.resize(norm, (grid, grid), interpolation=cv2.INTER_AREA)
@@ -70,20 +79,21 @@ def match_hash(qhash, refs, threshold, margin=0):
 class ActionPhashReader:
     """live 动作识别器:载参考文件,crop → 中文动作词或 None。"""
 
-    def __init__(self, refs, sat_th=60, val_th=100, threshold=10, margin=0, grid=8):
+    def __init__(self, refs, sat_th=60, val_th=100, threshold=10, margin=0, grid=8, first_char=False):
         self.refs = refs
         self.sat_th, self.val_th = sat_th, val_th
-        self.threshold, self.margin, self.grid = threshold, margin, grid
+        self.threshold, self.margin, self.grid, self.first_char = threshold, margin, grid, first_char
 
     @classmethod
     def load(cls, path):
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
         return cls(d["refs"], d.get("sat_th", 60), d.get("val_th", 100),
-                   int(d.get("match_threshold", 10)), int(d.get("margin", 0)), int(d.get("grid", 8)))
+                   int(d.get("match_threshold", 10)), int(d.get("margin", 0)),
+                   int(d.get("grid", 8)), bool(d.get("first_char", False)))
 
     def match(self, crop):
         """crop → 中文动作词(过牌/加注/跟注/下注)或 None(无动作)。返回值直接喂 parse。"""
-        r = match_hash(text_shape_hash(crop, self.sat_th, self.val_th, self.grid),
+        r = match_hash(text_shape_hash(crop, self.sat_th, self.val_th, self.grid, self.first_char),
                        self.refs, self.threshold, self.margin)
         return r[0] if r else None
