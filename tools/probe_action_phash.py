@@ -177,6 +177,8 @@ def main():
         if args.dump:
             dbg = os.path.join("tools", "output", "action_phash", "_ref_textmask")
             os.makedirs(dbg, exist_ok=True)
+            for old in glob.glob(os.path.join(dbg, "*.png")):
+                os.remove(old)
             for act, cs in ref_crops.items():
                 for k, c in enumerate(cs):
                     ni = text_norm_img(c, args.sat_text_th, args.val_text_th)
@@ -224,6 +226,8 @@ def main():
         if args.dump:
             outdir = os.path.join("tools", "output", "action_phash", act)
             os.makedirs(outdir, exist_ok=True)
+            for old in glob.glob(os.path.join(outdir, "*.png")):
+                os.remove(old)
             order = np.argsort(dists)[:16]
             for rank, i in enumerate(order):
                 big = cv2.resize(crops[i][2], None, fx=6, fy=6, interpolation=cv2.INTER_NEAREST)
