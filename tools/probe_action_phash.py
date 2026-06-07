@@ -70,8 +70,11 @@ def main():
     ap.add_argument("--frames-dir", required=True)
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--max-frames", type=int, default=400)
-    ap.add_argument("--anchors", required=True,
+    ap.add_argument("--anchors", default="",
                     help="逗号分隔 frame_substr:seat:action,如 f_000097:0:check,f_000200:3:raise")
+    ap.add_argument("--refs-json", default="",
+                    help="改载现成参考文件(如 rois/action_refs_party_poker_8.json)验整套多座矩阵;"
+                         "给它则 grid/first_char/sat/val 都从文件读,忽略 --anchors")
     ap.add_argument("--thresholds", default="6,8,10,12")
     ap.add_argument("--text-mask", action="store_true",
                     help="用色盲+归一化文字形状 hash(治下注多色 + 各座位置不一);否则用 _avg_hash_64")
@@ -81,6 +84,21 @@ def main():
     ap.add_argument("--val-text-th", type=int, default=100, help="抠白字的亮度下限(>=判文字)")
     ap.add_argument("--dump", action="store_true")
     args = ap.parse_args()
+
+    ref_json = None
+    if args.refs_json:
+        import json as _json
+        with open(args.refs_json, encoding="utf-8") as f:
+            ref_json = _json.load(f)
+        args.text_mask = True  # 参考文件必走 text-shape
+        args.grid = int(ref_json.get("grid", args.grid))
+        args.first_char = bool(ref_json.get("first_char", args.first_char))
+        args.sat_text_th = int(ref_json.get("sat_th", args.sat_text_th))
+        args.val_text_th = int(ref_json.get("val_th", args.val_text_th))
+        log.info(f"载参考文件 {args.refs_json}: grid={args.grid} first_char={args.first_char} "
+                 f"sat={args.sat_text_th} val={args.val_text_th}")
+    elif not args.anchors:
+        log.error("须给 --anchors 或 --refs-json 其一"); sys.exit(2)
 
     hashfn = (lambda c: text_shape_hash(c, args.sat_text_th, args.val_text_th, args.grid, args.first_char)) if args.text_mask else _avg_hash_64
     if args.text_mask:
@@ -108,7 +126,10 @@ def main():
     refs = {}        # action -> [hash,...]
     ref_crops = {}   # action -> [crop,...](dump 用)
     anchor_frames = set()
-    for tok in args.anchors.split(","):
+    if ref_json is not None:  # 直接载整套多座参考矩阵(验 build 出来的 JSON,非单锚)
+        refs = ref_json["refs"]
+        log.info(f"参考来自 JSON: {{ {', '.join(f'{w}:{len(h)}个' for w, h in refs.items())} }}")
+    for tok in ([] if ref_json is not None else args.anchors.split(",")):
         tok = tok.strip()
         if not tok:
             continue
