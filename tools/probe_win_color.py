@@ -33,12 +33,12 @@ def crop(frame, roi):
     return frame[roi.top:roi.top + roi.height, roi.left:roi.left + roi.width]
 
 
-def yellow_frac(bgr, hlo, hhi, smin, vmin):
-    """黄色像素占比(HSV)。+xx 黄字 → 高;空台面/牌/聊天(非黄)→ ≈0。"""
+def yellow_metrics(bgr, hlo, hhi, smin, vmin):
+    """黄色(HSV)→ (占比, 数量)。占比=黄/框面积(大框稀释);数量=黄像素绝对数(框无关,治稀释)。"""
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     m = ((hsv[..., 0] >= hlo) & (hsv[..., 0] <= hhi) &
          (hsv[..., 1] >= smin) & (hsv[..., 2] >= vmin))
-    return float(m.mean())
+    return float(m.mean()), int(m.sum())
 
 
 def hist_bar(counts, labels, width=40):
@@ -55,6 +55,7 @@ def main():
     ap.add_argument("--smin", type=int, default=70)
     ap.add_argument("--vmin", type=int, default=120)
     ap.add_argument("--thresholds", default="0.02,0.05,0.10,0.20", help="黄占比阈(>判 +xx)")
+    ap.add_argument("--count-ths", default="30,60,100,160", help="黄数量阈(>判 +xx;框无关)")
     ap.add_argument("--max-frames", type=int, default=400)
     ap.add_argument("--dump", action="store_true")
     args = ap.parse_args()
@@ -71,9 +72,9 @@ def main():
     ths = [float(t) for t in args.thresholds.split(",")]
     log.info(f"扫 {len(files)} 帧 × {len(seats)} 座  黄色 H[{args.hlo},{args.hhi}] S>{args.smin} V>{args.vmin}")
 
-    allv = []                 # 全部黄占比
-    by_seat = {}              # seat -> [frac]
-    samples = []              # (frac, crop, fname, seat)
+    fracs, counts = [], []    # 全部 (占比, 数量)
+    by_seat = {}              # seat -> [(frac,count)]
+    samples = []              # (count, frac, crop, fname, seat)
     for fp in files:
         frame = cv2.imread(fp)
         if frame is None:
@@ -83,35 +84,47 @@ def main():
             c = crop(frame, getattr(sr, "win_amount_area", None))
             if c is None or c.size == 0:
                 continue
-            yf = yellow_frac(c, args.hlo, args.hhi, args.smin, args.vmin)
-            allv.append(yf); by_seat.setdefault(sidx, []).append(yf)
+            yf, yc = yellow_metrics(c, args.hlo, args.hhi, args.smin, args.vmin)
+            fracs.append(yf); counts.append(yc)
+            by_seat.setdefault(sidx, []).append((yf, yc))
             if args.dump:
-                samples.append((yf, c, fn, sidx))
+                samples.append((yc, yf, c, fn, sidx))
 
-    arr = np.array(allv)
-    bins = [0, .005, .01, .02, .04, .07, .10, .15, .25, .40, 1.01]
-    hc, _ = np.histogram(arr, bins=bins)
-    hl = [f"{bins[i]:.3f}-{bins[i+1]:.2f}" for i in range(len(bins) - 1)]
-    print(f"\n{'='*60}\nwin_amount 黄色占比分布 n={arr.size}(应 bimodal:无xx≈0 / +xx 高)\n{'='*60}")
-    print(hist_bar(hc.tolist(), hl))
+    farr, carr = np.array(fracs), np.array(counts)
+    cths = [int(round(t)) for t in args.count_ths.split(",")]
+    # ① 占比分布
+    fbins = [0, .005, .01, .02, .04, .07, .10, .15, .25, .40, 1.01]
+    fh, _ = np.histogram(farr, bins=fbins)
+    fl = [f"{fbins[i]:.3f}-{fbins[i+1]:.2f}" for i in range(len(fbins) - 1)]
+    print(f"\n{'='*60}\n①占比分布 n={farr.size}(无xx≈0/+xx高;框大被稀释)\n{'='*60}")
+    print(hist_bar(fh.tolist(), fl))
     for th in ths:
-        print(f"  @阈{th}: 判+xx {(arr > th).mean()*100:.1f}%")
-    print("\n每座 黄占比 [min/中位/max](s0 正常应≈0;若 s0 仍偏高=黄非其误报源):")
+        print(f"  @占比阈{th}: 判+xx {(farr > th).mean()*100:.1f}%")
+    # ② 数量分布(框无关,治稀释 → +xx 簇离 0 更远 = margin 大)
+    cbins = [0, 5, 15, 30, 60, 100, 160, 250, 400, 700, 99999]
+    ch, _ = np.histogram(carr, bins=cbins)
+    cl = [f"{cbins[i]}-{cbins[i+1]}" for i in range(len(cbins) - 1)]
+    print(f"\n{'='*60}\n②数量分布 n={carr.size}(黄像素绝对数,框无关;看 +xx 簇离 0 margin)\n{'='*60}")
+    print(hist_bar(ch.tolist(), cl))
+    for th in cths:
+        print(f"  @数量阈{th}: 判+xx {(carr > th).mean()*100:.1f}%")
+    print("\n每座 [占比 min/中位/max] | [数量 min/中位/max](s0 正常应≈0):")
     for s in sorted(by_seat):
-        v = np.array(by_seat[s])
-        print(f"  s{s}: [{v.min():.3f}/{np.median(v):.3f}/{v.max():.3f}]")
+        f = np.array([x[0] for x in by_seat[s]]); cc = np.array([x[1] for x in by_seat[s]])
+        print(f"  s{s}: [{f.min():.3f}/{np.median(f):.3f}/{f.max():.3f}] | "
+              f"[{int(cc.min())}/{int(np.median(cc))}/{int(cc.max())}]")
     if args.dump and samples:
         outdir = os.path.join("tools", "output", "win_color")
         os.makedirs(outdir, exist_ok=True)
         for old in glob.glob(os.path.join(outdir, "*.png")):
             os.remove(old)
-        ss = sorted(samples, key=lambda t: t[0])
+        ss = sorted(samples, key=lambda t: t[0])  # 按数量排
         for tag, grp in (("low", ss[:8]), ("high", ss[-8:])):
-            for yf, c, fn, sidx in grp:
-                cv2.imwrite(os.path.join(outdir, f"{tag}_y{yf:.3f}_s{sidx}_{fn}.png"),
+            for yc, yf, c, fn, sidx in grp:
+                cv2.imwrite(os.path.join(outdir, f"{tag}_c{yc:04d}_y{yf:.3f}_s{sidx}_{fn}.png"),
                             cv2.resize(c, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST))
-        print(f"\ndump 最低8+最高8 → {outdir}/(high 应见黄色 +数字;low 应无黄)")
-    print("\n判读:bimodal + 高簇是真 +xx + s0 正常帧黄≈0 ⟹ 黄色检测可替 avg_hash 治 s0 误报。")
+        print(f"\ndump 数量最低8+最高8 → {outdir}/(high 应见黄色 +数字;low 应无黄)")
+    print("\n判读:对比①②哪个【+xx 簇离 0 的空隙更宽】= margin 大 = 漏报余地小。数量若 margin 明显更大 → live 换数量判定。")
 
 
 if __name__ == "__main__":
