@@ -2179,13 +2179,15 @@ class PipelineOrchestrator:
         hash / 亮度仍需原图)。BATCH_SEAT_OCR=0 时 noop → 逐座旧路径。
         """
         self._batched_timer_results = {}
-        self._batched_fold_text_results = {}
         self._batched_fold_results = {}  # sidx -> (img, text)
         self._batched_stack_results = {}
         self._batched_stack_crops = {}   # sidx -> img(杠杆A:配方读 stack 用 crop)
         if not BATCH_SEAT_OCR:
             return
-        timer_items, ftxt_items, fold_items, stack_items = [], [], [], []
+        # #235(2026-06-08):删【专读弃牌 fold_text_area】OCR。弃牌识别改:非river=活跃集(card_marker
+        # 消失,已在跑)/ river=fold_area 读"弃牌"(摊牌免疫,本就保留管 all-in/基线)。fold_text_area
+        # 与 fold_area 重复 → 删它省一次 batch OCR。fold_area 全留(all-in/baseline/river弃牌)。
+        timer_items, fold_items, stack_items = [], [], []
         for seat_roi in rois.seat_regions:
             sidx = seat_roi.seat_index
             if self.tracker.is_skippable_seat(sidx):
@@ -2194,10 +2196,6 @@ class PipelineOrchestrator:
                 img = self.capturer.capture_roi(seat_roi.timer_area)
                 if img is not None and img.size > 0:
                     timer_items.append((sidx, img))
-            if seat_roi.fold_text_area is not None and seat_roi.fold_text_area.width > 0:
-                img = self.capturer.capture_roi(seat_roi.fold_text_area)
-                if img is not None and img.size > 0:
-                    ftxt_items.append((sidx, img))
             if seat_roi.fold_area is not None and seat_roi.fold_area.width > 0:
                 img = self.capturer.capture_roi(seat_roi.fold_area)
                 if img is not None and img.size > 0:
@@ -2210,10 +2208,6 @@ class PipelineOrchestrator:
             texts = self.ocr.read_text_batch([i for _, i in timer_items], allowlist="0123456789s ")
             for (sidx, _), t in zip(timer_items, texts):
                 self._batched_timer_results[sidx] = t
-        if ftxt_items:
-            texts = self.ocr.read_text_batch([i for _, i in ftxt_items], allowlist="弃牌盖")
-            for (sidx, _), t in zip(ftxt_items, texts):
-                self._batched_fold_text_results[sidx] = t
         if fold_items:
             texts = self.ocr.read_text_batch([i for _, i in fold_items], allowlist="")
             for (sidx, img), t in zip(fold_items, texts):
@@ -2332,33 +2326,12 @@ class PipelineOrchestrator:
             if timer_handled:
                 continue
 
-            # T120 (2026-06-01): dedicated single-purpose fold_text_area read with a
-            # narrow allowlist. Framed precisely on the "弃牌"/"盖牌" text →
-            #   - allowlist forces OCR off look-alikes (奈/奔 → fixes seats 4/6 unparsed)
-            #   - correct per-seat placement (fixes seats 0/5/7 blank-bg mis-frame empty)
-            # Backward-compatible: active ONLY when fold_text_area is configured;
-            # otherwise falls through to the existing multi-purpose fold_area path.
-            # allin/timer/showdown/avatar stay on fold_area (allowlist can't read "ALL IN").
-            # See requirement-discussions/
-            # 2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md §23.
-            _fold_via_text = False
-            if seat_roi.fold_text_area is not None:
-                _t = time.perf_counter()
-                if BATCH_SEAT_OCR and sidx in self._batched_fold_text_results:
-                    ftxt = self._batched_fold_text_results[sidx]  # spike A: batched
-                else:
-                    ftxt_img = self.capturer.capture_roi(seat_roi.fold_text_area)
-                    ftxt = self.ocr.read_text(ftxt_img, allowlist="弃牌盖")
-                sub_ms["seat_fold_ocr"] += (time.perf_counter() - _t) * 1000.0
-                ftxt = ftxt.strip() if ftxt else ""
-                if ftxt:
-                    _pf = self.action_recognizer.parse(ftxt)
-                    if _pf and _pf["action_type"] == ActionType.FOLD:
-                        action_text = ftxt
-                        self._finalize_timer(sidx)
-                        _fold_via_text = True
-
-            if not _fold_via_text and seat_roi.fold_area is not None:
+            # #235(2026-06-08):删 T120 专读弃牌 fold_text_area 块(与 fold_area 重复)。
+            # 弃牌识别:非river=活跃集(_rescue_silent_fold,card_marker消失)/ river=下方 fold_area
+            # 读"弃牌"(摊牌免疫:弃牌显"弃牌"字、摊牌显正面牌无此字)。fold_area 全留(all-in/timer/
+            # baseline/river弃牌)。所知风险:T120 修过的座(0/4/5/6/7)river 弃牌回落 fold_area 较糙读
+            # → 非river 有活跃集兜,river 那几座有残余漏读风险,下次录制验。
+            if seat_roi.fold_area is not None:
                 _t = time.perf_counter()
                 if BATCH_SEAT_OCR and sidx in self._batched_fold_results:
                     fold_img, fold_text = self._batched_fold_results[sidx]  # spike A: batched (img kept for avatar hash)
