@@ -2668,6 +2668,13 @@ class PipelineOrchestrator:
                 # which means "no signal available to verify".
                 if override_reason:
                     event.confidence_score = 0.7
+                # 2026-06-08 #226 item2:compute_confidence 只看物理(stack/pot delta),不理 text。
+                # 但 phash 动作识别已验收可靠(#240 四动作全绿/零误词)→ text 确认的动作即使
+                # 筹码变化没抓到(stack_delta=0,捕获漏)也不该被低档门当噪声丢(soak 实测两手
+                # 翻前开池加注+多个跟注因此被丢)。phash 开时:text_derived==final_action → 置信
+                # 下限 0.8 过门;dedup(5s窗)防重复读。phash 关(OCR)时不升(文字不可信,保旧行为)。
+                if ACTION_PHASH_LIVE and text_derived is not None and text_derived == final_action:
+                    event.confidence_score = max(event.confidence_score, 0.8)
 
                 # P3 state: update street tracking after this event
                 if stack_delta is not None and stack_delta > 2:
