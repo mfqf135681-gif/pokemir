@@ -3002,6 +3002,12 @@ class PipelineOrchestrator:
             cands.append((seat_roi.seat_index, ham))
             if ham <= th:
                 active.add(seat_roi.seat_index)
+        # 诊断(前3次):card_marker 各座 hamming(≤th=在手)。全>th=参考对不上这桌牌背 → 活跃集瘫根因
+        self._cm_dbg = getattr(self, "_cm_dbg", 0)
+        if self._cm_dbg < 3 and cands:
+            self._cm_dbg += 1
+            logger.info(f"[活跃集诊断] card_marker hammings(≤{th}=在手): {cands} → 在手座 {sorted(active)}"
+                        f"{'  ⚠️全部>阈=参考不匹配' if not active else ''}")
         if emit:
             diag.emit("active_set.detected", {"active": sorted(active), "hammings": cands, "th": th},
                       hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
