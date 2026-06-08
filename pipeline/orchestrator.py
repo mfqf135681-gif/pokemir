@@ -254,6 +254,8 @@ class PipelineOrchestrator:
         self._btn_confirmed = None
         self._btn_pending = None
         self._btn_pending_count = 0
+        # #242 飞行窗预测基:上一手实际落定的按钮座(供 _predict_next_button 顺时针推进)。
+        self._last_button_seat = None
         if BUTTON_CUT:
             logger.info("[step2b] BUTTON_CUT=1:换手走按钮权威(白占比+在线去抖)+总底池兜底;hero/公共牌reset 触发关闭")
 
@@ -3051,6 +3053,27 @@ class PipelineOrchestrator:
                 best_seat, best_wf = seat_roi.seat_index, wf
         return (best_seat if best_wf > frac_th else None), candidates
 
+    def _predict_next_button(self):
+        """#242 飞行窗预测:上一手按钮 → 顺时针【下一占位座】(必跳空座)。
+
+        按钮每手顺时针移到下一个【在座】玩家(空座不发牌不接按钮)→ 占用表确定下一座。
+        依赖占用判定:无上一手按钮 / 占用不可用 / 无占位座 → 返 None(不盲猜,免落空座致盲注错;
+        用户明示『+1 必须排除空座』)。返回预测的 seat_index 或 None。纯几何 + 占用,无 OCR。"""
+        if self._last_button_seat is None:
+            return None
+        occ = self._classify_occupancy()
+        if not occ:
+            return None  # 占用未启用/基线缺 → 无法跳空座 → 诚实 None
+        occupied = {s for s, v in occ.items() if v.get("occupied")}
+        if not occupied:
+            return None
+        num = self.roi_manager.rois.num_seats
+        for k in range(1, num + 1):
+            cand = (self._last_button_seat + k) % num
+            if cand in occupied:
+                return cand
+        return None
+
     def _detect_button_position(self):
         """Scan each seat's button_indicator ROI to find dealer button (seat_index).
 
@@ -3070,12 +3093,26 @@ class PipelineOrchestrator:
         if button_seat is not None:
             method = "white-frac"
             logger.info(f"Button detected at seat {button_seat} via white-frac")
+        elif self._btn_confirmed is not None:
+            # #242 兜底①:白占比这帧没看清 D(飞行动画/遮挡)→ 用 BUTTON_CUT 在线去抖
+            # 已【确认落座】的 _btn_confirmed。换手正是它触发的(button_move_online moved=True
+            # 即把 confirmed 推进到新座)→ 它就是本手权威按钮座,不该被重扫的 None 覆盖。
+            # 这是 51/84 NULL 的主因:重扫赶上飞行窗,而权威值白白没用。
+            button_seat = self._btn_confirmed
+            method = "btn-confirmed"
+            logger.info(f"Button white-frac None → 用 _btn_confirmed seat {button_seat}(#242 兜底①)")
         else:
-            # 无座超阈 = 这帧没看清 D(过渡/遮挡)→ 诚实 None,不再 fallback seat=0
-            # (那是 T13 假阳根源:位置宁可空也不给错座)。下游已有 button=None 守卫。
-            button_seat = None
-            method = "none"
-            logger.warning(f"Button white-frac all below threshold → None. Candidates: {candidates}")
+            # #242 兜底②:连 _btn_confirmed 都没有(首手/整局从未确认)→ 顺时针下一占位座预测
+            # (靠占用表跳空座)。占用不可用 / 无上一手按钮 → 仍诚实 None(不盲猜落空座致盲注错)。
+            pred = self._predict_next_button()
+            if pred is not None:
+                button_seat = pred
+                method = "predict-clockwise"
+                logger.info(f"Button white-frac None & 无 confirmed → 预测顺时针下一占位座 {button_seat}(#242 兜底②)")
+            else:
+                button_seat = None
+                method = "none"
+                logger.warning(f"Button white-frac all below threshold & 无兜底 → None. Candidates: {candidates}")
 
         # T13 diag:每手记录 button 检测方法 + 候选,便于事后审视
         diag.emit(
@@ -3086,10 +3123,12 @@ class PipelineOrchestrator:
                 "candidates": [{"seat": c[0], "white_frac": c[1], "brightness": c[2]} for c in candidates],
             },
             hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
-            level="INFO" if method == "white-frac" else "WARN",
+            level="WARN" if method == "none" else "INFO",  # #242:兜底①②是有效填补,非失败
         )
 
         self.roi_manager.button_seat_index = button_seat
+        if button_seat is not None:
+            self._last_button_seat = button_seat  # #242 预测基:任一方法定下都更新,下手预测/落座确认前向纠错
         # T13:把 button_seat_index 落 hand.raw_data,便于 audit / dashboard 用
         if self.tracker.current_hand is not None:
             if self.tracker.current_hand.raw_data is None:
