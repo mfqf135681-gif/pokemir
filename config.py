@@ -58,8 +58,9 @@ FRAME_CAPTURE = os.getenv("POKEMIR_FRAME_CAPTURE", "0").lower() in ("1", "true",
 # 2026-06-06 step 2b:按钮权威切手(观战模式)。每 tick 白占比扫按钮 → 顺时针单调+在线去抖,
 # 确认 D 移座 = 换手(reconstruct.button_move_online)。开时:换手只认按钮 + "总底池"兜底,
 # 关掉 hero换牌/公共牌reset 触发(治公共牌 reset 过切——实测 btn=5 连两手=一手被劈两半)。
-# 默认【关】零变化;POKEMIR_BUTTON_CUT=1 开(需 live 验证按钮检测先轮转正常)。
-BUTTON_CUT = os.getenv("POKEMIR_BUTTON_CUT", "0").lower() in ("1", "true", "yes")
+# 2026-06-08:默认【开】。按钮检测已 live 验收(整圈轮转零过切,见 hand-segmentation-corroboration);
+# 优于公共牌reset切手(治"一手劈多手"过切)。POKEMIR_BUTTON_CUT=0 可回退到公共牌reset切手。
+BUTTON_CUT = os.getenv("POKEMIR_BUTTON_CUT", "1").lower() in ("1", "true", "yes")
 # 2026-06-07 #237:recognize-only OCR 路径。EasyOCR `reader.recognize(整帧灰度图,固定框)`
 # 跳过最贵的 CRAFT 检测阶段(控制 bench: C=559ms vs A 逐ROI readtext=1750ms,×3.1)。
 # 与 T52 diff 缓存【叠加】:只对"变了的座"用、整帧灰度图每 tick 算一次。默认【关】零变化;
