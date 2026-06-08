@@ -3090,6 +3090,11 @@ class PipelineOrchestrator:
         # live 把 seat0 假"D"短路成永远 seat0(多人桌实测 27 手只在 0/2,见 button.detected),
         # 而夹具/T139 用的正是白占比(不OCR)且验过稳 → 验过的方法没上 live(同 amount 模板坑)。
         button_seat, candidates = self._scan_button_white_frac()
+        # #242 埋点(verify 用):并存两路按钮座 — 单帧白占比原始读 raw_scan_seat(可能 None)
+        # vs BUTTON_CUT 去抖确认值 _btn_confirmed。满桌该恒 +1,下次干净录制比哪路给干净 +1
+        # 序列(白占比单帧 50% 错/含 delta=0 不可能跳;去抖结构上只产顺时针单调)→ 数据定夺优先级。
+        raw_scan_seat = button_seat
+        confirmed_seat = self._btn_confirmed
         if button_seat is not None:
             method = "white-frac"
             logger.info(f"Button detected at seat {button_seat} via white-frac")
@@ -3120,6 +3125,8 @@ class PipelineOrchestrator:
             {
                 "button_seat": button_seat,
                 "method": method,
+                "white_frac_seat": raw_scan_seat,   # #242 埋点:单帧白占比原始读
+                "confirmed_seat": confirmed_seat,    # #242 埋点:去抖确认座
                 "candidates": [{"seat": c[0], "white_frac": c[1], "brightness": c[2]} for c in candidates],
             },
             hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
@@ -3135,6 +3142,9 @@ class PipelineOrchestrator:
                 self.tracker.current_hand.raw_data = {}
             self.tracker.current_hand.raw_data["button_seat_index"] = button_seat
             self.tracker.current_hand.raw_data["button_detection_method"] = method
+            # #242 埋点:两路并存入库,供 live 比对哪路给干净 +1(满桌)→ 定按钮优先级
+            self.tracker.current_hand.raw_data["button_white_frac_seat"] = raw_scan_seat
+            self.tracker.current_hand.raw_data["button_confirmed_seat"] = confirmed_seat
 
         mapping = self.roi_manager.compute_positions()
         self.tracker.set_position_map(mapping)
