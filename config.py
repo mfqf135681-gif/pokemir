@@ -74,6 +74,12 @@ OCR_RECOGNIZE_ONLY = os.getenv("POKEMIR_OCR_RECOGNIZE_ONLY", "0").lower() in ("1
 # 12 处 text≠stack 全是 phash 纠正 stack 噪声、phash 零误词)。POKEMIR_ACTION_PHASH_LIVE=0 关回 OCR;
 # 参考文件缺(他桌型)自动回退 OCR,零风险。详见 requirement-discussions/2026-06-07_action-recognition-text-shape-phash.md。
 ACTION_PHASH_LIVE = os.getenv("POKEMIR_ACTION_PHASH_LIVE", "1").lower() in ("1", "true", "yes")
+
+# 2026-06-08 #241(rebuy 前置):每座占用判定 = live 区域 avg_hash vs 空桌基线
+# (rois/empty_refs_<profile>.json,build_empty_refs.py 采)。hamming ≤ 阈 → 像空桌=空座;
+# > 阈 → 占位。喂 rebuy 的"爆码座 absent→present"判定。默认【关】,缺参考文件自动跳过。
+SEAT_OCCUPANCY_LIVE = os.getenv("POKEMIR_SEAT_OCCUPANCY", "0").lower() in ("1", "true", "yes")
+
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 

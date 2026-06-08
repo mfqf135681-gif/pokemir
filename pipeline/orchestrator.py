@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE
 from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips
 from difflib import get_close_matches
 
@@ -228,6 +228,19 @@ class PipelineOrchestrator:
                             f" 阈值={self._action_phash.threshold} → 替 action OCR")
             else:
                 logger.warning(f"[动作phash] ACTION_PHASH_LIVE=1 但无 {apf.name} → 仍用 action OCR(先跑 build_action_refs.py)")
+
+        # 2026-06-08 #241(rebuy 前置):每座占用判定 = live 区域 avg_hash vs 空桌基线。
+        # 哨兵 _empty_refs(rois/empty_refs_{profile}.json,build_empty_refs.py 产)。缺则 None → 跳过。
+        self._empty_refs = None
+        self._occupancy_th = int(os.getenv("POKEMIR_OCCUPANCY_TH", "8"))  # ≤阈=像空桌;live 调
+        if SEAT_OCCUPANCY_LIVE:
+            erf = Path(ROI_CONFIG_DIR) / f"empty_refs_{profile}.json"
+            if erf.is_file():
+                with open(erf, encoding="utf-8") as f:
+                    self._empty_refs = json.load(f).get("seats", {})
+                logger.info(f"[占用] 已载 {erf.name}: {len(self._empty_refs)} 座空桌基线 阈={self._occupancy_th} → 每手判占用")
+            else:
+                logger.warning(f"[占用] POKEMIR_SEAT_OCCUPANCY=1 但无 {erf.name} → 跳过(先跑 build_empty_refs.py)")
 
         # 2026-06-06 step 2b:按钮权威切手在线去抖状态(BUTTON_CUT 开时用)。
         # confirmed=已确认按钮座;pending/_count=候选顺时针新座的连续帧计数(见
@@ -633,6 +646,10 @@ class PipelineOrchestrator:
         # back-compute on a hand basis later.
         initial_stacks = self._capture_seat_stacks()
 
+        # #241(rebuy 前置):hand-start 每座占用判定(空桌基线二元)。存 raw_data + 打印每区
+        # hamming 供 live 调阈(空 vs 占位的真实间隔只有占位帧才看得到)。_empty_refs 缺则跳过。
+        occupancy = self._classify_occupancy()
+
         # 摊牌 baseline 强初始化 — 之前 baseline 只在 fold_area OCR 为空时更新,
         # 但高活跃玩家很少有 idle empty tick → baseline 永不建立 → 摊牌 skip。
         # 在 hand 起始时(无 overlay 状态)强制建一次 baseline。
@@ -674,6 +691,15 @@ class PipelineOrchestrator:
         if hand.raw_data is None:
             hand.raw_data = {}
         hand.raw_data["player_stacks_initial"] = initial_stacks
+        if occupancy:
+            hand.raw_data["seat_occupancy"] = {
+                str(s): v["occupied"] for s, v in occupancy.items() if v["occupied"] is not None}
+            # live 调阈用:每座 occupied? + 各区到空桌基线的 hamming(占位应远>阈,空应≈0)
+            _occ_log = "  ".join(
+                f"s{s}={'占' if v['occupied'] else ('空' if v['occupied'] is False else '?')}"
+                f"({','.join(f'{r}{h}' for r, h in v['ham'].items())})"
+                for s, v in sorted(occupancy.items()))
+            logger.info(f"[占用] 阈{self._occupancy_th} {_occ_log}")
 
         if db is not None and (seats_map or initial_stacks):
             # Update DB hand with seats metadata + initial stacks (best-effort)
@@ -1786,6 +1812,36 @@ class PipelineOrchestrator:
             )
             return None
         return ActionRecognizer._extract_amount(text or "")
+
+    # 占用判定区(空 vs 占位最可分;多区取 max hamming,稳)
+    _OCCUPANCY_REGIONS = ("fold_area", "stack_area", "id_area")
+
+    def _classify_occupancy(self) -> dict:
+        """每座 → {seat: {occupied: bool|None, ham: {region: hamming}}}。
+        live 区域 _avg_hash_64 vs 空桌基线(_empty_refs):任一区 hamming > 阈 → 占位;
+        全 ≤ 阈 → 空座。基线缺该座/区 → occupied=None。_empty_refs 为空 → 返回 {}。
+        #241 rebuy 前置:喂"爆码座 absent→present"判定;ham 打印供 live 调阈。"""
+        if not self._empty_refs:
+            return {}
+        out = {}
+        for seat in self.roi_manager.rois.seat_regions:
+            refs = self._empty_refs.get(str(seat.seat_index))
+            if not refs:
+                out[seat.seat_index] = {"occupied": None, "ham": {}}
+                continue
+            hams = {}
+            for region in self._OCCUPANCY_REGIONS:
+                ref = refs.get(region)
+                roi = getattr(seat, region, None)
+                if not ref or roi is None or getattr(roi, "width", 0) < 2:
+                    continue
+                img = self.capturer.capture_roi(roi)
+                if img is None or img.size == 0:
+                    continue
+                hams[region] = _hamming(_avg_hash_64(img), ref["hash"])
+            occ = (max(hams.values()) > self._occupancy_th) if hams else None
+            out[seat.seat_index] = {"occupied": occ, "ham": hams}
+        return out
 
     def _capture_seat_stacks(self) -> dict[int, float]:
         """Snapshot per-seat stack via OCR (digit-only allowlist).
