@@ -235,6 +235,8 @@ class PipelineOrchestrator:
         self._occupancy_th = int(os.getenv("POKEMIR_OCCUPANCY_TH", "18"))  # 录像验:空隙16-24,18一刀两断
         self._win_th = int(os.getenv("POKEMIR_WIN_TH", "20"))  # +xx 区 >阈=合法进账(赢/边池/保险);录像验空隙20-24
         self._hand_win_seats = set()  # 本手 +xx latch(per-tick 扫,某 tick 见到就锁;_start_new_hand 重置)
+        self._hand_start_tick = 0     # 本手起 global tick;+xx 跳发牌窗(牌背飞=开局)用
+        self._xx_deal_skip = int(os.getenv("POKEMIR_XX_DEAL_SKIP", "3"))  # 跳每手前 N tick(发牌窗,治s0牌背飞)
         if SEAT_OCCUPANCY_LIVE:
             erf = Path(ROI_CONFIG_DIR) / f"empty_refs_{profile}.json"
             if erf.is_file():
@@ -416,12 +418,6 @@ class PipelineOrchestrator:
                         self._tick_extra_ms["hand_start"] = (time.perf_counter() - _ts) * 1000.0
             phase_ms["hand_detect"] = (time.perf_counter() - t_p) * 1000.0
 
-            # #241(rebuy 前置):每 tick 扫 +xx(瞬态,某 tick 见到即 latch 该座这手"合法进账")。
-            if self.tracker.has_active_hand and self._empty_refs:
-                _tw = time.perf_counter()
-                self._scan_win_amount()
-                self._tick_extra_ms["win_scan"] = (time.perf_counter() - _tw) * 1000.0
-
             # 3. Community cards
             if self.tracker.has_active_hand:
                 t_p = time.perf_counter()
@@ -455,6 +451,14 @@ class PipelineOrchestrator:
                 self._tick_active_set_and_blinds(db)
                 phase_ms["active_set"] = (time.perf_counter() - t_p) * 1000.0
 
+            # #241(rebuy 前置):每 tick 扫 +xx(瞬态,某 tick 见到即 latch 该座这手"合法进账")。
+            # 两道约束(治误报):① 跳每手前 _xx_deal_skip tick(发牌窗,牌背飞入s0)
+            # ② 只扫活跃集座(只有牌里的人能赢 + 活跃集发言概率更低)。活跃集空则回退全座。
+            if self.tracker.has_active_hand and self._empty_refs and \
+                    (self.tracker._global_tick_counter - self._hand_start_tick) >= self._xx_deal_skip:
+                _tw = time.perf_counter()
+                self._scan_win_amount(self._active_set or None)
+                self._tick_extra_ms["win_scan"] = (time.perf_counter() - _tw) * 1000.0
 
             # 5. Seat actions — writes raw_data with stack_delta + pot_delta evidence
             if self.tracker.has_active_hand:
@@ -658,6 +662,7 @@ class PipelineOrchestrator:
         # hamming 供 live 调阈(空 vs 占位的真实间隔只有占位帧才看得到)。_empty_refs 缺则跳过。
         occupancy = self._classify_occupancy()
         self._hand_win_seats = set()  # #241:重置上一手 +xx latch
+        self._hand_start_tick = self.tracker._global_tick_counter  # #241:记本手起点,+xx 跳发牌窗
 
         # 摊牌 baseline 强初始化 — 之前 baseline 只在 fold_area OCR 为空时更新,
         # 但高活跃玩家很少有 idle empty tick → baseline 永不建立 → 摊牌 skip。
@@ -1857,13 +1862,16 @@ class PipelineOrchestrator:
             out[seat.seat_index] = {"occupied": occ, "ham": hams}
         return out
 
-    def _scan_win_amount(self):
+    def _scan_win_amount(self, active_seats=None):
         """#241 +xx 赢家 latch:per-tick 扫每座 win_amount 区 vs 空桌基线,hamming > 阈 → 该座
         这手"合法进账"(赢/边池/保险,二元不读额)→ 锁进 _hand_win_seats(瞬态,某 tick 见到即锁)。
-        喂 rebuy:爆码座下手变正但【无 +xx】= rebuy;【有 +xx】= 合法回血,非 rebuy。_empty_refs 缺则跳过。"""
+        喂 rebuy:爆码座下手变正但【无 +xx】= rebuy;【有 +xx】= 合法回血,非 rebuy。
+        active_seats 非空 → 只扫这些座(只有牌里的人能赢 + 缩面省抠图 + 滤非活跃座聊天);空 → 全座。"""
         if not self._empty_refs:
             return
         for seat in self.roi_manager.rois.seat_regions:
+            if active_seats is not None and seat.seat_index not in active_seats:
+                continue  # 只扫活跃集座
             if seat.seat_index in self._hand_win_seats:
                 continue  # 已锁,省一次抠图
             ref = (self._empty_refs.get(str(seat.seat_index)) or {}).get("win_amount_area")
