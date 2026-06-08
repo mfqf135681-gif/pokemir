@@ -91,7 +91,7 @@ def main():
                 samples.append((yc, yf, c, fn, sidx))
 
     farr, carr = np.array(fracs), np.array(counts)
-    cths = [int(round(t)) for t in args.count_ths.split(",")]
+    cths = [int(t) for t in args.count_ths.split(",")]
     # ① 占比分布
     fbins = [0, .005, .01, .02, .04, .07, .10, .15, .25, .40, 1.01]
     fh, _ = np.histogram(farr, bins=fbins)
