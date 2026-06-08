@@ -1030,7 +1030,12 @@ class PipelineOrchestrator:
                 avatar_hash = _avg_hash_64(avatar_img)
 
             # #7 Seat-swap detection: if cached player exists but avatar diverged
-            # significantly from cached hash → player changed seat, release cache
+            # significantly from cached hash → player changed seat, release cache.
+            # 2026-06-08 去抖(治 churn):fold_area 在手内被牌/动作/弃牌/timer overlay 污染 →
+            # 头像 hash 单帧飘 → 假 swap → evict → 重读 → 名字churn(soak 实测 16 TempUser+36名)。
+            # 真换人【持续】发散、overlay【瞬态】→ 要求连续 ≥_avatar_swap_min 次才 evict。
+            self._avatar_swap_count = getattr(self, "_avatar_swap_count", {})
+            _swap_min = int(os.getenv("POKEMIR_AVATAR_SWAP_MIN", "2"))
             if avatar_hash and seat.seat_index in self.tracker.player_id_map:
                 cached_name = self.tracker.player_id_map[seat.seat_index]
                 cached_hash = next(
@@ -1038,10 +1043,16 @@ class PipelineOrchestrator:
                     None,
                 )
                 if cached_hash and _hamming(avatar_hash, cached_hash) > 12:
-                    logger.info(f"_capture_player_ids: seat_{seat.seat_index} avatar swap "
-                                f"(hamming {_hamming(avatar_hash, cached_hash)}), unlocking "
-                                f"{cached_name!r}")
-                    del self.tracker.player_id_map[seat.seat_index]
+                    _cnt = self._avatar_swap_count.get(seat.seat_index, 0) + 1
+                    self._avatar_swap_count[seat.seat_index] = _cnt
+                    if _cnt >= _swap_min:  # 连续发散达阈 → 真换人,evict
+                        logger.info(f"_capture_player_ids: seat_{seat.seat_index} avatar swap "
+                                    f"(hamming {_hamming(avatar_hash, cached_hash)}, 连续{_cnt}次), "
+                                    f"unlocking {cached_name!r}")
+                        del self.tracker.player_id_map[seat.seat_index]
+                        self._avatar_swap_count[seat.seat_index] = 0
+                elif cached_hash:
+                    self._avatar_swap_count[seat.seat_index] = 0  # 匹配 → 重置去抖(瞬态 overlay 不累积)
 
             # #2 Cache lock: don't re-OCR a seat we already have a valid name for.
             # T41(2026-05-29):EXCEPTION — TempUser_xxx 是占位 fallback,允许 re-OCR
