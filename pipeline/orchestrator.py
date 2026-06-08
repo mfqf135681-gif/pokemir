@@ -25,7 +25,6 @@ import numpy as np
 from events.models import ActionType, Position
 from events.normalizer import compute_confidence, infer_action_from_delta
 from events import diag
-from pipeline.state import SeatLifecycle  # T91 Step 2.2 mirror writes
 
 # Allowlist for action_area OCR — restricts charset to known action keywords + amounts.
 # Filters out garbage like "疯鱼罩轩 2"(player name bleed)or random Chinese characters.
@@ -828,10 +827,6 @@ class PipelineOrchestrator:
         标 _folded_seats(→该座后续被 skip)+ 合成 FOLD action_event(玩家已知才落,不伪造名)+ 诊断。
         与 fold_ocr 互补:这里只补 fold_ocr 没标过的(去重见 caller)。"""
         self.tracker._folded_seats.add(seat)
-        try:
-            self.tracker.mirror_seat_state(seat, SeatLifecycle.FOLDED)
-        except Exception:
-            pass
         hand = self.tracker.current_hand
         player_name = self.tracker.player_id_map.get(seat)
         diag.emit("fold.activeset_rescue",
@@ -1932,8 +1927,6 @@ class PipelineOrchestrator:
                 stack_empty = (self._stack_chips_recipe(stack_img, seat_idx=sidx) is None)
             if avatar_zero and stack_empty:
                 self.tracker._empty_seats.add(sidx)
-                # T91 Step 2.2 mirror to seat_lifecycle (shadow)
-                self.tracker.mirror_seat_state(sidx, SeatLifecycle.SITTING_OUT)
                 diag.emit(
                     "seat.empty_detected",
                     {"seat": sidx, "reason": "avatar_zero_hash + stack_no_digit"},
@@ -1947,8 +1940,6 @@ class PipelineOrchestrator:
         for sidx, ph in seat_phashes.items():
             if hash_counts[ph] >= 2 and sidx not in self.tracker._empty_seats:
                 self.tracker._empty_seats.add(sidx)
-                # T91 Step 2.2 mirror to seat_lifecycle (shadow)
-                self.tracker.mirror_seat_state(sidx, SeatLifecycle.SITTING_OUT)
                 diag.emit(
                     "seat.empty_detected",
                     {"seat": sidx,
@@ -2562,8 +2553,6 @@ class PipelineOrchestrator:
                 # 12a: mark seat as having gone all-in this hand (for insurance inference)
                 if final_action == ActionType.ALL_IN or (stack_after is not None and stack_after <= 5):
                     self.tracker._went_all_in_this_hand.add(sidx)
-                    # T91 Step 2.2 mirror to seat_lifecycle (shadow)
-                    self.tracker.mirror_seat_state(sidx, SeatLifecycle.ALL_IN)
                     diag.emit("all_in.detected",
                               {"seat": sidx, "player": player_name,
                                "final_action": final_action.value,
@@ -2608,8 +2597,6 @@ class PipelineOrchestrator:
                 # Track folded seats (for showdown CNN skip + insurance defaults)
                 if final_action == ActionType.FOLD:
                     self.tracker._folded_seats.add(sidx)
-                    # T91 Step 2.2 mirror to seat_lifecycle (shadow)
-                    self.tracker.mirror_seat_state(sidx, SeatLifecycle.FOLDED)
                 # Track ALL active seats (had any event this hand) for showdown gate
                 self.tracker._seats_with_events_this_hand.add(sidx)
 

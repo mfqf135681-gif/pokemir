@@ -10,7 +10,7 @@ from PIL import Image
 
 from events.models import Hand, Street
 from events.normalizer import EventNormalizer
-from pipeline.state import HandPhaseMachine, SeatLifecycle, SeatStateMachine
+from pipeline.state import HandPhaseMachine
 
 logger = logging.getLogger(__name__)
 
@@ -155,39 +155,11 @@ class StateTracker:
         # 仍 authoritative).后续 sub-step(Step 2.2/2.3)加 mirror 写 + 切读.
         # ATTENTION_MODE=0 时 100% 旧 path,字段闲置.
         # 详 requirement-discussions/2026-05-30_phase-1-5-attention-mechanism-design.md §11.4
-        self.seat_lifecycle: SeatStateMachine = SeatStateMachine(n_seats=9)
         self.hand_phase: HandPhaseMachine = HandPhaseMachine()
 
     @property
     def has_active_hand(self) -> bool:
         return self.current_hand is not None
-
-    # Phase 1.5 v3.2 Step 2.2 (2026-05-31 T91):shadow mirror helper.
-    # 在旧 _folded_seats / _empty_seats / _went_all_in_this_hand 写点同步
-    # 调用此方法,保持 seat_lifecycle 跟旧 sets 一致.
-    #
-    # Shadow 模式语义:
-    # - best-effort:auto-promote EMPTY → ACTIVE 解决初始状态问题
-    # - 异常吞噬:transition_to 抛 IllegalTransition 时仅 log,不 crash
-    # - ATTENTION_MODE=0 时不被读取,失败无业务影响
-    # - Step 2.3 切读后,失败需 promote 为 warn-level(下个 sub-step)
-    def mirror_seat_state(self, seat_idx: int, target: SeatLifecycle) -> None:
-        try:
-            current = self.seat_lifecycle.get(seat_idx)
-            # Auto-promote EMPTY → ACTIVE if target requires it
-            # (EMPTY → FOLDED/ALL_IN 都不合法,需中转 ACTIVE)
-            if current == SeatLifecycle.EMPTY and target not in (
-                SeatLifecycle.SITTING_OUT,
-                SeatLifecycle.ACTIVE,
-            ):
-                self.seat_lifecycle.transition_to(seat_idx, SeatLifecycle.ACTIVE)
-            self.seat_lifecycle.transition_to(seat_idx, target)
-        except Exception as e:
-            # Shadow 模式:绝不 crash;记 debug 便于 Step 2.3 切读前调试
-            logger.debug(
-                f"mirror_seat_state(seat={seat_idx}, target={target.value}) "
-                f"failed: {e!r}"
-            )
 
     # skip site(orchestrator.py)统一调用此方法:fold + empty 都跳.
     # (2026-06-06 P3:删 ATTENTION_MODE 分支——seat_lifecycle.is_skippable 那条从未上 live。)
@@ -352,10 +324,6 @@ class StateTracker:
         # 摊牌实时抓帧:每手清零(seat_pred_history 持久跨手,不清)
         self._showdown_captured_this_hand = {}
         self._showdown_last_cnn_at = {}
-        # Phase 1.5 v3.2 Step 2.1 (T90):新 hand → seat_lifecycle 重激活 FOLDED/ALL_IN
-        # → ACTIVE,hand_phase 重置至 BETWEEN_HANDS.ATTENTION_MODE=0 时这些状态
-        # 不被读取,只是保持跟旧 sets 一致以备后续 sub-step 启用.
-        self.seat_lifecycle.reset_for_new_hand()
         self.hand_phase = HandPhaseMachine()
         # T106 Sprint 2 Step 5A: 新 hand 进入 PREFLOP_ACTING(force 跳过 dealing/posting
         # 中间状态).BLIND_POSTING / DEALING_* 转移留后续 sub-step(信号驱动).
