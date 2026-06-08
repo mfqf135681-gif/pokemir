@@ -232,9 +232,9 @@ class PipelineOrchestrator:
         # 哨兵 _empty_refs(rois/empty_refs_{profile}.json,build_empty_refs.py 产)。缺则 None → 跳过。
         self._empty_refs = None
         self._occupancy_th = int(os.getenv("POKEMIR_OCCUPANCY_TH", "18"))  # 录像验:空隙16-24,18一刀两断
-        # +xx 黄色特异检测(替 avg_hash:录像验 avg_hash 全面过火 3.3座/手、s0误报75%;
-        # 黄占比无xx<0.01 / +xx 0.07-0.15、s0中位0 → 根治)。win_amount 区黄像素占比 > 阈 = +xx。
-        self._win_yellow_th = float(os.getenv("POKEMIR_WIN_YELLOW_TH", "0.03"))  # 录像验空隙0.01-0.02
+        # +xx 黄色特异检测(替 avg_hash:avg_hash 全面过火3.3座/手、s0误报75%)。win_amount 区黄像素
+        # 【数量】> 阈 = +xx。用数量不用占比:录像验数量空隙15-60(超宽)、占比空隙仅0.01-0.02(窄,稀释漏报)。
+        self._win_yellow_count = int(os.getenv("POKEMIR_WIN_YELLOW_COUNT", "35"))  # 录像验空隙15-60,35居中
         self._yellow_hsv = (18, 38, 70, 120)  # H[lo,hi] S>min V>min(cv2),probe 验过
         self._hand_win_seats = set()  # 本手 +xx latch(per-tick 扫,某 tick 见到就锁;_start_new_hand 重置)
         self._hand_start_tick = 0     # 本手起 global tick;+xx 跳发牌窗(牌背飞=开局)用
@@ -1152,7 +1152,7 @@ class PipelineOrchestrator:
             cur.raw_data["player_stacks_final"] = final_stacks
             if self._empty_refs:  # #241:本手 +xx latch(合法进账座 = 赢/边池/保险),喂 rebuy 排除
                 cur.raw_data["win_phash_seats"] = sorted(self._hand_win_seats)
-                logger.info(f"[+xx] 本手合法进账座(黄占比阈{self._win_yellow_th}): {sorted(self._hand_win_seats) or '无'}")
+                logger.info(f"[+xx] 本手合法进账座(黄数量阈{self._win_yellow_count}): {sorted(self._hand_win_seats) or '无'}")
             # #226(2026-06-06):端点筹码级重建——每手 per-seat 净额/赢家/rake(可靠桩,
             # per-action 噪声不影响)。存 raw_data 供画像/复盘;纯逻辑见 reconstruct_hand_chips。
             try:
@@ -1885,7 +1885,7 @@ class PipelineOrchestrator:
             hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
             m = ((hsv[..., 0] >= hlo) & (hsv[..., 0] <= hhi) &
                  (hsv[..., 1] >= smin) & (hsv[..., 2] >= vmin))
-            if float(m.mean()) > self._win_yellow_th:
+            if int(m.sum()) > self._win_yellow_count:  # 黄像素数量(框无关,治稀释)
                 self._hand_win_seats.add(seat.seat_index)
 
     def _capture_seat_stacks(self) -> dict[int, float]:
