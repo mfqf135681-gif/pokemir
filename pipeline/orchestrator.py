@@ -165,8 +165,7 @@ class PipelineOrchestrator:
         # Try to find the poker client window from saved config
         window_title = self.roi_manager.rois._window_title if hasattr(self.roi_manager.rois, '_window_title') else ""
         if not window_title:
-            # Fallback: check the JSON data
-            import json
+            # Fallback: check the JSON data(json 已模块级导入,勿在此 import → 否则整 __init__ 视 json 为局部)
             with open(roi_path, encoding="utf-8") as f:
                 roi_data = json.load(f)
             window_title = roi_data.get("window_title", "")
