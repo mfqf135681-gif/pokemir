@@ -232,7 +232,7 @@ class PipelineOrchestrator:
         # 2026-06-08 #241(rebuy 前置):每座占用判定 = live 区域 avg_hash vs 空桌基线。
         # 哨兵 _empty_refs(rois/empty_refs_{profile}.json,build_empty_refs.py 产)。缺则 None → 跳过。
         self._empty_refs = None
-        self._occupancy_th = int(os.getenv("POKEMIR_OCCUPANCY_TH", "8"))  # ≤阈=像空桌;live 调
+        self._occupancy_th = int(os.getenv("POKEMIR_OCCUPANCY_TH", "18"))  # 录像验:空隙16-24,18一刀两断
         if SEAT_OCCUPANCY_LIVE:
             erf = Path(ROI_CONFIG_DIR) / f"empty_refs_{profile}.json"
             if erf.is_file():
@@ -1813,8 +1813,10 @@ class PipelineOrchestrator:
             return None
         return ActionRecognizer._extract_amount(text or "")
 
-    # 占用判定区(空 vs 占位最可分;多区取 max hamming,稳)
-    _OCCUPANCY_REGIONS = ("fold_area", "stack_area", "id_area")
+    # 占用判定区:stack+id(20260603 录像验:占位紧簇 24-40、空隙 16-24、空座≈0,干净 bimodal)。
+    # fold_area 剔除(头像区 弃牌/timer/摊牌/表情噪声 → 占位 hamming 12-48 乱飘、偶掉 5-10 误判空)。
+    # 多区取 max:任一区 > 阈即占位(占位时 stack/id 都高,空座两区都≈0)。
+    _OCCUPANCY_REGIONS = ("stack_area", "id_area")
 
     def _classify_occupancy(self) -> dict:
         """每座 → {seat: {occupied: bool|None, ham: {region: hamming}}}。
