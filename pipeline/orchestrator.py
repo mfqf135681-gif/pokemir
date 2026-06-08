@@ -276,14 +276,6 @@ class PipelineOrchestrator:
         self._hand_dealt_seats: set = set()
         self._seat_gone_ticks: dict = {}
 
-        # T117(2026-06-01):fold-miss 精准探针 v2 — per-seat per-hand fold_area
-        # 读取画像累积 {seat: {empty:int, unparsed:[str], digit:[str]}}。
-        # hand-end(_end_current_hand)仅对"确认 silent 弃牌"座位 emit,去掉 v1
-        # (T115)对闲置座位的 foldarea_empty 误报。reset 于 _start_new_hand。
-        # 见 requirement-discussions/
-        # 2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md §16。
-        self._fold_read_profile: dict = {}
-
         self.tracker = StateTracker()
 
         # #10 Load persistent player registry (avatar fingerprints) from disk
@@ -625,7 +617,6 @@ class PipelineOrchestrator:
 
     def _start_new_hand(self, db, hero_1, hero_2):
         hand = self.tracker.start_new_hand()
-        self._fold_read_profile = {}  # T117: reset per-seat fold_area read profile
         c1 = self.card_recognizer.recognize_single(hero_1)
         c2 = self.card_recognizer.recognize_single(hero_2)
         hand.hero_cards = []
@@ -1198,12 +1189,6 @@ class PipelineOrchestrator:
             if showdown_cards:
                 cur.raw_data["showdown_cards"] = showdown_cards
 
-            # T117(2026-06-01):fold-miss 精准探针 — 对本手"确认 silent 弃牌"座位
-            # emit fold_area 读取画像。2026-06-01:调查已结束,默认关
-            # (VERBOSE_DIAG),需要时再开。
-            if VERBOSE_DIAG:
-                self._emit_silent_fold_profiles(cur, showdown_cards)
-
         hand = self.tracker.finalize_hand()
         if hand and db is not None:
             try:
@@ -1218,56 +1203,6 @@ class PipelineOrchestrator:
         self._canonicalize_player_id_map()
         # #10 Persist player registry at hand end (cheap; small JSON file)
         _save_player_registry(self.tracker._avatar_fingerprints)
-
-    def _emit_silent_fold_profiles(self, hand, showdown_cards) -> None:
-        """T117(2026-06-01):fold-miss 精准探针 v2.
-
-        对本手"确认 silent 弃牌"座位 emit fold_area 读取画像。
-        silent = 入场座位(range(num_seats) − _empty_seats)
-                 − 已捕获 fold(_folded_seats) − 摊牌座位(showdown_cards)。
-        含至多 1 个未摊牌赢家(false positive,已知偏差,~1/hand)。
-
-        dominant 优先级 unparsed > digit > empty > no_read:
-          - unparsed/digit → 弃牌信号被认错/污染 → allowlist+专 ROI 可治
-          - empty(且无 unparsed/digit)→ 弃牌后仍读空 → 信号没读到
-                                          → 指向 ROI 标定/暗化,allowlist 不够
-          - no_read → 座位整手没进 fold_area 路径(被 skip / 没轮到)
-
-        有界:每手 ≤ 入场座位数 条 emit。离线 join
-        v_ring_beam_handend_fold_inference 交叉验证。
-        """
-        try:
-            num_seats = self.roi_manager.rois.num_seats
-            dealt = set(range(num_seats)) - self.tracker._empty_seats
-            shown = set((showdown_cards or {}).keys())
-            silent = dealt - self.tracker._folded_seats - shown
-            for sidx in sorted(silent):
-                prof = self._fold_read_profile.get(sidx)
-                if prof and prof["unparsed"]:
-                    dominant = "unparsed"
-                elif prof and prof["digit"]:
-                    dominant = "digit"
-                elif prof and prof["empty"] > 0:
-                    dominant = "empty"
-                else:
-                    dominant = "no_read"
-                # T119(2026-06-01):player_name + 头像区亮度,分开"座位几何"
-                # vs"玩家/头像污染" —— 离线按 player / avg_lum 分组即可判别。
-                _ln = (prof or {}).get("lum_n", 0)
-                _avg_lum = round((prof or {}).get("lum_sum", 0.0) / _ln, 1) if _ln else None
-                _min_lum = round((prof or {}).get("lum_min", 255.0), 1) if _ln else None
-                diag.emit(
-                    "fold_probe.silent_seat",
-                    {"seat": sidx, "dominant": dominant,
-                     "player": self.tracker.player_id_map.get(sidx, f"seat_{sidx}"),
-                     "avg_lum": _avg_lum, "min_lum": _min_lum,
-                     "empty_ticks": (prof or {}).get("empty", 0),
-                     "unparsed": (prof or {}).get("unparsed", []),
-                     "digit": (prof or {}).get("digit", [])},
-                    hand_id=hand.id,
-                )
-        except Exception:
-            logger.debug("fold_probe.silent_seat emit failed", exc_info=True)
 
     def _infer_insurance(self, hand, final_stacks: dict[int, float]) -> list[dict]:
         """#12a Infer insurance buys from stack patterns (user hypothesis + win/lose split).
@@ -2349,40 +2284,6 @@ class PipelineOrchestrator:
                     parsed_fold
                     and parsed_fold["action_type"] in (ActionType.FOLD, ActionType.ALL_IN)
                 )
-
-                # ── T117 (2026-06-01) fold-miss probe v2 — accumulate per-seat ──
-                # Record what fold_area returned for each real-player seat that did
-                # NOT get captured as a fold this tick. At hand-end,
-                # _emit_silent_fold_profiles emits a profile ONLY for seats confirmed
-                # to have silently folded (no capture, no showdown) — removing v1's
-                # idle-seat over-count. empty ticks are expected pre-fold; the real
-                # question is whether the POST-fold read was mangled (unparsed/digit →
-                # allowlist-fixable) or also empty (signal not read → ROI/calibration).
-                if VERBOSE_DIAG and sidx not in self.tracker._empty_seats and not _is_fold_action:
-                    _prof = self._fold_read_profile.setdefault(
-                        sidx, {"empty": 0, "unparsed": [], "digit": [],
-                               "lum_sum": 0.0, "lum_n": 0, "lum_min": 255.0})
-                    if (timer_match and 0 <= int(timer_match.group(1)) <= 60
-                            and parsed_fold is None):
-                        if ft[:24] not in _prof["digit"] and len(_prof["digit"]) < 6:
-                            _prof["digit"].append(ft[:24])
-                    elif ft:
-                        if ft[:24] not in _prof["unparsed"] and len(_prof["unparsed"]) < 6:
-                            _prof["unparsed"].append(ft[:24])
-                    else:
-                        _prof["empty"] += 1
-                    # T119(2026-06-01):accumulate fold_area brightness — separates
-                    # "ROI sees blank bg"(geometry)vs"dark avatar low-contrast"
-                    # (user's pollution hypothesis). Image already captured above.
-                    if fold_img is not None and fold_img.size > 0:
-                        _bgr = (fold_img[..., :3]
-                                if fold_img.ndim == 3 and fold_img.shape[2] >= 3
-                                else fold_img)
-                        _lum = float(_bgr.mean())
-                        _prof["lum_sum"] += _lum
-                        _prof["lum_n"] += 1
-                        if _lum < _prof["lum_min"]:
-                            _prof["lum_min"] = _lum
 
                 # Branch 1: digit found and looks like timer → countdown
                 # Skip if dedicated timer_area already handled (logic above).
