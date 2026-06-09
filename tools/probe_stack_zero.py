@@ -124,8 +124,15 @@ def main():
     log.info(f"扫 {len(files)} 帧 × {len(seats)} 座  区={args.region}  (事件合并:遇筹码数字才断)")
 
     # 每座时间序列 [(frame_num, value:int|None)]
+    import time
     series = {s: [] for s in seats}
-    for fp in files:
+    t0 = time.time()
+    nf = len(files)
+    for idx, fp in enumerate(files):
+        if idx and idx % 2000 == 0:
+            el = time.time() - t0
+            eta = el / idx * (nf - idx)
+            log.info(f"  进度 {idx}/{nf}  已 {el:.0f}s  预计还 {eta:.0f}s")
         frame = cv2.imread(fp)
         if frame is None:
             continue
