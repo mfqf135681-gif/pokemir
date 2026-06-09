@@ -42,6 +42,19 @@ def white_count(bgr, smax, vmin):
     return int(((hsv[..., 1] <= smax) & (hsv[..., 2] >= vmin)).sum())
 
 
+def bright_count(bgr, vmin, exclude_green=False, glo=35, ghi=95, sfelt=40):
+    """亮像素数(V>=vmin)——数据定阈主推:桌布永远暗(实测 V≤117),星星很亮(V≥200),
+    一条 V>180 桌布命中 0、星星命中 16(放大图256)。色盲 → 白星/黄星通吃(治用户'白黄都有')。
+    exclude_green=True:再排掉饱和绿(防极端亮绿误触),但桌布本就暗、一般不需要。clean 区用。"""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    V = hsv[..., 2]
+    m = V >= vmin
+    if exclude_green:
+        H, S = hsv[..., 0], hsv[..., 1]
+        m = m & ~((S >= sfelt) & (H >= glo) & (H <= ghi))
+    return int(m.sum())
+
+
 def nonfelt_count(bgr, vmin, glo, ghi, sfelt):
     """非桌布绿像素数:亮(V>=vmin)且【不是饱和绿】(S>=sfelt 且 H∈[glo,ghi]=桌布)。
     白星(低S→非绿)+ 黄星(H<glo→非绿)+ 白黄混合 全收;绿桌布全弃。
@@ -73,8 +86,10 @@ def main():
     ap.add_argument("--frames-dir", required=True)
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--region", default="fold_text", help="扫哪个 ROI 区(默认 fold_text;可换 fold_area 对照)")
-    ap.add_argument("--color", choices=["yellow", "white", "nonfelt"], default="yellow",
-                    help="检测:yellow / white / nonfelt(非桌布绿=星星,白黄混合全收,推荐 allin_star)")
+    ap.add_argument("--color", choices=["yellow", "white", "nonfelt", "bright"], default="yellow",
+                    help="检测:yellow / white / nonfelt / bright(亮像素 V>=,数据定阈主推:桌布暗星星亮,白黄通吃)")
+    ap.add_argument("--bright-vmin", type=int, default=180, help="bright:亮度下限 V>=(默认180;实测桌布≤117星星≥200)")
+    ap.add_argument("--bright-exclude-green", action="store_true", help="bright:再排饱和绿(一般不需要,桌布本就暗)")
     ap.add_argument("--white-smax", type=int, default=50, help="白:饱和上限 S<=(默认50)")
     ap.add_argument("--white-vmin", type=int, default=180, help="白:亮度下限 V>=(默认180)")
     ap.add_argument("--nonfelt-vmin", type=int, default=110, help="nonfelt:像素亮度下限 V>=(排暗角)")
@@ -109,6 +124,7 @@ def main():
     if len(files) > args.max_frames:
         files = [files[i] for i in np.linspace(0, len(files) - 1, args.max_frames).astype(int)]
     _cdesc = ({"white": f"白 S<={args.white_smax} V>={args.white_vmin}",
+               "bright": f"亮 V>={args.bright_vmin}" + ("(排绿)" if args.bright_exclude_green else ""),
                "nonfelt": f"非绿 V>={args.nonfelt_vmin} 桌布绿H[{args.felt_hlo},{args.felt_hhi}]S>={args.felt_smin}"}
               .get(args.color, f"黄 H[{args.hlo},{args.hhi}] S>{args.smin} V>{args.vmin}"))
     log.info(f"扫 {len(files)} 帧 × {len(seats)} 座  区={args.region}  色={args.color}  {_cdesc}")
@@ -127,6 +143,9 @@ def main():
                 continue
             if args.color == "white":
                 ycount = white_count(c, args.white_smax, args.white_vmin)
+            elif args.color == "bright":
+                ycount = bright_count(c, args.bright_vmin, args.bright_exclude_green,
+                                      args.felt_hlo, args.felt_hhi, args.felt_smin)
             elif args.color == "nonfelt":
                 ycount = nonfelt_count(c, args.nonfelt_vmin, args.felt_hlo, args.felt_hhi, args.felt_smin)
             else:
