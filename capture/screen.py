@@ -6,6 +6,7 @@ as an offset, so the ROIs stay valid even when the window moves.
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -36,6 +37,10 @@ class ScreenCapturer:
         self._monitor: Optional[dict] = None
         self._found_title: str = ""
         self._frame = None   # 杠杆D.1:整窗缓存帧(refresh_frame 设),capture_roi 从此切片
+        # A步1(2026-06-09):逐区 mss grab 累计耗时/次数(探针读 delta);整帧切片不计,
+        # 正好量出"逐ROI抓屏"现值(FRAME_CAPTURE 开后走切片→此值趋 0)。
+        self.grab_ms = 0.0
+        self.grab_n = 0
 
     def _get_sct(self):
         if self._sct is None:
@@ -171,13 +176,19 @@ class ScreenCapturer:
             "width": roi.width,
             "height": roi.height,
         }
+        _t = time.perf_counter()
         img = self._get_sct().grab(region)
+        self.grab_ms += (time.perf_counter() - _t) * 1000.0  # A步1:逐ROI抓屏计时
+        self.grab_n += 1
         return np.array(img)
 
     def capture_raw(self, left: int, top: int, width: int, height: int) -> np.ndarray:
         """Capture an absolute screen region directly."""
         region = {"left": left, "top": top, "width": width, "height": height}
+        _t = time.perf_counter()
         img = self._get_sct().grab(region)
+        self.grab_ms += (time.perf_counter() - _t) * 1000.0  # A步1:逐区抓屏计时
+        self.grab_n += 1
         return np.array(img)
 
 

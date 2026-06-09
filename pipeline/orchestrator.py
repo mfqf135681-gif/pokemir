@@ -333,6 +333,7 @@ class PipelineOrchestrator:
     # T57(2026-05-29):新增 seat_* 子 phase(seat_actions 内拆出).
     _TICK_PHASES = (
         "capture_frame",  # 杠杆D.1:整窗一次性 grab(替 ~37 次逐区 grab)
+        "capture_grab",   # A步1(2026-06-09):本 tick 所有逐ROI mss grab 累计耗时(钉死抓屏占比)
         "hero_capture", "hand_detect", "community", "community_reset",
         "pot", "active_set", "seat_actions", "showdown", "capture_ids",
         # T57 seat 子 phase
@@ -348,6 +349,7 @@ class PipelineOrchestrator:
     def _tick(self):
         # T54(2026-05-29):tick 计时,末尾算 elapsed
         t_start = time.perf_counter()
+        _grab0 = getattr(self.capturer, "grab_ms", 0.0)  # A步1:抓屏耗时起点快照,末尾算 delta
         rois = self.roi_manager.rois
         db = SessionLocal() if self._db_enabled else None
 
@@ -506,6 +508,8 @@ class PipelineOrchestrator:
 
         # 2026-06-05:并入跨方法细计时(hand_end/hand_start/detect_empty/showdown_cnn 等)。
         phase_ms.update(self._tick_extra_ms)
+        # A步1(2026-06-09):本 tick 逐ROI抓屏累计 = delta(贯穿所有 capture_roi/capture_raw 调用点)。
+        phase_ms["capture_grab"] = getattr(self.capturer, "grab_ms", 0.0) - _grab0
         # T56(2026-05-29):未执行的 phase 补 0,确保 batch 同步长度.
         for name in self._TICK_PHASES:
             self.tracker._phase_durations.setdefault(name, []).append(
