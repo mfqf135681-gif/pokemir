@@ -59,25 +59,36 @@ def fnum(fp):
     return int(m.group(1)) if m else 0
 
 
-def find_runs(seq, min_run):
-    """seq=[(frame_num, value), ...] 升序 → value==0 的连续游程(允许 None 不打断?否:None 也打断,
-    严格要求'稳定读出 0')。返回 [(start_fn, end_fn, length, last_nonzero_before)]。"""
-    runs = []
+def find_episodes(seq):
+    """seq=[(frame_num, value:int|None)] 升序 → all-in 候选【事件】。
+    事件 = 连续 (0 或 None) 且含 ≥1 个 0 的极大段,**遇到确认的正数(有筹码=非全下)才断**。
+    → 同一手内被 None 切碎的 0 自动合并;跨手真多次(中间有筹码读数)自然分开。
+    **不按长度过滤**(实证:s3 仅 10 帧也是真 all-in;靠 occupancy/时机去伪,不靠长短)。
+    amount = 归 0 前【最后一次正数读】(= 推入前的 stack;与 reconstruct prior[-1] 一致)。
+    单帧读偏 1(如 124 读成 123)是 digit-OCR 级问题,探针忠实报读到的值,不在此纠。
+    返回 [{start, end, zeros, nones, amount}]。"""
+    eps = []
+    last_pos = None         # 归 0 前最后一次正数读
     i, n = 0, len(seq)
     while i < n:
-        if seq[i][1] == 0:
-            j = i
-            while j + 1 < n and seq[j + 1][1] == 0:
-                j += 1
-            length = j - i + 1
-            if length >= min_run:
-                # 归 0 前最后一个非 0 非 None 读数 = 全下额候选
-                last_nz = next((v for (_, v) in reversed(seq[:i]) if v not in (0, None)), None)
-                runs.append((seq[i][0], seq[j][0], length, last_nz))
-            i = j + 1
-        else:
+        v = seq[i][1]
+        if v is not None and v != 0:      # 确认筹码 → 打断 0/None 段
+            last_pos = v
             i += 1
-    return runs
+            continue
+        j = i                              # 0/None 段
+        while j + 1 < n and (seq[j + 1][1] == 0 or seq[j + 1][1] is None):
+            j += 1
+        zframes = [f for f, x in seq[i:j + 1] if x == 0]
+        if zframes:                        # 含 ≥1 个 0 → 候选 all-in 事件
+            eps.append({
+                "start": zframes[0], "end": zframes[-1],
+                "zeros": len(zframes),
+                "nones": sum(1 for _, x in seq[i:j + 1] if x is None),
+                "amount": last_pos,
+            })
+        i = j + 1
+    return eps
 
 
 def main():
@@ -86,7 +97,7 @@ def main():
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--roi-dir", default="./rois")
     ap.add_argument("--region", default="stack", help="profile 里 stack 区的 key(默认 stack)")
-    ap.add_argument("--min-run", type=int, default=3, help="判稳定 0 的最小连续帧数(滤单帧误读)")
+    ap.add_argument("--mark-short", type=int, default=12, help="仅【标注】总 0 帧 < 此值的事件为'短'(不丢弃;实证短的也可能真)")
     ap.add_argument("--max-frames", type=int, default=20000)
     ap.add_argument("--dump", action="store_true", help="dump 每个 0-游程首帧 stack 抠图供眼验是不是真 0")
     args = ap.parse_args()
@@ -110,7 +121,7 @@ def main():
         log.error(f"{args.frames_dir} 无 *.png"); sys.exit(2)
     if len(files) > args.max_frames:
         files = [files[i] for i in np.linspace(0, len(files) - 1, args.max_frames).astype(int)]
-    log.info(f"扫 {len(files)} 帧 × {len(seats)} 座  区={args.region}  min-run={args.min_run}")
+    log.info(f"扫 {len(files)} 帧 × {len(seats)} 座  区={args.region}  (事件合并:遇筹码数字才断)")
 
     # 每座时间序列 [(frame_num, value:int|None)]
     series = {s: [] for s in seats}
@@ -124,27 +135,26 @@ def main():
             v = reader.read(c) if (c is not None and c.size) else None
             series[sidx].append((fn, v))
 
-    # 每座读数分布 + 0-游程
-    print(f"\n{'='*64}\n每座 stack 读数分布(n/座)+ 稳定 0-游程(min-run={args.min_run})\n{'='*64}")
-    all_runs = {}
+    # 每座读数分布 + all-in 事件(合并碎片)
+    print(f"\n{'='*64}\n每座 stack 读数分布(n/座)+ all-in 事件(0/None 连续合并,遇筹码数字才断)\n{'='*64}")
+    all_eps = {}
     for sidx in sorted(seats):
         seq = series[sidx]
         n = len(seq)
         n0 = sum(1 for _, v in seq if v == 0)
         nNone = sum(1 for _, v in seq if v is None)
         nNum = n - n0 - nNone
-        runs = find_runs(seq, args.min_run)
-        all_runs[sidx] = runs
-        # 单帧 0(未进游程)= 疑误读
-        single0 = n0 - sum(r[2] for r in runs)
-        print(f"  s{sidx}: 总{n}  0读={n0}(进游程{n0-single0}/散单帧{single0})  None={nNone}  数字={nNum}  稳定0游程={len(runs)}")
-        for (st, en, ln, lastnz) in runs:
-            print(f"        ▶ 帧 {st}–{en}  长 {ln}  归0前最后一读(全下额候选)={lastnz}")
+        eps = find_episodes(seq)
+        all_eps[sidx] = eps
+        print(f"  s{sidx}: 总{n}  0读={n0}  None={nNone}  数字={nNum}  all-in事件={len(eps)}")
+        for e in eps:
+            short = "  ⚠短" if e["zeros"] < args.mark_short else ""
+            print(f"        ▶ {e['amount']} → 0   帧 {e['start']}–{e['end']}  (0帧×{e['zeros']}, None×{e['nones']}){short}")
 
-    total_runs = sum(len(r) for r in all_runs.values())
-    print(f"\n合计稳定 0-游程 {total_runs} 次(= 候选 all-in)。对你的牌局看:漏抓?非全下座假阳?")
+    total = sum(len(e) for e in all_eps.values())
+    print(f"\n合计 all-in 事件 {total} 次。对你的牌局看:漏抓?非全下座假阳(空座/busted)?金额准否?")
 
-    if args.dump and total_runs:
+    if args.dump and total:
         _fd = args.frames_dir.rstrip("/\\")
         tag = os.path.basename(os.path.dirname(_fd)) or os.path.basename(_fd) or "run"
         outdir = os.path.join("tools", "output", "stack_zero", tag)
@@ -154,10 +164,10 @@ def main():
         # 帧号 → 路径(dump 首帧 stack 抠图)
         fn2fp = {fnum(fp): fp for fp in files}
         nwrote = 0
-        for sidx, runs in all_runs.items():
+        for sidx, eps in all_eps.items():
             box = seats[sidx]
-            for k, (st, en, ln, lastnz) in enumerate(runs, 1):
-                fp = fn2fp.get(st)
+            for k, e in enumerate(eps, 1):
+                fp = fn2fp.get(e["start"])
                 if not fp:
                     continue
                 fr = cv2.imread(fp)
@@ -166,15 +176,15 @@ def main():
                 c = crop(fr, box)
                 if c is None or c.size == 0:
                     continue
-                ok = cv2.imwrite(os.path.join(outdir, f"s{sidx}_run{k}_len{ln}_amt{lastnz}_f{st}.png"),
+                ok = cv2.imwrite(os.path.join(outdir, f"s{sidx}_ep{k}_z{e['zeros']}_amt{e['amount']}_f{e['start']}.png"),
                                  cv2.resize(c, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST))
                 nwrote += 1 if ok else 0
-        print(f"dump 写了 {nwrote} 张(每游程首帧 stack 抠图)→ {outdir}\\")
+        print(f"dump 写了 {nwrote} 张(每事件首个 0 帧的 stack 抠图)→ {outdir}\\")
         if nwrote == 0:
             log.warning("dump 0 张!检查路径/写权限")
 
-    print("\n判读:真 all-in 应都落【长游程】;散单帧 0 = 误读(min-run 已滤);"
-          "非全下座若冒长游程 = 假阳(看是否空座/busted → 靠 occupancy + 切手时机排)。")
+    print("\n判读:每事件 = 一次 all-in 候选(碎片已合并)。不按长度过滤(短的也可能真,如 s3 实证);"
+          "非全下座若冒事件 = 假阳(空座/busted → 靠 occupancy + 切手时机排,本探针不排只暴露)。")
 
 
 if __name__ == "__main__":
