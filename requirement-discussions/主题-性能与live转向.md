@@ -1,8 +1,8 @@
 # 主题:性能与 live 转向(破 1Hz + 走出温室)
 
-> 最近更新:2026-06-06 **实测收口**(杠杆A/D 落地 + 细计时定位 + ⭐DB网络=真瓶颈 → 本地库)
-> 涉及讨论:2026-06-05 讨论+侦察 → 2026-06-06 live 实测落地(本文即正文,无 archive)
-> 当前状态:**已实测落地**。tick **0.2-0.5Hz → 0.95-1.9Hz**;真瓶颈是【DB 网络写】非 OCR/截屏(见 §0)。下一刀=EasyOCR 批读(fold/action)走 card_marker/砍。
+> 最近更新:2026-06-09 **提速落地 §0′**(FRAME_CAPTURE 默认开 + sleep 250→30 → 典型 ~5.6Hz;Stage0 实测逐ROI抓屏=36%tick;DB 已非瓶颈;瓶颈交棒 recognition)
+> 涉及讨论:2026-06-05 讨论+侦察 → 2026-06-06 DB瓶颈落地 → 2026-06-09 提速落地(本文即正文,无 archive)
+> 当前状态:**提速已落地**。tick 典型 **~180ms / 5.6Hz**(从 1.8Hz);逐ROI截屏 154ms(36%)→ 整帧一次 12ms;**真瓶颈现在是 recognition(`fold_ocr` ~108ms)= 杠杆 B / all-in #243**。
 > **校验来源标注**:`(官方)`=context7 官方文档证实;`(实测)`=本仓库 A/B;`(代码)`=读源码事实;`(博客/待验)`=网络博客,中等可信,需本地实测。
 
 关联:[[2026-06-01_95pct-constraint-solver-paradigm]]、[[主题-识别栈]]、[[主题-基础设施]]、[[主题-产品形态]]、[[主题-DDD架构]]。
@@ -14,12 +14,27 @@
 
 | 时间 | 子主题 | 状态 | 关键决策 | 原文 |
 |:---|:---|:---|:---|:---|
+| **2026-06-09** | **提速落地:Stage0实测 + 杠杆D兑现 + 瓶颈交棒** | **已落地** | capture_grab探针:逐ROI抓屏=36%tick(单项最大);FRAME_CAPTURE字节级验过→默认开(154→12ms);sleep 250→30(1小时软泡无回归);DB实测0.1ms已非瓶颈;瓶颈转recognition(fold_ocr 108ms=#243);VRAM压测10G/37min零OOM→GPU显存够 | §0′ |
 | **2026-06-06** | **实测收口:DB 网络=真瓶颈 → 本地库** | **已落地** | 杠杆A(配方读stack)+ 杠杆D(整帧抓)上;细计时揪出 gap=每动作同步DB写(Win→VPS 197ms RTT);DB 迁 Win 本地 PG18 → persist 354→0.5ms、tick 翻 2-4× | §0 |
 | 2026-06-05 | live 转向 + tick 性能作战图(含参照差分闸门) | 讨论定向 | 走出温室 / 配方替 OCR 数字区 / 四杠杆破 1Hz / 闸门 Stage 2 | §1-6 |
 
 ---
 
 ## 当前结论
+
+### §0′ 提速落地(2026-06-09)⭐ 杠杆 D 兑现 + 瓶颈交棒 recognition
+
+承 §0(DB 已治)继续。本轮把 Stage 0 做完、杠杆 D 兑现、瓶颈推到 recognition:
+
+- **Stage 0(全 tick 拆解)做完**:加 `capture_grab` 子探针(`screen.py` 累计逐区 grab + orchestrator tick 头尾取 delta)→ 实测 **逐 ROI mss grab = 154ms = 36% tick(单项最大)**;`seat_actions 241 ≈ fold_ocr 149 + action_ocr 91`(**大半是抓屏不是识别**);**DB = 0.1ms(已非瓶颈,§0 本地库迁移生效)**;phash(#240)已 live(action 识别已便宜;`[OCR seat]` 那条日志是**过时错标签**,phash 结果也走它打印)。
+- **杠杆 D(FRAME_CAPTURE)兑现 + 默认开**:`tools/verify_frame_capture.py` 真窗口(同 live `find_window_by_title`)+ profile 全 108 个 ROI **字节级一致**(空桌静止,负坐标副屏 + 1454×1287 锁分辨率都对齐)→ **纯提速、不改任何识别结果**。开后 `capture_grab 154→0`、`capture_frame=12ms`。⚠️ `verify_frame_capture` **测不出窗口漂移**(切片/逐区 grab 同用窗口基准会一起漂),它验的是 mss 整帧切片==逐区 grab。`config.py FRAME_CAPTURE 默认 0→1`。
+- **砍 sleep(`CAPTURE_INTERVAL_MS` 250→30)**:整小时软泡实测 sleep=0 跑 ~5.6Hz / 切手正常 / CPU 扛得住 / 无质量回归 → 默认降 **30**(留小值不满核空转)。**典型 tick 1.8→5.6Hz(~3×)**。⚠️遗留:部分防抖按 **tick 数**算(按钮去抖/每4tick强刷),低 sleep 下真实时间缩 ~2.6×;切手已实测扛住,**锁更低(→0)前需审 tick-based 计时改墙钟**。
+- **1 小时软泡质量**:72 手稳定、**切手金丝雀(button 36→36、active_set)纹丝不动**(→ 排除窗口漂移)、无崩;唯一黄灯=公共牌 jitter(系统性"第 3 张"错位=**ROI 布局问题非 CNN/非漂移**,预存,记 **#245**)。
+- **瓶颈交棒**:截屏没了 → 现在大头是 **recognition(`fold_ocr` ~108ms)= 杠杆 B / all-in #243**(stack→0 + 摊牌闸替 fold OCR,顺手干掉这块)。**优化链已自然衔接**:DB(§0 治)→ 截屏(§0′ 治)→ recognition(#243 治)。
+- **GPU/显存(为将来把 OCR 搬 GPU 预演)**:**裁图已免费**(numpy 切片 ~µs,**别 GPU 它**——传输开销 > 切片);牌 CNN 已自动用 CUDA(`cnn_classifier.py` `cuda if available`);**VRAM 压测占 10G 跑 37min:0 OOM/error、牌 CNN 正常(13 摊牌 accept)、质量不降** → **显存余量充足,将来 OCR(~1.5G)上 GPU 安全**。硬件优先级 **GPU > CPU 单核 > 核数**;**不换语言**(瓶颈在 GPU 利用 + 架构,非 Python;cv2/torch 重库松 GIL、生态全在 Python)。CNN 漂移=输入分布漂(分辨率/桌皮/亮度)致固定 CNN 静默崩,缺口=无生产漂移哨兵(置信度/物理违规率走势预警)。
+- **临时件**:`main.py` 有 `POKEMIR_VRAM_FILL_GB` 显存压测块(默认 0 惰性,用户保留待复用)+ `tools/verify_frame_capture.py`、`tools/probe_allin_yellow.py`/`probe_stack_zero.py`(探针留用)。
+
+---
 
 ### §0 实测收口(2026-06-06)⭐ 真瓶颈是 DB 网络写,不是 OCR/截屏
 
@@ -90,10 +105,10 @@
 
 | 杠杆 | 作用 | 状态 |
 |---|---|---|
-| **A 换配方** | 每次读**更便宜**(治 OCR) | 件已造好(`pipeline/digit_reader.py`,replay 验过) |
-| **B 内容闸门(参照差分)** | 空区**根本不读** + 脏区**挡门外** | 半成品+孤儿,**待建**(用户想法,一等公民) |
-| **C 变化闸门** | 上 tick 没变**不深处理** | 全新,概念最简单 |
-| **D 截屏整帧化(③)** | **几十次独立 grab → 1 次整帧 grab + numpy 切片**(治非-OCR 那块) | 待建;replay 已是此模式(`cv2.imread` 一次再切) |
+| **A 换配方** | 每次读**更便宜**(治 OCR) | ✅ **已落地默认开**(`DIGIT_RECIPE_LIVE`,stack 走 DigitReader) |
+| **B 内容闸门(参照差分)/ 砍 recognition** | 空区**根本不读** + 脏区**挡门外**;现具体化为 all-in stack→0 + 摊牌闸**替 fold OCR** | **下一刀 = #243**(fold_ocr 108ms,截屏治完后的新大头) |
+| **C 变化闸门** | 上 tick 没变**不深处理** | 全新,概念最简单(已有 diff 缓存雏形) |
+| **D 截屏整帧化(③)** | **几十次独立 grab → 1 次整帧 grab + numpy 切片** | ✅ **2026-06-09 已落地默认开**(`FRAME_CAPTURE`;字节级验过 §0′;154→12ms) |
 
 > A = "读得便宜",B/C = "少读/不读",**D = "少抓"**。前三治 OCR/识别,**D 治每 tick 几十次独立截屏**(嫌疑乙)。**四根都得算,只动 A 未必破 1Hz。**
 > **D 备选**:Windows 上 **DXcam** 比 mss 更快(**博客/待验**,官方无;我们运行时正是 Windows)→ 若整帧化后截屏仍是瓶颈再上。可先用官方 `MSS.performance_status` 量截屏成本。
