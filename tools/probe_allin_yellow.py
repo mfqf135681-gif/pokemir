@@ -42,6 +42,16 @@ def white_count(bgr, smax, vmin):
     return int(((hsv[..., 1] <= smax) & (hsv[..., 2] >= vmin)).sum())
 
 
+def nonfelt_count(bgr, vmin, glo, ghi, sfelt):
+    """非桌布绿像素数:亮(V>=vmin)且【不是饱和绿】(S>=sfelt 且 H∈[glo,ghi]=桌布)。
+    白星(低S→非绿)+ 黄星(H<glo→非绿)+ 白黄混合 全收;绿桌布全弃。
+    比纯黄/纯白门稳——不挑星星具体色,只问'是不是桌布绿'。clean 区(只星星非绿)用。"""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    H, S, V = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    felt = (S >= sfelt) & (H >= glo) & (H <= ghi)
+    return int(((V >= vmin) & (~felt)).sum())
+
+
 def crop(frame, box):
     """box=[l,t,w,h] → 帧内安全裁剪;越界/过小 → None。"""
     if not box or len(box) != 4:
@@ -63,10 +73,14 @@ def main():
     ap.add_argument("--frames-dir", required=True)
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--region", default="fold_text", help="扫哪个 ROI 区(默认 fold_text;可换 fold_area 对照)")
-    ap.add_argument("--color", choices=["yellow", "white"], default="yellow",
-                    help="检测什么色:yellow(默认,+xx同款)/ white(allin_star_area 用,该区变化最明显是白)")
+    ap.add_argument("--color", choices=["yellow", "white", "nonfelt"], default="yellow",
+                    help="检测:yellow / white / nonfelt(非桌布绿=星星,白黄混合全收,推荐 allin_star)")
     ap.add_argument("--white-smax", type=int, default=50, help="白:饱和上限 S<=(默认50)")
     ap.add_argument("--white-vmin", type=int, default=180, help="白:亮度下限 V>=(默认180)")
+    ap.add_argument("--nonfelt-vmin", type=int, default=110, help="nonfelt:像素亮度下限 V>=(排暗角)")
+    ap.add_argument("--felt-hlo", type=int, default=35, help="桌布绿 H 下限")
+    ap.add_argument("--felt-hhi", type=int, default=95, help="桌布绿 H 上限")
+    ap.add_argument("--felt-smin", type=int, default=40, help="桌布绿 饱和下限(S>=才算绿)")
     ap.add_argument("--hlo", type=int, default=18, help="黄 H 下限(cv2 0-179)")
     ap.add_argument("--hhi", type=int, default=38)
     ap.add_argument("--smin", type=int, default=70)
@@ -92,8 +106,9 @@ def main():
         log.error(f"{args.frames_dir} 下没 *.png"); sys.exit(2)
     if len(files) > args.max_frames:
         files = [files[i] for i in np.linspace(0, len(files) - 1, args.max_frames).astype(int)]
-    _cdesc = (f"白 S<={args.white_smax} V>={args.white_vmin}" if args.color == "white"
-              else f"黄 H[{args.hlo},{args.hhi}] S>{args.smin} V>{args.vmin}")
+    _cdesc = ({"white": f"白 S<={args.white_smax} V>={args.white_vmin}",
+               "nonfelt": f"非绿 V>={args.nonfelt_vmin} 桌布绿H[{args.felt_hlo},{args.felt_hhi}]S>={args.felt_smin}"}
+              .get(args.color, f"黄 H[{args.hlo},{args.hhi}] S>{args.smin} V>{args.vmin}"))
     log.info(f"扫 {len(files)} 帧 × {len(seats)} 座  区={args.region}  色={args.color}  {_cdesc}")
 
     counts = []                  # 全部黄计数
@@ -110,6 +125,8 @@ def main():
                 continue
             if args.color == "white":
                 ycount = white_count(c, args.white_smax, args.white_vmin)
+            elif args.color == "nonfelt":
+                ycount = nonfelt_count(c, args.nonfelt_vmin, args.felt_hlo, args.felt_hhi, args.felt_smin)
             else:
                 _, ycount = yellow_metrics(c, args.hlo, args.hhi, args.smin, args.vmin)
             counts.append(ycount)
