@@ -89,7 +89,9 @@ def main():
     ap.add_argument("--lo", type=int, default=400, help="all-in 候选带下界(初定 400)")
     ap.add_argument("--hi", type=int, default=1100, help="all-in 候选带上界(>hi 疑黄头像)")
     ap.add_argument("--max-frames", type=int, default=600, help="全扫设大(如 20000)即不抽样")
-    ap.add_argument("--dump", action="store_true", help="dump 高/中/低黄计数抠图供眼标")
+    ap.add_argument("--dump", action="store_true", help="dump 抠图供眼标")
+    ap.add_argument("--per-seat", type=int, default=0,
+                    help="按座 dump 每座 N 张(高N/3+中N/3+低N/3),如 12→96张;0=旧的跨座 over/band/sub/zero")
     args = ap.parse_args()
 
     prof_path = os.path.join("rois", f"{args.profile}.json")
@@ -168,37 +170,47 @@ def main():
         for old in glob.glob(os.path.join(outdir, "*.png")):  # 只清【本段】子夹,别段保留
             os.remove(old)
 
-        def pick(lo, hi, n):  # [lo,hi) 计数带里按计数均匀取 n 个(覆盖该带,非单点)
-            grp = sorted((s for s in samples if lo <= s[0] < hi), key=lambda t: t[0])
-            if not grp:
-                return []
-            idx = np.linspace(0, len(grp) - 1, min(n, len(grp))).astype(int)
-            return [grp[i] for i in sorted(set(idx))]
+        to_dump = []  # (前缀, 计数, fp, box)
+        if args.per_seat:
+            # 每座 N 张:高 k + 中 k + 低 k(k=N//3),文件名 s{座}_{hi/mid/lo}_ 便于逐座看
+            k = max(1, args.per_seat // 3)
+            for sidx in sorted(seats):
+                ss = sorted((s for s in samples if s[2] == sidx), key=lambda t: t[0])  # 升序按计数
+                if not ss:
+                    continue
+                nz = [s for s in ss if s[0] > 0]
+                mid = [nz[i] for i in np.linspace(0, len(nz) - 1, min(k, len(nz))).astype(int)] if nz else []
+                for band, grp in (("hi", ss[-k:]), ("mid", mid), ("lo", ss[:k])):
+                    for yc, fp, _sx, box in grp:
+                        to_dump.append((f"s{sidx}_{band}", yc, fp, box))
+        else:
+            def pick(lo, hi, n):  # [lo,hi) 计数带里按计数均匀取 n 个
+                grp = sorted((s for s in samples if lo <= s[0] < hi), key=lambda t: t[0])
+                if not grp:
+                    return []
+                idx = np.linspace(0, len(grp) - 1, min(n, len(grp))).astype(int)
+                return [grp[i] for i in sorted(set(idx))]
+            for tag, grp in (("over", pick(args.hi, 10**9, 12)), ("band", pick(args.lo, args.hi, 14)),
+                             ("sub", pick(20, args.lo, 10)), ("zero", pick(0, 6, 6))):
+                for yc, fp, sidx, box in grp:
+                    to_dump.append((f"{tag}_s{sidx}", yc, fp, box))
 
-        groups = (
-            ("over", pick(args.hi, 10**9, 12)),       # 超上界:疑黄头像(应没有)
-            ("band", pick(args.lo, args.hi, 14)),     # 候选 all-in 带:应全是真 allin
-            ("sub",  pick(20, args.lo, 10)),          # 阈下非零:有没有漏的 all-in / 是什么黄
-            ("zero", pick(0, 6, 6)),                  # 基线对照
-        )
         nwrote = 0
-        for tag, grp in groups:
-            for yc, fp, sidx, box in grp:
-                fr = cv2.imread(fp)  # 直接重读原始路径(扫描时已读成功,必成)
-                if fr is None:
-                    log.warning(f"dump 重读失败: {fp}")
-                    continue
-                c = crop(fr, box)
-                if c is None or c.size == 0:
-                    continue
-                fn = os.path.basename(fp)[:-4]
-                ok = cv2.imwrite(os.path.join(outdir, f"{tag}_y{yc:05d}_s{sidx}_{fn}.png"),
-                                 cv2.resize(c, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST))
-                nwrote += 1 if ok else 0
-        print(f"\ndump 写了 {nwrote} 张 → {outdir}\\(over/band/sub/zero 四组)")
+        for prefix, yc, fp, box in to_dump:
+            fr = cv2.imread(fp)  # 直接重读原始路径(扫描时已读成功,必成)
+            if fr is None:
+                log.warning(f"dump 重读失败: {fp}"); continue
+            c = crop(fr, box)
+            if c is None or c.size == 0:
+                continue
+            fn = os.path.basename(fp)[:-4]
+            ok = cv2.imwrite(os.path.join(outdir, f"{prefix}_y{yc:05d}_{fn}.png"),
+                             cv2.resize(c, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST))
+            nwrote += 1 if ok else 0
+        _mode = f"每座{args.per_seat}张(高/中/低)" if args.per_seat else "跨座 over/band/sub/zero"
+        print(f"\ndump 写了 {nwrote} 张 → {outdir}\\({_mode})")
         if nwrote == 0:
             log.warning("dump 0 张!检查路径/写权限")
-        print("  眼标:band 是否【全是真 allin】? over 是否出现污染? sub 里有没有【漏掉的 allin】?")
     print("\n判读:band 全 allin + over≈0(无黄头像)+ sub 无漏 → [lo,hi] 双阈跨录像成立,可接 live 桩。")
 
 
