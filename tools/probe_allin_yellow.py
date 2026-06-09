@@ -36,6 +36,12 @@ log = logging.getLogger("probe_allin_yellow")
 from probe_win_color import yellow_metrics  # noqa: E402
 
 
+def white_count(bgr, smax, vmin):
+    """白色像素数(低饱和 S<=smax & 高亮 V>=vmin)。clean 区(桌布非白)里白=动画。"""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    return int(((hsv[..., 1] <= smax) & (hsv[..., 2] >= vmin)).sum())
+
+
 def crop(frame, box):
     """box=[l,t,w,h] → 帧内安全裁剪;越界/过小 → None。"""
     if not box or len(box) != 4:
@@ -57,6 +63,10 @@ def main():
     ap.add_argument("--frames-dir", required=True)
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--region", default="fold_text", help="扫哪个 ROI 区(默认 fold_text;可换 fold_area 对照)")
+    ap.add_argument("--color", choices=["yellow", "white"], default="yellow",
+                    help="检测什么色:yellow(默认,+xx同款)/ white(allin_star_area 用,该区变化最明显是白)")
+    ap.add_argument("--white-smax", type=int, default=50, help="白:饱和上限 S<=(默认50)")
+    ap.add_argument("--white-vmin", type=int, default=180, help="白:亮度下限 V>=(默认180)")
     ap.add_argument("--hlo", type=int, default=18, help="黄 H 下限(cv2 0-179)")
     ap.add_argument("--hhi", type=int, default=38)
     ap.add_argument("--smin", type=int, default=70)
@@ -82,7 +92,9 @@ def main():
         log.error(f"{args.frames_dir} 下没 *.png"); sys.exit(2)
     if len(files) > args.max_frames:
         files = [files[i] for i in np.linspace(0, len(files) - 1, args.max_frames).astype(int)]
-    log.info(f"扫 {len(files)} 帧 × {len(seats)} 座  区={args.region}  黄 H[{args.hlo},{args.hhi}] S>{args.smin} V>{args.vmin}")
+    _cdesc = (f"白 S<={args.white_smax} V>={args.white_vmin}" if args.color == "white"
+              else f"黄 H[{args.hlo},{args.hhi}] S>{args.smin} V>{args.vmin}")
+    log.info(f"扫 {len(files)} 帧 × {len(seats)} 座  区={args.region}  色={args.color}  {_cdesc}")
 
     counts = []                  # 全部黄计数
     by_seat = {}                 # seat -> [count]
@@ -96,7 +108,10 @@ def main():
             c = crop(frame, box)
             if c is None or c.size == 0:
                 continue
-            _, ycount = yellow_metrics(c, args.hlo, args.hhi, args.smin, args.vmin)
+            if args.color == "white":
+                ycount = white_count(c, args.white_smax, args.white_vmin)
+            else:
+                _, ycount = yellow_metrics(c, args.hlo, args.hhi, args.smin, args.vmin)
             counts.append(ycount)
             by_seat.setdefault(sidx, []).append(ycount)
             if args.dump:
