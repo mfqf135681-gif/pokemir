@@ -1732,21 +1732,16 @@ class PipelineOrchestrator:
             self.tracker._idle_avatar_hash[sidx] = _avg_hash_64(img)
             logger.debug(f"_initialize_avatar_baselines: seat_{sidx} baseline set at hand-start")
 
-    # ── R15 (T103, 2026-05-31): stack_area 全押后显胜率 ───────────────
-    # 用户实操观察:WePoker all-in 玩家的 stack_area 不再显示筹码,而显示胜率
-    # 如 "78%".旧 allowlist "0123456789." 把 "%" 滤掉 → "78" 当 78 chips 入库 →
-    # stack tracking / ring beam D1 / 画像 全污染(影响 historical 数据).
-    # Fix:allowlist 加 "%" → 检测 "%" → 返 None(表示"非筹码"),emit diag 标记
-    # all-in equity signal.
-    # 4 个 stack OCR call site 统一走这 helper.
+    # ── R15 修正 (2026-06-09): 胜率% 不在 stack 区,在筹码【下方独立区】 ──
+    # 旧前提(2026-05-31, T103)错:以为 all-in 后 stack 区改显胜率% → 给 allowlist
+    # 加 "%"、读到 % 返 None 当 all-in 标记。用户 2026-06-09 实操复核:stack 区始终
+    # 是筹码,胜率% 在筹码【下方独立区域】。故 "%" 留在 stack allowlist 反成 OCR 噪声源
+    # (空/筹码背景被量化成 "%" → 丢读 / 疑长局假"8%"之源)。
+    # 修:stack allowlist 去 "%"。真正的胜率%-区(all-in 持久信号)待另框为独立 zone。
+    # 4 个 stack OCR call site 统一走这 helper。
     def _ocr_stack_chips(self, img, seat_idx: int | None = None) -> float | None:
-        """OCR stack_area,处理 all-in 后显胜率 case.
-
-        Returns:
-            float chip count if normal stack display
-            None if "%" detected(all-in equity view)or no digit
-        """
-        text = self.ocr.read_text(img, allowlist="0123456789.%")
+        """OCR stack_area → 筹码数(stack 区只有筹码,无 %)。无数字 → None。"""
+        text = self.ocr.read_text(img, allowlist="0123456789.")
         return self._stack_text_to_chips(text, seat_idx)
 
     def _reader_for(self, zone: str):
@@ -1764,15 +1759,8 @@ class PipelineOrchestrator:
         return self._ocr_stack_chips(crop, seat_idx=seat_idx)
 
     def _stack_text_to_chips(self, text: str, seat_idx: int | None = None) -> float | None:
-        """2026-06-01 spike A:stack OCR 文本 → 筹码值的后处理(从 _ocr_stack_chips
-        拆出,使批处理路径能复用)。"%" = all-in 胜率显示 → None。"""
-        if text and "%" in text:
-            diag.emit(
-                "all_in.winprob_detected",
-                {"seat": seat_idx, "raw_text": text},
-                hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None,
-            )
-            return None
+        """stack OCR 文本 → 筹码值后处理(批/热路径共用)。stack 区只有筹码、无 %
+        (胜率% 在筹码下方独立区,见 R15 修正 2026-06-09)。"""
         return ActionRecognizer._extract_amount(text or "")
 
     # 占用判定区:stack+id(20260603 录像验:占位紧簇 24-40、空隙 16-24、空座≈0,干净 bimodal)。
@@ -2143,7 +2131,7 @@ class PipelineOrchestrator:
         for sidx, img in stack_items:
             self._batched_stack_crops[sidx] = img
         if stack_items and not (DIGIT_RECIPE_LIVE and self._digit_reader is not None):
-            texts = self.ocr.read_text_batch([i for _, i in stack_items], allowlist="0123456789.%")
+            texts = self.ocr.read_text_batch([i for _, i in stack_items], allowlist="0123456789.")  # stack 区无 %(R15 修正)
             for (sidx, _), t in zip(stack_items, texts):
                 self._batched_stack_results[sidx] = t
 
