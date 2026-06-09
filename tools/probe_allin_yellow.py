@@ -100,7 +100,8 @@ def main():
             counts.append(ycount)
             by_seat.setdefault(sidx, []).append(ycount)
             if args.dump:
-                samples.append((ycount, c, fn, sidx))
+                # 只存元数据(计数/帧名/座/框),【不存图】——存 crop 是整帧 view,持有=整帧不释放→OOM。
+                samples.append((ycount, fn, sidx, box))
 
     carr = np.array(counts)
     cths = [int(t) for t in args.count_ths.split(",")]
@@ -145,7 +146,13 @@ def main():
             ("zero", pick(0, 6, 6)),                  # 基线对照
         )
         for tag, grp in groups:
-            for yc, c, fn, sidx in grp:
+            for yc, fn, sidx, box in grp:
+                fr = cv2.imread(os.path.join(args.frames_dir, fn + ".png"))  # 选中才重读那几帧
+                if fr is None:
+                    continue
+                c = crop(fr, box)
+                if c is None or c.size == 0:
+                    continue
                 cv2.imwrite(os.path.join(outdir, f"{tag}_y{yc:05d}_s{sidx}_{fn}.png"),
                             cv2.resize(c, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST))
         print(f"\ndump → {outdir}/(over/band/sub/zero 四组)")
