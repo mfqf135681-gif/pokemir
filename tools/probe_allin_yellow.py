@@ -107,6 +107,10 @@ def main():
     ap.add_argument("--dump", action="store_true", help="dump 抠图供眼标")
     ap.add_argument("--per-seat", type=int, default=0,
                     help="按座 dump 每座 N 张(高N/3+中N/3+低N/3),如 12→96张;0=旧的跨座 over/band/sub/zero")
+    ap.add_argument("--dump-hits", action="store_true",
+                    help="只 dump 抓到的 all-in(计数>=lo);同座连续帧合并为一次事件,只出峰值帧 → 几张图=报了几次,对牌局看漏没漏")
+    ap.add_argument("--hit-gap", type=int, default=15,
+                    help="--dump-hits:同座两次命中帧号间隔>此值=另一次 all-in 事件(默认15帧)")
     args = ap.parse_args()
 
     prof_path = os.path.join("rois", f"{args.profile}.json")
@@ -152,7 +156,7 @@ def main():
                 _, ycount = yellow_metrics(c, args.hlo, args.hhi, args.smin, args.vmin)
             counts.append(ycount)
             by_seat.setdefault(sidx, []).append(ycount)
-            if args.dump:
+            if args.dump or args.dump_hits:
                 # 只存元数据(计数/【原始完整路径fp】/座/框),不存图(存 crop=整帧 view→OOM)。
                 # 存 fp 而非重拼路径:扫描时 fp 已读成功,dump 重读它必成(治路径重拼对不上→无图)。
                 samples.append((ycount, fp, sidx, box))
@@ -180,7 +184,7 @@ def main():
     print(f"  ② >hi 疑黄头像/超       : {int(over_hi.sum()):5d} 帧座 ({over_hi.mean()*100:.2f}%)  ← 应≈0,>0 必眼标")
     print(f"  ③ [20,lo) 阈下非零      : {int(sub.sum()):5d} 帧座 ({sub.mean()*100:.2f}%)  ← 看是否藏漏掉的 all-in")
 
-    if args.dump and samples:
+    if (args.dump or args.dump_hits) and samples:
         # 每段录像一个子夹(从 frames-dir 推录像名)→ 跑多段不互相覆盖,可叠加对比。
         _fd = args.frames_dir.rstrip("/\\")
         tag = os.path.basename(os.path.dirname(_fd)) or os.path.basename(_fd) or "run"
@@ -189,8 +193,37 @@ def main():
         for old in glob.glob(os.path.join(outdir, "*.png")):  # 只清【本段】子夹,别段保留
             os.remove(old)
 
+        import re
+
+        def _fnum(fp):  # 从文件名抠帧号(f_010837 → 10837),供事件合并排序
+            m = re.search(r"(\d+)", os.path.basename(fp))
+            return int(m.group(1)) if m else 0
+
         to_dump = []  # (前缀, 计数, fp, box)
-        if args.per_seat:
+        if args.dump_hits:
+            # 只 dump 命中(计数>=lo);同座连续帧(帧号间隔<=hit_gap)合并为一次 all-in 事件,出峰值帧。
+            print(f"\n{'='*62}\n抓到的 all-in 事件(计数>={args.lo};同座连续帧合并)\n{'='*62}")
+            total = 0
+            for sidx in sorted(seats):
+                hits = sorted(((_fnum(fp), yc, fp, box) for yc, fp, sx, box in samples
+                               if sx == sidx and yc >= args.lo), key=lambda t: t[0])
+                if not hits:
+                    continue
+                events, cur = [], [hits[0]]
+                for h in hits[1:]:
+                    if h[0] - cur[-1][0] <= args.hit_gap:
+                        cur.append(h)
+                    else:
+                        events.append(cur); cur = [h]
+                events.append(cur)
+                peaks = [max(ev, key=lambda t: t[1]) for ev in events]  # 每事件峰值帧
+                total += len(peaks)
+                fr_list = ", ".join(f"f{fn}(y{yc},{len(ev)}帧)" for (fn, yc, _fp, _b), ev in zip(peaks, events))
+                print(f"  s{sidx}: {len(peaks)} 次 → {fr_list}")
+                for i, (fn, yc, fp, box) in enumerate(peaks, 1):
+                    to_dump.append((f"s{sidx}_evt{i}", yc, fp, box))
+            print(f"  合计 {total} 次 all-in 事件,共 dump {total} 张峰值帧 → 对牌局看漏没漏")
+        elif args.per_seat:
             # 每座 N 张:高 k + 中 k + 低 k(k=N//3),文件名 s{座}_{hi/mid/lo}_ 便于逐座看
             k = max(1, args.per_seat // 3)
             for sidx in sorted(seats):
@@ -226,11 +259,15 @@ def main():
             ok = cv2.imwrite(os.path.join(outdir, f"{prefix}_y{yc:05d}_{fn}.png"),
                              cv2.resize(c, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST))
             nwrote += 1 if ok else 0
-        _mode = f"每座{args.per_seat}张(高/中/低)" if args.per_seat else "跨座 over/band/sub/zero"
+        _mode = ("命中事件峰值帧(s{座}_evt{n})" if args.dump_hits
+                 else f"每座{args.per_seat}张(高/中/低)" if args.per_seat else "跨座 over/band/sub/zero")
         print(f"\ndump 写了 {nwrote} 张 → {outdir}\\({_mode})")
         if nwrote == 0:
             log.warning("dump 0 张!检查路径/写权限")
-    print("\n判读:band 全 allin + over≈0(无黄头像)+ sub 无漏 → [lo,hi] 双阈跨录像成立,可接 live 桩。")
+    if args.dump_hits:
+        print(f"\n判读:文件名 s{{座}}_evt{{第几次}}_y{{计数}}_{{帧号}};按帧号对你的牌局看每次 all-in 有没有漏。")
+    else:
+        print("\n判读:band 全 allin + over≈0(无黄头像)+ sub 无漏 → [lo,hi] 双阈跨录像成立,可接 live 桩。")
 
 
 if __name__ == "__main__":
