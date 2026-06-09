@@ -101,8 +101,10 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
     community_series: [(t, n_community_cards), ...]
     config: {"sb":2,"bb":4,"ante":4,"pot":470,"sb_seat":i,"bb_seat":j,"seats":[...]}
     bet_reads: optional {seat: [(t, bet_area_val), ...]} 下注区读数(局部恒等式校验)
-    allin_marks: optional {seat: [t, ...]} 读取层标记的 all-in 时刻(stack 区显胜率%)
-                 → 该座 all-in,金额=标记前最后已知 stack(治 R15:%盖筹码致 all-in 漏抓)
+    allin_marks: optional {seat: [t, ...]} 识别层标记的 all-in 时刻(来源无关的消费接口)
+                 → 该座 all-in,金额=标记前最后已知 stack。
+                 ⚠️ 来源:原 % 信号已废(2026-06-09:% 非 all-in 必出,见 R15 修正);
+                 此接口休眠,待将来真持久 all-in 桩(真%-区 / fold_area "ALL IN" 字形)接入喂它。
     """
     res = ReconResult(pot_observed=float(config.get("pot", 0)))
     boundaries = boundaries_from_community(community_series)
@@ -198,11 +200,11 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
                     res.notes.append(f"seat{s}@{t}: stack跌{chips}≠下注区{near} → 低置信")
         res.actions.append(act)
 
-    # 🔧 T140 全下封盘线抑制(规则:胜率%⟺该座 all-in⟺它此后不再行动):某座显%(allin_marks)
-    #    后,其 stack 跌幅 = 该座全下的【晚回声】(%/牌型/横幅盖住,直到结算才显跌后值)或结算
-    #    噪声,**非新下注** → 删。全下本身随后由下方 allin_marks 路径在【决策街=首%时刻】补回。
-    #    **按座**:只删"显%座"自己的晚跌;不动其他可读座(多人边池里非全下者%没出、仍真打,
-    #    规则保证%只在全员 all-in 才显 → 它们的下注必在%之前,不受影响)。修 all-in 街错 FP。
+    # 🔧 T140 全下封盘线抑制(规则:被标 all-in 的座此后不再行动):某座有 all-in 标记(allin_marks)
+    #    后,其 stack 跌幅 = 该座全下的【晚回声】(牌型/横幅盖住,直到结算才显跌后值)或结算
+    #    噪声,**非新下注** → 删。全下本身随后由下方 allin_marks 路径在【决策街=首标记时刻】补回。
+    #    **按座**:只删"被标 all-in 座"自己的晚跌;不动其他可读座。修 all-in 街错 FP。
+    #    (注:原经由 % 信号喂标记,% 已废;现接口休眠待真持久 all-in 桩接入。)
     if allin_marks:
         first_mark = {s: min(ts) for s, ts in allin_marks.items() if ts}
         margin = config.get("lock_margin", 0.5)
@@ -210,10 +212,11 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
         res.actions = [a for a in res.actions
                        if not (a.seat in first_mark and a.t > first_mark[a.seat] + margin)]
         if len(res.actions) < n0:
-            res.notes.append(f"全下封盘线抑制 {n0 - len(res.actions)} 笔(显%座%后的晚回声/结算,非下注)")
+            res.notes.append(f"全下封盘线抑制 {n0 - len(res.actions)} 笔(被标all-in座标记后的晚回声/结算,非下注)")
 
-    # 🔧 BUG2 修:all-in 识别 —— 读取层标记某座 stack 区显胜率%(筹码被盖)→ all-in。
+    # 🔧 BUG2 修:all-in 反解 —— 识别层给某座打 all-in 标记(来源无关)→ all-in。
     #    金额 = 标记前最后已知 stack(他把剩余全推);若该座该街已有动作捕获则跳过(防重复)。
+    #    (来源:原 % 信号已废 2026-06-09;接口休眠待真持久 all-in 桩接入。)
     if allin_marks:
         t_tol = config.get("t_tol", 1.0)
         for s, ts in allin_marks.items():
@@ -232,7 +235,7 @@ def reconstruct(stack_series, community_series, config, bet_reads=None, allin_ma
                 res.actions.append(ChipAction(seat=s, street=st, chips_in=prior[-1][1],
                                               t=tm, atype="all_in", confidence=0.7,
                                               to_amount=prior[-1][1]))
-                res.notes.append(f"seat{s}@{tm:.1f}: 胜率%标记 → all-in 反解投入≈{prior[-1][1]:.0f}")
+                res.notes.append(f"seat{s}@{tm:.1f}: all-in 标记 → 反解投入≈{prior[-1][1]:.0f}")
 
     # 🔧 §19.12 结算抑制:首个派彩 rise = 本手结算开始 → 其前 settle_guard 秒起的"动作"判结算
     #   噪声(showdown 揭示期的 stack 抖动/重复%标记),抑制。锚到 rise(真实结算点),

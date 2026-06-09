@@ -48,7 +48,7 @@ def parse_number(cells, classify, min_cell_w=1):
 
     抽出连续数字串(顺序保留);标记:
       has_plus  前导/含 "+"(+xx)
-      has_pct   含 "%"(=all-in,该数字是胜率非筹码)
+      has_pct   含 "%"(该格非筹码数字 → 丢弃该读;% 不作 all-in 信号,见 R15 修正 2026-06-09)
       has_icon  含 "?"(筹码图标等非数字,bet 区前导)
       raw       逐格识别原串(调试用)
     太窄的格(< min_cell_w)丢弃为噪声。

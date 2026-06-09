@@ -71,8 +71,8 @@ class DigitReader:
 
     # —— 纯 decode(无 cv2;Linux 可测):cells + classify → int|None ——
     def _decode(self, cells, classify, allow_icon=False):
-        """cells→数字串(借 digit_ocr.parse_number)。胜率'%'/空 → None;图标'?' 默认拒(stack),
-        allow_icon=True 时丢图标留数字(amount 下注区)。"""
+        """cells→数字串(借 digit_ocr.parse_number)。含 '%'(非筹码误读)/空 → None;图标'?' 默认拒(stack),
+        allow_icon=True 时丢图标留数字(amount 下注区)。注:'%' 只作误读丢弃,不再当 all-in 信号(R15 修正)。"""
         digits, flags = digit_ocr.parse_number(cells, classify, min_cell_w=1)
         # allow_icon=True(amount 下注区):前导筹码图标=非数字格('?'),parse_number 已只抽数字、
         # 图标自动丢弃,故不因 has_icon 拒读(stack 无图标→has_icon='?'是误读→仍拒)。
@@ -144,9 +144,9 @@ def _self_test():
     assert r._decode([(0, 8), (10, 14)], mk("?5")) is None
     # allow_icon=True(amount):图标'?'丢掉、留数字 → 28(前导图标 ?28)
     assert r._decode([(0, 8), (10, 14), (16, 20)], mk("?28"), allow_icon=True) == 28
-    # allow_icon 仍拒胜率%(那是 all-in 非下注)
+    # allow_icon 仍拒含 '%'(非筹码误读,不当 all-in)
     assert r._decode([(0, 4), (6, 8)], mk("3%"), allow_icon=True) is None
-    # 含胜率 '%' → None(那是胜率非筹码)
+    # 含 '%' → None(非筹码误读)
     assert r._decode([(0, 4), (6, 8)], mk("3%")) is None
     # 全非数字 / 空 → None
     assert r._decode([(0, 4)], mk("?")) is None
