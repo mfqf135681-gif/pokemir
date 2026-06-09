@@ -85,7 +85,7 @@ def main():
     ap.add_argument("--frames-dir", required=True)
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--roi-dir", default="./rois")
-    ap.add_argument("--region", default="stack_area")
+    ap.add_argument("--region", default="stack", help="profile 里 stack 区的 key(默认 stack)")
     ap.add_argument("--min-run", type=int, default=3, help="判稳定 0 的最小连续帧数(滤单帧误读)")
     ap.add_argument("--max-frames", type=int, default=20000)
     ap.add_argument("--dump", action="store_true", help="dump 每个 0-游程首帧 stack 抠图供眼验是不是真 0")
