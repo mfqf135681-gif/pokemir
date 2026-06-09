@@ -115,8 +115,9 @@ def main():
             counts.append(ycount)
             by_seat.setdefault(sidx, []).append(ycount)
             if args.dump:
-                # 只存元数据(计数/帧名/座/框),【不存图】——存 crop 是整帧 view,持有=整帧不释放→OOM。
-                samples.append((ycount, fn, sidx, box))
+                # 只存元数据(计数/【原始完整路径fp】/座/框),不存图(存 crop=整帧 view→OOM)。
+                # 存 fp 而非重拼路径:扫描时 fp 已读成功,dump 重读它必成(治路径重拼对不上→无图)。
+                samples.append((ycount, fp, sidx, box))
 
     carr = np.array(counts)
     cths = [int(t) for t in args.count_ths.split(",")]
@@ -163,18 +164,24 @@ def main():
             ("sub",  pick(20, args.lo, 10)),          # 阈下非零:有没有漏的 all-in / 是什么黄
             ("zero", pick(0, 6, 6)),                  # 基线对照
         )
+        nwrote = 0
         for tag, grp in groups:
-            for yc, fn, sidx, box in grp:
-                fr = cv2.imread(os.path.join(args.frames_dir, fn + ".png"))  # 选中才重读那几帧
+            for yc, fp, sidx, box in grp:
+                fr = cv2.imread(fp)  # 直接重读原始路径(扫描时已读成功,必成)
                 if fr is None:
+                    log.warning(f"dump 重读失败: {fp}")
                     continue
                 c = crop(fr, box)
                 if c is None or c.size == 0:
                     continue
-                cv2.imwrite(os.path.join(outdir, f"{tag}_y{yc:05d}_s{sidx}_{fn}.png"),
-                            cv2.resize(c, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST))
-        print(f"\ndump → {outdir}/(over/band/sub/zero 四组)")
-        print("  眼标:band 是否【全是真 allin】? over 是否出现【黄头像】(整框糊黄)? sub 里有没有【漏掉的 allin】?")
+                fn = os.path.basename(fp)[:-4]
+                ok = cv2.imwrite(os.path.join(outdir, f"{tag}_y{yc:05d}_s{sidx}_{fn}.png"),
+                                 cv2.resize(c, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST))
+                nwrote += 1 if ok else 0
+        print(f"\ndump 写了 {nwrote} 张 → {outdir}\\(over/band/sub/zero 四组)")
+        if nwrote == 0:
+            log.warning("dump 0 张!检查路径/写权限")
+        print("  眼标:band 是否【全是真 allin】? over 是否出现污染? sub 里有没有【漏掉的 allin】?")
     print("\n判读:band 全 allin + over≈0(无黄头像)+ sub 无漏 → [lo,hi] 双阈跨录像成立,可接 live 桩。")
 
 
