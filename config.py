@@ -52,8 +52,10 @@ BATCH_SEAT_OCR = os.getenv("POKEMIR_BATCH_SEAT_OCR", "1").lower() in ("1", "true
 DIGIT_RECIPE_LIVE = os.getenv("POKEMIR_DIGIT_RECIPE_LIVE", "0").lower() in ("1", "true", "yes")
 # 2026-06-05 杠杆D.1:每 tick 抓【一次整窗】存缓存,capture_roi 从缓存切片,替掉~37 次
 # 独立 mss grab(Stage0 实测 seat_actions 里 ~900ms 未计时=这些 grab)。像素字节级等价、
-# 行为不变。默认【关】零变化;POKEMIR_FRAME_CAPTURE=1 开。单次 grab 仍慢则 D.2 换 DXcam。
-FRAME_CAPTURE = os.getenv("POKEMIR_FRAME_CAPTURE", "0").lower() in ("1", "true", "yes")
+# 行为不变。2026-06-09:默认【开】——tools/verify_frame_capture.py 实测真窗口 108/108 ROI
+# 字节级一致(空桌负坐标都对齐);live 验证 capture_grab 154ms→capture_frame 12ms、无质量回归
+# (公共牌 jitter 8.7% 是旧基线非本改引入)。POKEMIR_FRAME_CAPTURE=0 可回退逐ROI grab。
+FRAME_CAPTURE = os.getenv("POKEMIR_FRAME_CAPTURE", "1").lower() in ("1", "true", "yes")
 
 # 2026-06-06 step 2b:按钮权威切手(观战模式)。每 tick 白占比扫按钮 → 顺时针单调+在线去抖,
 # 确认 D 移座 = 换手(reconstruct.button_move_online)。开时:换手只认按钮 + "总底池"兜底,
@@ -85,7 +87,11 @@ HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
 
 # ── Capture ───────────────────────────────────────────────
-CAPTURE_INTERVAL_MS = int(os.getenv("POKEMIR_CAPTURE_INTERVAL_MS", "250"))
+# 2026-06-09:默认 250→30。FRAME_CAPTURE 后 tick~180ms,250 sleep 白卡帧率(1.8hz);降 30
+# → ~4.8hz(实测 sleep=0 跑 5.5hz/切手正常/CPU 扛得住/无质量回归,30 更稳不满核空转)。
+# ⚠️ 部分防抖按 tick 数算(按钮去抖/每4tick强刷),低 sleep 下真实时间缩~2.6× — 切手已实测
+# 扛住,但锁更低(→0)前应审 tick-based 计时是否需改墙钟。POKEMIR_CAPTURE_INTERVAL_MS 可调。
+CAPTURE_INTERVAL_MS = int(os.getenv("POKEMIR_CAPTURE_INTERVAL_MS", "30"))
 
 # ── ROI ──────────────────────────────────────────────────
 ROI_CONFIG_DIR = os.getenv("POKEMIR_ROI_DIR", "./rois")
