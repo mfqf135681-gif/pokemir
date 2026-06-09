@@ -127,9 +127,12 @@ def main():
     print(f"  ③ [20,lo) 阈下非零      : {int(sub.sum()):5d} 帧座 ({sub.mean()*100:.2f}%)  ← 看是否藏漏掉的 all-in")
 
     if args.dump and samples:
-        outdir = os.path.join("tools", "output", "allin_yellow")
+        # 每段录像一个子夹(从 frames-dir 推录像名)→ 跑多段不互相覆盖,可叠加对比。
+        _fd = args.frames_dir.rstrip("/\\")
+        tag = os.path.basename(os.path.dirname(_fd)) or os.path.basename(_fd) or "run"
+        outdir = os.path.join("tools", "output", "allin_yellow", tag)
         os.makedirs(outdir, exist_ok=True)
-        for old in glob.glob(os.path.join(outdir, "*.png")):
+        for old in glob.glob(os.path.join(outdir, "*.png")):  # 只清【本段】子夹,别段保留
             os.remove(old)
 
         def pick(lo, hi, n):  # [lo,hi) 计数带里按计数均匀取 n 个(覆盖该带,非单点)
