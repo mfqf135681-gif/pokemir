@@ -237,7 +237,7 @@ VALID_FIELDS = {
 
 # Per-seat sub-element names for --element flag. Order matches the full-seat prompt order.
 # REQUIRED_SEAT_ELEMENTS = {action, stack} — final-save validation refuses entries lacking these.
-SEAT_ELEMENT_ORDER = ["action", "amount", "fold_area", "fold_text", "timer", "stack", "button_indicator", "cards", "id", "hand_type", "win_amount", "card_marker", "allin_star_area"]
+SEAT_ELEMENT_ORDER = ["action", "amount", "fold_area", "fold_text", "timer", "stack", "button_indicator", "cards", "id", "hand_type", "win_amount", "card_marker", "showdown_corner"]
 REQUIRED_SEAT_ELEMENTS = {"action", "stack"}
 ELEMENT_HINTS = {
     "action": "头像上方,玩家行动时**只显示动作汉字**(「跟注/加注/下注/过牌」);WePoker 中**金额不在此**;空闲时此位置显示玩家昵称",
@@ -252,7 +252,7 @@ ELEMENT_HINTS = {
     "hand_type": "**摊牌时**该 seat 在底牌下方显示的**牌型中文文字**(「对子」「顺子」「同花」「葫芦」「四条」「同花顺」「皇家同花顺」「三条」「两对」「高牌」);独立 ROI,**比 cards 紧得多**,只框那一行牌型文字;ESC 可跳过(若用户暂不需要交叉验证),将来用于 hole+community 推导验证",
     "win_amount": "**手结算时**获胜玩家头上短暂显示的赢取金额(「+45」「+1000」「+12500」等),只显示 1-2 秒;紧框「+」号 + 数字本身,**不带其他文字 / 头像**;为 Path B 净胜负 stat 提供直接信号(免去 stack-delta 推算的误差);全 8 seat 同样大小,适合 --copy-size 批量框",
     "card_marker": "**在手标记** = 头像【左下角】那两条红色竖条(= 两张牌背,全玩家统一图案);**在手全程都在、弃牌即消失(被压暗+「弃牌」盖住)、摊牌时被显牌占据**。紧框这两条红竖条本身,**不带头像 / 桌布 / 数字**(越紧 phash 越干净)。活跃集基桩:对一份标准牌背参考 phash,hamming≤阈值=该座在手。8 座同小目标,用放大工具逐座框",
-    "allin_star_area": "**all-in 黄色星星动画区**(2026-06-09 用户观察)— all-in 瞬间头像【旁边】飞入黄色星星,与桌布对比强烈、但【无持久残留】(纯瞬态、窗口窄)。框头像旁星星出现/散开那一片,**选桌布干净处:不含头像 / 筹码 / 相邻座 / 其他文字**(唯一的黄=星星 → 黄计数才干净)。8 座同位同大小,**适合 --copy-size 批量**;⚠️ 务必对着【有人 all-in、星星正显】的帧/截图框(--from-image),否则看不到星星落点;ESC 跳过则该座无此信号",
+    "showdown_corner": "**摊牌检测区 = 该座摊牌亮牌时,牌【左下角】那块白(卡背景白,连 JQK 角也近乎全白)**(2026-06-09 用户观察,替原 allin 星星 ROI)。摊牌时头像【旁边/外侧】显示 2 张正面牌,左下白角与桌布/头像对比强烈、**且持久亮到本手结束**(非瞬态 → 帧率无关,可靠独立摊牌信号)。框那块白角:**选头像【外侧】落点,不含头像(躲纯白头像)/ 筹码 / 相邻座 / 其他文字**(非摊牌时该处应是干净桌布、低白)。⚠️ **务必对着【该座正在摊牌、正面牌正显】的帧/截图框(--from-image)**,否则看不到牌落点;**摊牌发生在不同帧 → 每座单独对自己的摊牌帧框(--field seat_N,不要 --copy-size 批量)**;ESC 跳过则该座无此信号。下一步:框好 → 白占比探针验三簇可分(摊牌高/非摊牌低/白头像仍低)→ 接摊牌闸",
 }
 
 
