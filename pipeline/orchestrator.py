@@ -1802,22 +1802,26 @@ class PipelineOrchestrator:
         return ActionRecognizer._extract_amount(text or "")
 
     def _detect_allin_stackzero(self, sidx, stack_now):
-        """#243 第一步【影子检测】:stack→0 稳定 + 本手活跃(card_marker 持牌)→ emit
-        all_in.stack_zero(座/金额/游程)。**仅 diag,不改动作发射**——录长局后与现有 OCR
-        all-in 交叉印证;去伪主闸=活跃集(非 raw occupancy,治座位易主过渡假阳)。"""
+        """#243【当家 2026-06-10】:stack→0 稳定 + 本手活跃(card_marker 持牌)→ 标 all-in +
+        返回归0前筹码(amount)。seat 循环据此合成 "全押" 喂【现有 all-in 记录路径】(替 fold_area
+        OCR 读 "Allin" 那条——长局验:stack→0 是 OCR 严格超集,召回 35 vs 13)。
+        去伪主闸=活跃集(非 raw occupancy,治座位易主过渡假阳)。返 amount(float)=触发 / None=没发。"""
         st = self._az_state.setdefault(sidx, {'last_pos': None, 'zero_run': 0, 'emitted': False, 'was_active': False})
         is_active = sidx in self._active_set
         fire, amount = allin_stackzero_step(st, stack_now, is_active, ALLIN_ZERO_RUN)
         hid = self.tracker.current_hand.id if self.tracker.current_hand else None
         if fire:
+            self.tracker._went_all_in_this_hand.add(sidx)   # 标记(保险/重建);belt-and-suspenders
             diag.emit("all_in.stack_zero",
                       {"seat": sidx, "amount": amount, "zero_run": st['zero_run'],
                        "was_active": st['was_active'], "active_now": is_active}, hand_id=hid)
+            return amount
         elif stack_now == 0 and st['zero_run'] == 1 and not st['emitted']:
             # near-miss 诊断:读到首个 0 却没发 → 记原因(was_active/last_pos 缺啥),短跑定位
             diag.emit("all_in.stackzero_debug",
                       {"seat": sidx, "last_pos": st['last_pos'],
                        "was_active": st['was_active'], "active_now": is_active}, hand_id=hid)
+        return None
 
     # 占用判定区:stack+id(20260603 录像验:占位紧簇 24-40、空隙 16-24、空座≈0,干净 bimodal)。
     # fold_area 剔除(头像区 弃牌/timer/摊牌/表情噪声 → 占位 hamming 12-48 乱飘、偶掉 5-10 误判空)。
@@ -2178,10 +2182,11 @@ class PipelineOrchestrator:
             texts = self.ocr.read_text_batch([i for _, i in timer_items], allowlist="0123456789s ")
             for (sidx, _), t in zip(timer_items, texts):
                 self._batched_timer_results[sidx] = t
-        if fold_items:
-            texts = self.ocr.read_text_batch([i for _, i in fold_items], allowlist="")
-            for (sidx, img), t in zip(fold_items, texts):
-                self._batched_fold_results[sidx] = (img, t)
+        # #235 part2(2026-06-10):剥 fold_area batch OCR(~199ms,seat_actions 真瓶颈)。
+        # all-in→stack→0 / 弃牌→活跃集+闸 / timer→timer_area,fold_area 不再需 read_text。
+        # 仍存 img 给 avatar baseline;text 恒 None(下游已不读)。
+        for sidx, img in fold_items:
+            self._batched_fold_results[sidx] = (img, None)
         # 杠杆A:配方开 → 留 crop 给 DigitReader、跳过 EasyOCR stack 批读(省那次 OCR);
         #   配方读空(全下%/不可读)时,消费端再对该 crop 走 EasyOCR 兜底(认 %)。
         for sidx, img in stack_items:
@@ -2265,9 +2270,10 @@ class PipelineOrchestrator:
                                  f"likely digit miss, keeping prev")
                     stack_now = prev_stack
 
-            # #243 第一步:影子 all-in 检测(stack→0 稳定 + 活跃集),仅 diag 交叉印证,不改动作
+            # #243 当家:stack→0 稳定 + 活跃集 → 标 all-in + 返归0前筹码;下方合成 "全押" 喂记录路径
+            az_allin_amount = None
             if ALLIN_STACKZERO and self.tracker.has_active_hand:
-                self._detect_allin_stackzero(sidx, stack_now)
+                az_allin_amount = self._detect_allin_stackzero(sidx, stack_now)
 
             # fold_area is a MULTI-PURPOSE overlay zone at the avatar center.
             # WePoker shows different things at different game states:
@@ -2306,46 +2312,22 @@ class PipelineOrchestrator:
             # baseline/river弃牌)。所知风险:T120 修过的座(0/4/5/6/7)river 弃牌回落 fold_area 较糙读
             # → 非river 有活跃集兜,river 那几座有残余漏读风险,下次录制验。
             if seat_roi.fold_area is not None:
-                _t = time.perf_counter()
+                # #235 part2(2026-06-10):剥 fold_area OCR(原 seat_fold_ocr ~199ms,62% tick)。
+                # fold_area 文字三用途全已迁出:弃牌→活跃集+摊牌闸 / timer→专用 timer_area /
+                # all-in→stack→0(#243 当家)。仅留 capture 给 idle_avatar baseline;read_text 删。
                 if BATCH_SEAT_OCR and sidx in self._batched_fold_results:
-                    fold_img, fold_text = self._batched_fold_results[sidx]  # spike A: batched (img kept for avatar hash)
+                    fold_img, _ = self._batched_fold_results[sidx]  # img 仍存(avatar hash);text 恒 None
                 else:
                     fold_img = self.capturer.capture_roi(seat_roi.fold_area)
-                    fold_text = self.ocr.read_text(fold_img)
-                sub_ms["seat_fold_ocr"] += (time.perf_counter() - _t) * 1000.0
-                ft = fold_text.strip() if fold_text else ""
-                # Bug 3 fix: regex extracts digits even with surrounding noise
-                # (e.g. "15 sec" / "15." / " 15"). Permissive but bounded to
-                # 0-60 (reasonable timer range).
-                timer_match = re.search(r"\b(\d{1,2})\b", ft) if ft else None
-                parsed_fold = self.action_recognizer.parse(ft) if ft else None
-                _is_fold_action = bool(
-                    parsed_fold
-                    and parsed_fold["action_type"] in (ActionType.FOLD, ActionType.ALL_IN)
-                )
-
-                # Branch 1: digit found and looks like timer → countdown
-                # Skip if dedicated timer_area already handled (logic above).
-                if timer_match and 0 <= int(timer_match.group(1)) <= 60:
-                    # Also gate: text shouldn't contain action keywords (avoids
-                    # "跟注 100" being parsed as timer "100").
-                    if parsed_fold is None:
-                        self._process_timer(sidx, int(timer_match.group(1)))
-                        if stack_now is not None:
-                            self.tracker._prev_stack[sidx] = stack_now
-                        continue
-                # Branch 2: parser hits FOLD / ALL_IN keyword → action via fold_area
-                if ft:
-                    if _is_fold_action:
-                        action_text = ft
-                        self._finalize_timer(sidx)  # timer ended via fold/all-in
-                # Branch 3: empty (idle / between actions) → finalize timer
-                # AND update idle_avatar_hash baseline (this is the stable "no overlay"
-                # state for this seat). Used at hand-end to detect真摊牌 vs hallucination.
+                # all-in:stack→0(#243)触发 → 合成 "全押" 喂现有 all-in 记录路径(替 fold_area "Allin")
+                if action_text is None and az_allin_amount is not None:
+                    action_text = "全押"
+                    self._finalize_timer(sidx)  # timer ended via all-in
                 else:
+                    # idle / between actions:收尾 timer + 更新 idle_avatar baseline(摊牌幻觉检测用)
                     self._finalize_timer(sidx)
                     # 仅非 skippable(fold/empty)座更新 idle baseline
-                    if not self.tracker.is_skippable_seat(sidx) and fold_img.size > 0:
+                    if not self.tracker.is_skippable_seat(sidx) and fold_img is not None and fold_img.size > 0:
                         _t = time.perf_counter()
                         self.tracker._idle_avatar_hash[sidx] = _avg_hash_64(fold_img)
                         sub_ms["seat_avatar_hash"] += (time.perf_counter() - _t) * 1000.0
