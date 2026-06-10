@@ -87,7 +87,7 @@ SEAT_OCCUPANCY_LIVE = os.getenv("POKEMIR_SEAT_OCCUPANCY", "0").lower() in ("1", 
 # 录长局后与现有 OCR all-in 交叉印证 → 验过再让它当家 + 砍 fold OCR。去伪主闸=card_marker
 # 活跃集(本手持牌,非raw occupancy)。默认【开】(纯 diag,零行为变化);=0 关。
 ALLIN_STACKZERO = os.getenv("POKEMIR_ALLIN_STACKZERO", "1").lower() in ("1", "true", "yes")
-ALLIN_ZERO_RUN = int(os.getenv("POKEMIR_ALLIN_ZERO_RUN", "2"))  # 判稳定的连续 0 读帧数(实测单帧0噪声=0,2 即稳)
+ALLIN_ZERO_RUN = int(os.getenv("POKEMIR_ALLIN_ZERO_RUN", "1"))  # 首个0即发(实测无单帧0噪声;v1 用2+瞬时闸→0命中,改1+was_active latch)
 
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")

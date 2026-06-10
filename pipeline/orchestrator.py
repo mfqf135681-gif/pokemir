@@ -27,10 +27,14 @@ from events.normalizer import compute_confidence, infer_action_from_delta
 from events import diag
 
 
-def allin_stackzero_step(state, stack_now, is_active, run_th):
-    """#243 影子 all-in 检测【纯逻辑】(Linux 可单测)。state={'last_pos','zero_run','emitted'} 原地更新。
+def allin_stackzero_step(state, stack_now, is_active, run_th=1):
+    """#243 影子 all-in 检测【纯逻辑】(Linux 可单测)。state={'last_pos','zero_run','emitted','was_active'}。
     online 版 probe_stack_zero.find_episodes:确认正数→复位;0→游程+1;None→不增不减(遇遮挡不打断、只数真0)。
-    稳定(连续 ≥run_th 帧 0)+ 本手活跃(持牌)+ 有归0前正数 + 本手未发 → 返 (True, amount=归0前最后正数)。"""
+    闸=**本手曾活跃(was_active latch)**——非瞬时(all-in后摊牌card_marker消失会让座瞬间掉出活跃集,
+    第一版用瞬时闸→2小时0命中)。run_th=1:首个0即发(实测无单帧0噪声)。
+    ≥run_th 帧 0 + 本手曾活跃 + 有归0前正数 + 本手未发 → 返 (True, amount=归0前最后正数)。"""
+    if is_active:
+        state['was_active'] = True          # latch:本手持过牌
     if stack_now is not None and stack_now > 0:
         state['last_pos'] = stack_now
         state['zero_run'] = 0
@@ -38,7 +42,7 @@ def allin_stackzero_step(state, stack_now, is_active, run_th):
     if stack_now == 0:
         state['zero_run'] = state.get('zero_run', 0) + 1
     if (state.get('zero_run', 0) >= run_th and not state.get('emitted')
-            and is_active and state.get('last_pos')):
+            and state.get('was_active') and state.get('last_pos')):
         state['emitted'] = True
         return (True, state['last_pos'])
     return (False, None)
@@ -1790,12 +1794,19 @@ class PipelineOrchestrator:
         """#243 第一步【影子检测】:stack→0 稳定 + 本手活跃(card_marker 持牌)→ emit
         all_in.stack_zero(座/金额/游程)。**仅 diag,不改动作发射**——录长局后与现有 OCR
         all-in 交叉印证;去伪主闸=活跃集(非 raw occupancy,治座位易主过渡假阳)。"""
-        st = self._az_state.setdefault(sidx, {'last_pos': None, 'zero_run': 0, 'emitted': False})
-        fire, amount = allin_stackzero_step(st, stack_now, sidx in self._active_set, ALLIN_ZERO_RUN)
+        st = self._az_state.setdefault(sidx, {'last_pos': None, 'zero_run': 0, 'emitted': False, 'was_active': False})
+        is_active = sidx in self._active_set
+        fire, amount = allin_stackzero_step(st, stack_now, is_active, ALLIN_ZERO_RUN)
+        hid = self.tracker.current_hand.id if self.tracker.current_hand else None
         if fire:
             diag.emit("all_in.stack_zero",
-                      {"seat": sidx, "amount": amount, "zero_run": st['zero_run']},
-                      hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
+                      {"seat": sidx, "amount": amount, "zero_run": st['zero_run'],
+                       "was_active": st['was_active'], "active_now": is_active}, hand_id=hid)
+        elif stack_now == 0 and st['zero_run'] == 1 and not st['emitted']:
+            # near-miss 诊断:读到首个 0 却没发 → 记原因(was_active/last_pos 缺啥),短跑定位
+            diag.emit("all_in.stackzero_debug",
+                      {"seat": sidx, "last_pos": st['last_pos'],
+                       "was_active": st['was_active'], "active_now": is_active}, hand_id=hid)
 
     # 占用判定区:stack+id(20260603 录像验:占位紧簇 24-40、空隙 16-24、空座≈0,干净 bimodal)。
     # fold_area 剔除(头像区 弃牌/timer/摊牌/表情噪声 → 占位 hamming 12-48 乱飘、偶掉 5-10 误判空)。
