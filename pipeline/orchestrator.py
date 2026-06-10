@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE, ALLIN_STACKZERO, ALLIN_ZERO_RUN
 from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips
 from difflib import get_close_matches
 
@@ -25,6 +25,23 @@ import numpy as np
 from events.models import ActionType, Position
 from events.normalizer import compute_confidence, infer_action_from_delta
 from events import diag
+
+
+def allin_stackzero_step(state, stack_now, is_active, run_th):
+    """#243 影子 all-in 检测【纯逻辑】(Linux 可单测)。state={'last_pos','zero_run','emitted'} 原地更新。
+    online 版 probe_stack_zero.find_episodes:确认正数→复位;0→游程+1;None→不增不减(遇遮挡不打断、只数真0)。
+    稳定(连续 ≥run_th 帧 0)+ 本手活跃(持牌)+ 有归0前正数 + 本手未发 → 返 (True, amount=归0前最后正数)。"""
+    if stack_now is not None and stack_now > 0:
+        state['last_pos'] = stack_now
+        state['zero_run'] = 0
+        return (False, None)
+    if stack_now == 0:
+        state['zero_run'] = state.get('zero_run', 0) + 1
+    if (state.get('zero_run', 0) >= run_th and not state.get('emitted')
+            and is_active and state.get('last_pos')):
+        state['emitted'] = True
+        return (True, state['last_pos'])
+    return (False, None)
 
 # Allowlist for action_area OCR — restricts charset to known action keywords + amounts.
 # Filters out garbage like "疯鱼罩轩 2"(player name bleed)or random Chinese characters.
@@ -270,6 +287,7 @@ class PipelineOrchestrator:
         self._blinds_pending = False
         self._blinds_attempts = 0
         self._active_set: set = set()
+        self._az_state: dict = {}  # #243 第一步:per-seat all-in stack→0 影子检测态(每手 reset)
         # P2a(2026-06-06):活跃集 silent-fold 救援状态。_hand_dealt_seats=本手见过牌的座,
         # _seat_gone_ticks=各座 card_marker 连续消失帧数(去抖)。补 fold_ocr 漏的弃牌。
         self._hand_dealt_seats: set = set()
@@ -620,6 +638,7 @@ class PipelineOrchestrator:
 
     def _start_new_hand(self, db, hero_1, hero_2):
         hand = self.tracker.start_new_hand()
+        self._az_state = {}  # #243:新手清 all-in stack→0 影子检测态(每手一座只 emit 一次)
         c1 = self.card_recognizer.recognize_single(hero_1)
         c2 = self.card_recognizer.recognize_single(hero_2)
         hand.hero_cards = []
@@ -1767,6 +1786,17 @@ class PipelineOrchestrator:
         (胜率% 在筹码下方独立区,见 R15 修正 2026-06-09)。"""
         return ActionRecognizer._extract_amount(text or "")
 
+    def _detect_allin_stackzero(self, sidx, stack_now):
+        """#243 第一步【影子检测】:stack→0 稳定 + 本手活跃(card_marker 持牌)→ emit
+        all_in.stack_zero(座/金额/游程)。**仅 diag,不改动作发射**——录长局后与现有 OCR
+        all-in 交叉印证;去伪主闸=活跃集(非 raw occupancy,治座位易主过渡假阳)。"""
+        st = self._az_state.setdefault(sidx, {'last_pos': None, 'zero_run': 0, 'emitted': False})
+        fire, amount = allin_stackzero_step(st, stack_now, sidx in self._active_set, ALLIN_ZERO_RUN)
+        if fire:
+            diag.emit("all_in.stack_zero",
+                      {"seat": sidx, "amount": amount, "zero_run": st['zero_run']},
+                      hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
+
     # 占用判定区:stack+id(20260603 录像验:占位紧簇 24-40、空隙 16-24、空座≈0,干净 bimodal)。
     # fold_area 剔除(头像区 弃牌/timer/摊牌/表情噪声 → 占位 hamming 12-48 乱飘、偶掉 5-10 误判空)。
     # 多区取 max:任一区 > 阈即占位(占位时 stack/id 都高,空座两区都≈0)。
@@ -2212,6 +2242,10 @@ class PipelineOrchestrator:
                     logger.debug(f"seat_{sidx} stack OCR jump {prev_stack}→{stack_now}, "
                                  f"likely digit miss, keeping prev")
                     stack_now = prev_stack
+
+            # #243 第一步:影子 all-in 检测(stack→0 稳定 + 活跃集),仅 diag 交叉印证,不改动作
+            if ALLIN_STACKZERO and self.tracker.has_active_hand:
+                self._detect_allin_stackzero(sidx, stack_now)
 
             # fold_area is a MULTI-PURPOSE overlay zone at the avatar center.
             # WePoker shows different things at different game states:

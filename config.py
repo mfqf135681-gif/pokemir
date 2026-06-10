@@ -82,6 +82,12 @@ ACTION_PHASH_LIVE = os.getenv("POKEMIR_ACTION_PHASH_LIVE", "1").lower() in ("1",
 # (rois/empty_refs_<profile>.json,build_empty_refs.py 采)。hamming ≤ 阈 → 像空桌=空座;
 # > 阈 → 占位。喂 rebuy 的"爆码座 absent→present"判定。默认【关】,缺参考文件自动跳过。
 SEAT_OCCUPANCY_LIVE = os.getenv("POKEMIR_SEAT_OCCUPANCY", "0").lower() in ("1", "true", "yes")
+# 2026-06-09 #243 第一步:all-in stack→0 稳定信号【影子检测】(diag-only,不改动作发射)。
+# 离线两段录像验收召回100%;本步 live 旁路 emit `all_in.stack_zero`(座/金额/活跃),
+# 录长局后与现有 OCR all-in 交叉印证 → 验过再让它当家 + 砍 fold OCR。去伪主闸=card_marker
+# 活跃集(本手持牌,非raw occupancy)。默认【开】(纯 diag,零行为变化);=0 关。
+ALLIN_STACKZERO = os.getenv("POKEMIR_ALLIN_STACKZERO", "1").lower() in ("1", "true", "yes")
+ALLIN_ZERO_RUN = int(os.getenv("POKEMIR_ALLIN_ZERO_RUN", "2"))  # 判稳定的连续 0 读帧数(实测单帧0噪声=0,2 即稳)
 
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
