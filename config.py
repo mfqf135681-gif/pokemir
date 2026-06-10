@@ -47,9 +47,12 @@ BATCH_SEAT_OCR = os.getenv("POKEMIR_BATCH_SEAT_OCR", "1").lower() in ("1", "true
 #  纯实验探针/gated 默认关、从未切主链路。)
 # 2026-06-05 杠杆A:live 热路径 stack 读取走【数字配方】(DigitReader,模板匹配,比 EasyOCR
 # 快~10×,bench 实测)而非 EasyOCR。配方主读、读空(全下%/不可读)回落 EasyOCR(认 %=all-in)。
-# 需 rois/digit_templates_<profile>.json(build_digit_templates.py 产)。默认【关】零行为变化;
-# POKEMIR_DIGIT_RECIPE_LIVE=1 开。先 stack,验准/提速后再推 amount。
-DIGIT_RECIPE_LIVE = os.getenv("POKEMIR_DIGIT_RECIPE_LIVE", "0").lower() in ("1", "true", "yes")
+# 需 rois/digit_templates_<profile>.json(build_digit_templates.py 产)。
+# 2026-06-10 默认 0→1:#243 根因——EasyOCR 的 CRAFT 把全下座【孤立"0"】当噪点丢成 None,
+# digit_reader 列墨切割能读成 0(probe_stack_zero 验过)→ DIGIT_RECIPE_LIVE 关时 stack→0 信号哑、
+# all_in.stack_zero 一直 0。开它 → 全下 stack 读 0 → #243 活;且 stack 快 ~10×。缺模板自动回落 EasyOCR。
+# POKEMIR_DIGIT_RECIPE_LIVE=0 可回退。
+DIGIT_RECIPE_LIVE = os.getenv("POKEMIR_DIGIT_RECIPE_LIVE", "1").lower() in ("1", "true", "yes")
 # 2026-06-05 杠杆D.1:每 tick 抓【一次整窗】存缓存,capture_roi 从缓存切片,替掉~37 次
 # 独立 mss grab(Stage0 实测 seat_actions 里 ~900ms 未计时=这些 grab)。像素字节级等价、
 # 行为不变。2026-06-09:默认【开】——tools/verify_frame_capture.py 实测真窗口 108/108 ROI

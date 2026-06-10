@@ -2450,7 +2450,8 @@ class PipelineOrchestrator:
                 # Diagnostic: log every state-changed action OCR result, even when
                 # parser fails. Critical for raise-detection diagnosis.
                 parsed_label = parsed["action_type"].value if parsed else "UNPARSED"
-                logger.info(f"[OCR seat_{sidx}] text={action_text!r} -> {parsed_label}")
+                # 2026-06-10:标签改 [OCR]→[act](动作走 phash #240,不是 OCR;旧名误导)。
+                logger.info(f"[act seat_{sidx}] text={action_text!r} -> {parsed_label}")
                 if parsed is None:
                     continue
                 # #235 摊牌闸:本手已进结算后,fold_ocr 读到的"盖牌/弃牌"是摊牌 muck(决策点之后)→
