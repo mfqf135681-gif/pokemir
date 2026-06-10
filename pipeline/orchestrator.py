@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE, ALLIN_STACKZERO, ALLIN_ZERO_RUN
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE, ALLIN_STACKZERO, ALLIN_ZERO_RUN, SHOWDOWN_GATE, SHOWDOWN_WHITE_TH
 from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips
 from difflib import get_close_matches
 
@@ -292,6 +292,7 @@ class PipelineOrchestrator:
         self._blinds_attempts = 0
         self._active_set: set = set()
         self._az_state: dict = {}  # #243 第一步:per-seat all-in stack→0 影子检测态(每手 reset)
+        self._showdown_latched = False  # #235 摊牌闸:本手是否已进结算(latch 后压制假弃牌;每手 reset)
         # P2a(2026-06-06):活跃集 silent-fold 救援状态。_hand_dealt_seats=本手见过牌的座,
         # _seat_gone_ticks=各座 card_marker 连续消失帧数(去抖)。补 fold_ocr 漏的弃牌。
         self._hand_dealt_seats: set = set()
@@ -643,6 +644,7 @@ class PipelineOrchestrator:
     def _start_new_hand(self, db, hero_1, hero_2):
         hand = self.tracker.start_new_hand()
         self._az_state = {}  # #243:新手清 all-in stack→0 影子检测态(每手一座只 emit 一次)
+        self._showdown_latched = False  # #235:新手清摊牌闸 latch
         c1 = self.card_recognizer.recognize_single(hero_1)
         c2 = self.card_recognizer.recognize_single(hero_2)
         hand.hero_cards = []
@@ -807,6 +809,14 @@ class PipelineOrchestrator:
         """P0(2026-06-06)每 tick:读精确活跃集(standing per-tick 信号)+ on-change 诊断(记 fold
         转移,喂 P1)+ 惰性盲注注入(发牌完成=活跃集非空才派,治按钮切手超前发牌的 ~19% 漏派)。"""
         active = self._detect_active_set(emit=False)
+        # #235 摊牌闸 latch:未弃座亮白角 = 对抗者揭牌 → 本手进结算(已弃座白角=主动亮牌,不算 →
+        # 治"弃后主动亮牌"边界;白角无条件检 → 治"剔活跃集就不看"race)。latch 后压制结算期假弃牌。
+        if SHOWDOWN_GATE and not self._showdown_latched and self.tracker.current_hand is not None:
+            reveal = self._detect_showdown_corner() - self.tracker._folded_seats
+            if reveal:
+                self._showdown_latched = True
+                diag.emit("showdown.latched", {"seats": sorted(reveal), "by": "showdown_corner"},
+                          hand_id=self.tracker.current_hand.id)
         # on-change 诊断:成员变才记(入场/弃牌/手末)→ 天然就是 fold 转移记录,不每 tick 刷库
         if active != self._active_set:
             cc = (self.tracker.current_hand.community_cards or {}) if self.tracker.current_hand else {}
@@ -834,7 +844,8 @@ class PipelineOrchestrator:
                     continue
                 self._seat_gone_ticks[s] = self._seat_gone_ticks.get(s, 0) + 1
                 if (cur_street != "river" and self._seat_gone_ticks[s] >= 2
-                        and s not in self.tracker._folded_seats):
+                        and s not in self.tracker._folded_seats
+                        and not (SHOWDOWN_GATE and self._showdown_latched)):  # #235:摊牌后 card_marker 消失=亮牌非弃牌,不补
                     self._rescue_silent_fold(db, s, cur_street)
         # 惰性盲注注入:等发牌完成(活跃非空)才派;非空但定不出 SB/BB 也不再重试(那是按钮/活跃问题非时机)
         if self._blinds_pending:
@@ -2442,6 +2453,13 @@ class PipelineOrchestrator:
                 logger.info(f"[OCR seat_{sidx}] text={action_text!r} -> {parsed_label}")
                 if parsed is None:
                     continue
+                # #235 摊牌闸:本手已进结算后,fold_ocr 读到的"盖牌/弃牌"是摊牌 muck(决策点之后)→
+                # 截断不收(治普通局那种 conf1.0"盖牌"假弃牌;all-in 者/赢家不会被记 fold)。
+                if (SHOWDOWN_GATE and self._showdown_latched
+                        and parsed["action_type"] == ActionType.FOLD):
+                    diag.emit("showdown.fold_suppressed", {"seat": sidx, "text": action_text},
+                              hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
+                    continue
 
                 position_str = self.tracker.get_position(sidx)
                 try:
@@ -2930,6 +2948,24 @@ class PipelineOrchestrator:
             diag.emit("active_set.detected", {"active": sorted(active), "hammings": cands, "th": th},
                       hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
         return active
+
+    def _detect_showdown_corner(self):
+        """#235 摊牌闸:每 tick 【无条件】检 showdown_corner 白角(所有有该框的座,**不受活跃集/skip**
+        — 治"牌背消失→剔活跃集→不再看→漏摊牌信号"那个 race)。白计数(S<=60 & V>=180)≥
+        SHOWDOWN_WHITE_TH = 该座亮牌。返回亮牌座 set。18001帧验:摊牌81-156 vs 非摊牌≤20。⚠️ cv2 Win-only。"""
+        showing = set()
+        for seat_roi in self.roi_manager.rois.seat_regions:
+            roi = seat_roi.showdown_corner
+            if roi is None or getattr(roi, "width", 0) < 2:
+                continue
+            img = self.capturer.capture_roi(roi)
+            if img is None or img.size == 0:
+                continue
+            bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR) if img.shape[2] == 4 else img
+            hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+            if int(((hsv[..., 1] <= 60) & (hsv[..., 2] >= 180)).sum()) >= SHOWDOWN_WHITE_TH:
+                showing.add(seat_roi.seat_index)
+        return showing
 
     def _scan_button_white_frac(self, white_th=170, frac_th=0.12):
         """白占比 argmax 扫各座 button_indicator → (button_seat|None, candidates)。

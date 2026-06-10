@@ -139,6 +139,7 @@ class TableROIs:
                 fold_text_area=_tuple_to_roi(s["fold_text"], "seat_fold_text") if s.get("fold_text") else None,
                 card_marker=_tuple_to_roi(s["card_marker"], "seat_card_marker") if s.get("card_marker") else None,
                 card_marker_ref=s.get("card_marker_ref"),
+                showdown_corner=_tuple_to_roi(s["showdown_corner"], "seat_showdown") if s.get("showdown_corner") else None,
             )
             rois.seat_regions.append(seat)
         return rois
@@ -189,6 +190,10 @@ class SeatROI:
                                               # 向后兼容:None 时 pipeline 回落现有 fold_area 路径.
                                               # 标定见 requirement-discussions/
                                               # 2026-05-31_dual-ocr-paradigm-and-hand-edge-detection.md §23.
+    showdown_corner: ROIRegion | None = None  # #235(2026-06-09,替原 allin_star_area):摊牌时该座
+                                              # 亮牌【左下白角】检测区。白计数≥阈=该座亮牌(摊牌信号);
+                                              # 18001帧验:摊牌81-156 vs 非摊牌≤20,阈50可分、零误抓、持久。
+                                              # 喂摊牌闸 latch(未弃座亮白角=对抗者揭牌)。None=该座无此信号。
 
 
 class ROIManager:

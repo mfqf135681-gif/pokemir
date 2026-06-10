@@ -88,6 +88,12 @@ SEAT_OCCUPANCY_LIVE = os.getenv("POKEMIR_SEAT_OCCUPANCY", "0").lower() in ("1", 
 # 活跃集(本手持牌,非raw occupancy)。默认【开】(纯 diag,零行为变化);=0 关。
 ALLIN_STACKZERO = os.getenv("POKEMIR_ALLIN_STACKZERO", "1").lower() in ("1", "true", "yes")
 ALLIN_ZERO_RUN = int(os.getenv("POKEMIR_ALLIN_ZERO_RUN", "1"))  # 首个0即发(实测无单帧0噪声;v1 用2+瞬时闸→0命中,改1+was_active latch)
+# 2026-06-09 #235 第一步:摊牌闸。showdown_corner 白角(未弃座亮牌)→ 本手 latch 结算 →
+# 压制结算期假弃牌(silent-fold 救援 + fold_ocr 盖牌/弃牌)。治三手深挖那个"全下者/赢家弃牌"
+# 污染(card_marker 摊牌消失被误判弃)。18001帧验白角可分(摊牌81-156 vs 非摊牌≤20)。
+# 默认【开】(缺 showdown_corner 框自动跳过=零风险)。=0 关回旧行为。
+SHOWDOWN_GATE = os.getenv("POKEMIR_SHOWDOWN_GATE", "1").lower() in ("1", "true", "yes")
+SHOWDOWN_WHITE_TH = int(os.getenv("POKEMIR_SHOWDOWN_WHITE_TH", "50"))  # 白计数≥此=亮牌(baseline≤20、摊牌81+,50在空白处)
 
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
