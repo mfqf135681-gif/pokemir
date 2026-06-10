@@ -2738,11 +2738,24 @@ class PipelineOrchestrator:
         self.tracker._pot_before_tick = self.tracker.latest_pot_bb
 
         pot_img = self.capturer.capture_roi(rois.pot_size)
-        pot_text = self.ocr.read_text(pot_img)
-        amount = ActionRecognizer._extract_amount(pot_text)
+        # 2026-06-10:pot 数字走【digit 配方】(替 EasyOCR read_text)——准度↑、与 stack 读法一致、
+        # live 不再依赖 EasyOCR 读 pot 数字(原 self.ocr.read_text 走 EasyOCR,录像99%是配方/probe 的,
+        # live 这条从没自验过)。读空 → 回落 EasyOCR。
+        # "总底池"开手兜底只在 BUTTON_CUT=0 才需(BUTTON_CUT 开时该路 75min/94手 fire=0,实测死路)
+        # → BUTTON_CUT 开时跳过 EasyOCR 文本读,省一次 OCR;关时仍读文本喂下方"总底池"块。
+        amount = None
+        pot_text = None
+        if DIGIT_RECIPE_LIVE and self._digit_reader is not None:
+            _v = self._reader_for("pot_size").read(pot_img)
+            if _v is not None:
+                amount = float(_v)
+        if amount is None or not BUTTON_CUT:
+            pot_text = self.ocr.read_text(pot_img)
+            if amount is None:
+                amount = ActionRecognizer._extract_amount(pot_text)
 
-        # 信源验证旁路抽头(约束①⑤):抽【原始逐帧读 amount】——在下游 hand-start/单调性闸之前,
-        # 验的就是"给定这帧 pot_img,读得准不准",不掺时序语义。LABEL_SIGNAL 空时整段 no-op。
+        # 信源验证旁路抽头(约束①⑤):抽最终逐帧读 amount(配方 or EasyOCR 兜底)——在下游
+        # hand-start/单调性闸之前,验"给定这帧 pot_img 读得准不准",不掺时序语义。LABEL_SIGNAL 空→no-op。
         if self._labeler.enabled:
             _reason = "change" if (amount is not None and amount != self.tracker.latest_pot_bb) else "tick"
             self._labeler.tap("pot_size", pot_img, amount, raw_text=pot_text,
