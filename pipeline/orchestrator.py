@@ -17,6 +17,7 @@ from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
 from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE, ALLIN_STACKZERO, ALLIN_ZERO_RUN, SHOWDOWN_GATE, SHOWDOWN_WHITE_TH
 from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips
+from pipeline.label_capture import LabelCapturer  # 信源验证标注采集侧(LABEL_SIGNAL 空时全 no-op)
 from difflib import get_close_matches
 
 import cv2
@@ -299,6 +300,7 @@ class PipelineOrchestrator:
         self._seat_gone_ticks: dict = {}
 
         self.tracker = StateTracker()
+        self._labeler = LabelCapturer()  # 信源验证:旁路抽头目标信号(LABEL_SIGNAL 空→禁用)
 
         # #10 Load persistent player registry (avatar fingerprints) from disk
         registry = _load_player_registry()
@@ -2738,6 +2740,15 @@ class PipelineOrchestrator:
         pot_img = self.capturer.capture_roi(rois.pot_size)
         pot_text = self.ocr.read_text(pot_img)
         amount = ActionRecognizer._extract_amount(pot_text)
+
+        # 信源验证旁路抽头(约束①⑤):抽【原始逐帧读 amount】——在下游 hand-start/单调性闸之前,
+        # 验的就是"给定这帧 pot_img,读得准不准",不掺时序语义。LABEL_SIGNAL 空时整段 no-op。
+        if self._labeler.enabled:
+            _reason = "change" if (amount is not None and amount != self.tracker.latest_pot_bb) else "tick"
+            self._labeler.tap("pot_size", pot_img, amount, raw_text=pot_text,
+                              wide_frame=self.capturer.get_cached_frame(), roi=rois.pot_size,
+                              hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None),
+                              reason=_reason)
 
         # Hand-start signal via 总底池 label (observer-mode fallback when hero ROI
         # is unchanged + community-reset window is too narrow for 250 ms tick).

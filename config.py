@@ -97,6 +97,11 @@ ALLIN_ZERO_RUN = int(os.getenv("POKEMIR_ALLIN_ZERO_RUN", "1"))  # 首个0即发(
 # 默认【开】(缺 showdown_corner 框自动跳过=零风险)。=0 关回旧行为。
 SHOWDOWN_GATE = os.getenv("POKEMIR_SHOWDOWN_GATE", "1").lower() in ("1", "true", "yes")
 SHOWDOWN_WHITE_TH = int(os.getenv("POKEMIR_SHOWDOWN_WHITE_TH", "50"))  # 白计数≥此=亮牌(baseline≤20、摊牌81+,50在空白处)
+# 2026-06-10 信源验证标注【采集侧】(主题-信源验证):主程序全速跑,旁路抽头【目标信号】的
+# (识别器实际吃的crop + 逐帧读值 + 宽图画ROI框)存盘,供 tools/label_signal.py 盲标产 ground truth。
+# 空=【关】零开销;POKEMIR_LABEL_SIGNAL=pot_size 开(先跑通总底池闭环)。五硬约束见主题文档。
+LABEL_SIGNAL = os.getenv("POKEMIR_LABEL_SIGNAL", "").strip()
+LABEL_DIR = os.getenv("POKEMIR_LABEL_DIR", os.path.join("data", "label_sessions"))
 
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")
