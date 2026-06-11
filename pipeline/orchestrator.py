@@ -303,6 +303,8 @@ class PipelineOrchestrator:
         self._labeler = LabelCapturer()  # 信源验证:旁路抽头目标信号(LABEL_SIGNAL 空→禁用)
         self._pot_debounce = {}          # pot 防抖游程({pending,count});换手 _start_new_hand 重置
         self._pot_label_latched = False  # 总底池颜色判定:本手是否已 latch 结算帧;每手 reset
+        self._action_amt_wait = {}       # A(amount抓帧):每座"等金额settle"已跳帧数;记录/换手 reset
+        self._AMT_SETTLE_MAX = 3         # 金额None最多等这么多帧(实测frame2即settle;此为永不settle的cap)
         # 总底池检测改【颜色】(2026-06-10):phash 因 8×8 下"总底池"汉字 vs 数字形状太像(inter=2)
         # 放弃;实测总底池=高饱和青字(白V>180像素=0)、数字=白(白V>180一堆)→ 颜色干净可分。
         # 先 shadow 量 white/teal 两计数(_pot_label_color)→ live 出分布再定阈,同 showdown_corner。
@@ -657,6 +659,7 @@ class PipelineOrchestrator:
         self._showdown_latched = False  # #235:新手清摊牌闸 latch
         self._pot_debounce = {}  # 新手清 pot 防抖游程(新手底池从小重起,别和上手游程串)
         self._pot_label_latched = False  # 新手清总底池结算 latch(每手一个结算帧)
+        self._action_amt_wait = {}  # 新手清"等金额settle"跳帧计数
         c1 = self.card_recognizer.recognize_single(hero_1)
         c2 = self.card_recognizer.recognize_single(hero_2)
         hand.hero_cards = []
@@ -2457,7 +2460,10 @@ class PipelineOrchestrator:
                     self.tracker._prev_stack[sidx] = stack_now
                 continue
 
-            if self.tracker.check_action_change(sidx, action_text):
+            # A(2026-06-11):等金额 settle 期间(_action_amt_wait>0)即使 action_text 没变也重入 —
+            # 否则金额永不 append("加注"恒定)时 check_action_change 恒 False、块被跳过、wait-cap 永不
+            # 触发 → 动作丢失。有 pending wait 就强制重入,直到金额 settle 或 wait-cap 记录(防回归)。
+            if self.tracker.check_action_change(sidx, action_text) or self._action_amt_wait.get(sidx, 0) > 0:
                 parsed = self.action_recognizer.parse(action_text)
                 # Diagnostic: log every state-changed action OCR result, even when
                 # parser fails. Critical for raise-detection diagnosis.
@@ -2578,6 +2584,19 @@ class PipelineOrchestrator:
                 if amount_override_reason:
                     logger.info(f"[amount兜底] seat_{sidx} {amount_override_reason}")
                     event.amount = new_amount
+
+                # A(2026-06-11)amount 抓帧时机修:bet/call/raise 金额在动作 overlay 首帧还在动画 →
+                # recipe 返 None(label 实测每事件 frame1=None→frame2=值);overlay 持续 4-8 tick(T46-B)→
+                # 【推迟 commit】:金额 None 时本帧不记录(也不设 dedup 时间戳)→ 下帧金额 settle 读到后,
+                # action_text 变("加注"→"加注 30")→ check_action_change 视为变 → fresh 记录。最多等
+                # _AMT_SETTLE_MAX 帧(防永不 settle 卡死),超则记 None。check/fold/all-in 无金额不等。
+                # 跳帧不走 2457(那是 idle 路)也到不了 2751 → _prev_stack 保持动作前值,stack_delta 反而更准。
+                if (final_action in (ActionType.BET, ActionType.RAISE, ActionType.CALL)
+                        and event.amount is None
+                        and self._action_amt_wait.get(sidx, 0) < self._AMT_SETTLE_MAX):
+                    self._action_amt_wait[sidx] = self._action_amt_wait.get(sidx, 0) + 1
+                    continue
+                self._action_amt_wait[sidx] = 0
 
                 event.raw_data = {
                     "action_text": action_text,
