@@ -819,6 +819,10 @@ class PipelineOrchestrator:
         diag.emit("post.injection_done",
                   {"seat": seat_idx, "player": player_name, "action": action_type.value,
                    "amount": amount, "source": "table_input"}, hand_id=hand.id)
+        # A′(2026-06-11):盲注播种本街金额地板 — SB/BB 投入即本街显示下限,供 amount settle 闸
+        # 识别"动作首帧读到旧盲注值"(live 实测 SB call 记 20=小盲 10/11、BB raise 记 40=大盲 5/5)。
+        if action_type in (ActionType.POST_SB, ActionType.POST_BB):
+            self.tracker._street_amt_max = max(self.tracker._street_amt_max, amount)
 
     def _tick_active_set_and_blinds(self, db):
         """P0(2026-06-06)每 tick:读精确活跃集(standing per-tick 信号)+ on-change 诊断(记 fold
@@ -2591,11 +2595,27 @@ class PipelineOrchestrator:
                 # action_text 变("加注"→"加注 30")→ check_action_change 视为变 → fresh 记录。最多等
                 # _AMT_SETTLE_MAX 帧(防永不 settle 卡死),超则记 None。check/fold/all-in 无金额不等。
                 # 跳帧不走 2457(那是 idle 路)也到不了 2751 → _prev_stack 保持动作前值,stack_delta 反而更准。
-                if (final_action in (ActionType.BET, ActionType.RAISE, ActionType.CALL)
-                        and event.amount is None
+                # A′(2026-06-11)陈旧值扩展:None 治好后 live 数据现第二模式 — 该座动作前 overlay
+                # 已挂旧数字(盲注/本街先前投入),动作首帧读到旧值非 None → 立刻提交错值(09:26 场
+                # SB call 记 20=小盲 10/11、BB raise 记 40=大盲 5/5、raise≤bb 共 9/25)。规则:
+                # call 的 settle 显示(本街累计)必 ≥ 本街已提交最高注 _street_amt_max(盲注播种 bb),
+                # bet/raise 必 >;不满足视同未 settle 继续等。地板被误抬高也只多等到 cap(那时读数
+                # 已 settle=真值,照常提交),不丢事件;cap 后仍陈旧 emit 诊断留痕。
+                _needs_amt = final_action in (ActionType.BET, ActionType.RAISE, ActionType.CALL)
+                _amt_floor = self.tracker._street_amt_max
+                _amt_stale = (_needs_amt and event.amount is not None and _amt_floor > 0
+                              and (event.amount < _amt_floor if final_action == ActionType.CALL
+                                   else event.amount <= _amt_floor))
+                if (_needs_amt and (event.amount is None or _amt_stale)
                         and self._action_amt_wait.get(sidx, 0) < self._AMT_SETTLE_MAX):
                     self._action_amt_wait[sidx] = self._action_amt_wait.get(sidx, 0) + 1
                     continue
+                if _amt_stale:
+                    diag.emit("amount.stale_suspect",
+                              {"seat": sidx, "action": final_action.value, "amount": event.amount,
+                               "street_amt_max": _amt_floor,
+                               "waited": self._action_amt_wait.get(sidx, 0)},
+                              hand_id=self.tracker.current_hand.id)
                 self._action_amt_wait[sidx] = 0
 
                 event.raw_data = {
@@ -2728,6 +2748,10 @@ class PipelineOrchestrator:
                     _pt = time.perf_counter()
                     self.event_repo.create(db, event)
                     sub_ms["seat_parse_persist"] += (time.perf_counter() - _pt) * 1000.0
+
+                # A′:过门(高桩)事件金额抬本街地板 — 低桩 skip/dedup skip 不算(dedup 同值已计)
+                if _needs_amt and event.amount is not None:
+                    self.tracker._street_amt_max = max(self.tracker._street_amt_max, event.amount)
 
                 # T1 Visual debug artifacts: low-confidence events get a screenshot
                 # dump for human review. User can browse data/review/<hand_id>/ +
