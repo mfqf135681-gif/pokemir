@@ -305,6 +305,7 @@ class PipelineOrchestrator:
         self._pot_label_latched = False  # 总底池颜色判定:本手是否已 latch 结算帧;每手 reset
         self._action_amt_wait = {}       # A(amount抓帧):每座"等金额settle"已跳帧数;记录/换手 reset
         self._AMT_SETTLE_MAX = 3         # 金额None最多等这么多帧(实测frame2即settle;此为永不settle的cap)
+        self._action_blank_run = {}      # 吞街修:每座动作区连续空白帧数;≥2 清 prev 文本(详见 idle 路注释)
         # 总底池检测改【颜色】(2026-06-10):phash 因 8×8 下"总底池"汉字 vs 数字形状太像(inter=2)
         # 放弃;实测总底池=高饱和青字(白V>180像素=0)、数字=白(白V>180一堆)→ 颜色干净可分。
         # 先 shadow 量 white/teal 两计数(_pot_label_color)→ live 出分布再定阈,同 showdown_corner。
@@ -672,6 +673,7 @@ class PipelineOrchestrator:
         self._pot_debounce = {}  # 新手清 pot 防抖游程(新手底池从小重起,别和上手游程串)
         self._pot_label_latched = False  # 新手清总底池结算 latch(每手一个结算帧)
         self._action_amt_wait = {}  # 新手清"等金额settle"跳帧计数
+        self._action_blank_run = {}  # 新手清动作区空白游程(prev 文本本身由 detector reset 清)
         c1 = self.card_recognizer.recognize_single(hero_1)
         c2 = self.card_recognizer.recognize_single(hero_2)
         hand.hero_cards = []
@@ -2474,7 +2476,18 @@ class PipelineOrchestrator:
                 # an accurate stack_before reading from the same baseline.
                 if stack_now is not None:
                     self.tracker._prev_stack[sidx] = stack_now
+                # 吞街修(2026-06-11 验尸):check_action_change 的 prev 文本只在非空时更新、
+                # 空白期从不清 → "flop过牌→空白→turn又过牌"被判没变化,整街隐身(133手审计
+                # 6 例,全是 turn 过牌街)。空白【连续 ≥2 帧】才清(单帧闪烁不清,防 OCR/phash
+                # 抖动出"清→同 overlay 重读→重录";真清后的跨街重录由 dedup 按(player,street,
+                # action)键放行——街不同,合法)。已知残余:气泡若跨街完全不消失则无空白可依,
+                # 图像层不可分,留 P2 金额轨迹桩。
+                _run = self._action_blank_run.get(sidx, 0) + 1
+                self._action_blank_run[sidx] = _run
+                if _run == 2:
+                    self.tracker._prev_action_texts.pop(sidx, None)
                 continue
+            self._action_blank_run[sidx] = 0
 
             # A(2026-06-11):等金额 settle 期间(_action_amt_wait>0)即使 action_text 没变也重入 —
             # 否则金额永不 append("加注"恒定)时 check_action_change 恒 False、块被跳过、wait-cap 永不
