@@ -4,12 +4,13 @@
 存盘,**不阻塞 tick、不改任何 production 行为**。供 tools/label_signal.py 盲标产 ground truth。
 
 五硬约束落点:
-  ① 全速 tick 旁路抽头 —— 这是个被动 tap,主循环照常全速跑;抽的就是 production 那条路实际产出的值。
-  ③ 事件触发采样 —— _EVENT_REASONS(变值/全下/摊牌/换手)必采(覆盖尾部:大池/全下),稳态按时间地板稀采。
-  ④ 宽图防框歪 —— 除 crop 另存整窗帧并画出 ROI 框,标注时能看出框有没有切歪/框错位。
-  附:crop 必须是识别器**实际吃的那块**(调用方传读时的 img,非事后重抓)。
+  ① 全速 tick 旁路抽头 —— 被动 tap,主循环照常全速跑;抽的就是 production 那条路实际产出的值。
+  ③ 事件触发采样 —— 去重对【上一张采的读值】(非 production 状态,治"production 卡住→狂存同值"):
+     读值变了立即采(覆盖所有不同值含尾部大池),稳态每隔 interval 补一张(清晰样本喂模板);采够 max 停。
+  ④ 宽图防框歪 —— 除 crop 另存整窗帧并画 ROI 框。
+  附:crop 必须是识别器**实际吃的那块**(调用方传读时的 img)。
 
-空 LABEL_SIGNAL → enabled=False → 所有 tap() 第一行 return,零开销零行为变化。
+空 LABEL_SIGNAL → enabled=False → tap() 全 no-op,零开销零行为变化。
 """
 import json
 import os
@@ -20,19 +21,22 @@ try:
 except ImportError:  # Linux smoke 无 cv2 时不致命(采集侧只在 Win live 跑)
     cv2 = None
 
-from config import LABEL_SIGNAL, LABEL_DIR
+from config import LABEL_SIGNAL, LABEL_DIR, LABEL_MAX, LABEL_INTERVAL_SEC
+
+_UNSET = object()
 
 
 class LabelCapturer:
-    # 约束③:这些 reason 必采(尾部覆盖);其余(稳态 "tick")按 floor_sec 时间地板稀采。
-    _EVENT_REASONS = {"change", "allin", "showdown", "hand_start", "big"}
-
-    def __init__(self, signal: str = None, out_dir: str = LABEL_DIR, floor_sec: float = 8.0):
+    def __init__(self, signal: str = None, out_dir: str = LABEL_DIR,
+                 interval_sec: float = LABEL_INTERVAL_SEC, max_n: int = LABEL_MAX):
         self.signal = (signal if signal is not None else LABEL_SIGNAL) or ""
         self.enabled = bool(self.signal) and cv2 is not None
-        self.floor_sec = floor_sec
+        self.interval = interval_sec
+        self.max_n = max_n
+        self._last_value = _UNSET     # 上一张【采过】的读值(去重基准,非 production 状态)
         self._last_emit = 0.0
         self._n = 0
+        self._done_announced = False
         self._session_dir = None
         self._jsonl = None
         if self.enabled:
@@ -40,19 +44,37 @@ class LabelCapturer:
             self._session_dir = os.path.join(out_dir, f"{self.signal}_{stamp}")
             os.makedirs(self._session_dir, exist_ok=True)
             self._jsonl = os.path.join(self._session_dir, "samples.jsonl")
+            print(f"[label] 采集 '{self.signal}' → {self._session_dir}(目标 {max_n} 张,间隔 {interval_sec}s)",
+                  flush=True)
+
+    def _should_emit(self, read_value, now):
+        """去重 + 间隔决策。读值变了(对上一张采的)→采;否则每 interval 补一张。"""
+        changed = (read_value != self._last_value)
+        if changed:
+            return "change"
+        if (now - self._last_emit) >= self.interval:
+            return "interval"
+        return None
 
     def tap(self, signal, crop, read_value, raw_text=None, wide_frame=None,
-            roi=None, hand_id=None, reason="tick"):
-        """读完目标信号即调一次。signal≠目标 / 未开 → no-op。
-        crop = 识别器实际吃的那块(读时的 img);wide_frame = capturer.get_cached_frame()(整窗,可None)。"""
+            roi=None, hand_id=None):
+        """读完目标信号即调一次。signal≠目标 / 未开 / 采满 → no-op。
+        crop = 识别器实际吃的那块;wide_frame = capturer.get_cached_frame()(整窗,可 None)。"""
         if not self.enabled or signal != self.signal:
+            return
+        if self._n >= self.max_n:
+            if not self._done_announced:
+                print(f"[label] ✅ 已采满 {self.max_n} 张 → 可 Ctrl-C 停,然后 "
+                      f"python tools/label_signal.py {self._session_dir}", flush=True)
+                self._done_announced = True
             return
         if crop is None or getattr(crop, "size", 0) == 0:
             return
         now = time.time()
-        is_event = reason in self._EVENT_REASONS
-        if not is_event and (now - self._last_emit) < self.floor_sec:
-            return  # 稳态稀采:时间地板内不重复存(约束③不让"按秒"刷屏淹没尾部)
+        reason = self._should_emit(read_value, now)
+        if reason is None:
+            return
+        self._last_value = read_value
         self._last_emit = now
         sid = self._n
         self._n += 1

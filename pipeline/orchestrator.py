@@ -16,7 +16,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
 from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE, ALLIN_STACKZERO, ALLIN_ZERO_RUN, SHOWDOWN_GATE, SHOWDOWN_WHITE_TH
-from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips
+from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips, pot_debounce_step
 from pipeline.label_capture import LabelCapturer  # 信源验证标注采集侧(LABEL_SIGNAL 空时全 no-op)
 from difflib import get_close_matches
 
@@ -301,6 +301,7 @@ class PipelineOrchestrator:
 
         self.tracker = StateTracker()
         self._labeler = LabelCapturer()  # 信源验证:旁路抽头目标信号(LABEL_SIGNAL 空→禁用)
+        self._pot_debounce = {}          # pot 防抖游程({pending,count});换手 _start_new_hand 重置
 
         # #10 Load persistent player registry (avatar fingerprints) from disk
         registry = _load_player_registry()
@@ -647,6 +648,7 @@ class PipelineOrchestrator:
         hand = self.tracker.start_new_hand()
         self._az_state = {}  # #243:新手清 all-in stack→0 影子检测态(每手一座只 emit 一次)
         self._showdown_latched = False  # #235:新手清摊牌闸 latch
+        self._pot_debounce = {}  # 新手清 pot 防抖游程(新手底池从小重起,别和上手游程串)
         c1 = self.card_recognizer.recognize_single(hero_1)
         c2 = self.card_recognizer.recognize_single(hero_2)
         hand.hero_cards = []
@@ -2738,30 +2740,28 @@ class PipelineOrchestrator:
         self.tracker._pot_before_tick = self.tracker.latest_pot_bb
 
         pot_img = self.capturer.capture_roi(rois.pot_size)
-        # 2026-06-10:pot 数字走【digit 配方】(替 EasyOCR read_text)——准度↑、与 stack 读法一致、
-        # live 不再依赖 EasyOCR 读 pot 数字(原 self.ocr.read_text 走 EasyOCR,录像99%是配方/probe 的,
-        # live 这条从没自验过)。读空 → 回落 EasyOCR。
-        # "总底池"开手兜底只在 BUTTON_CUT=0 才需(BUTTON_CUT 开时该路 75min/94手 fire=0,实测死路)
-        # → BUTTON_CUT 开时跳过 EasyOCR 文本读,省一次 OCR;关时仍读文本喂下方"总底池"块。
+        # 2026-06-10:pot 走 digit 配方 + 【砍 EasyOCR 兜底】。实测 13/13 污染帧(飞筹码/总底池/半截数字)
+        # 都是 EasyOCR 兜底【硬编数】(咨0→0、鸵5→5、13353…),配方在它们上正确返 None。
+        # → 配方开:读不出=本帧无读(None,不回落)→ 下方防抖 hold 上值,污染基本归零。
+        # 例外:BUTTON_CUT=0 仍读 EasyOCR 文本喂"总底池"开手兜底(该路 BUTTON_CUT 开时 75min/94手 fire=0)。
+        # 配方关(POKEMIR_DIGIT_RECIPE_LIVE=0):退回旧 EasyOCR 全路径。
         amount = None
         pot_text = None
         if DIGIT_RECIPE_LIVE and self._digit_reader is not None:
             _v = self._reader_for("pot_size").read(pot_img)
             if _v is not None:
                 amount = float(_v)
-        if amount is None or not BUTTON_CUT:
+            if not BUTTON_CUT:
+                pot_text = self.ocr.read_text(pot_img)  # 仅为"总底池"开手兜底(BUTTON_CUT=0 旧路)
+        else:
             pot_text = self.ocr.read_text(pot_img)
-            if amount is None:
-                amount = ActionRecognizer._extract_amount(pot_text)
+            amount = ActionRecognizer._extract_amount(pot_text)
 
-        # 信源验证旁路抽头(约束①⑤):抽最终逐帧读 amount(配方 or EasyOCR 兜底)——在下游
-        # hand-start/单调性闸之前,验"给定这帧 pot_img 读得准不准",不掺时序语义。LABEL_SIGNAL 空→no-op。
+        # 信源验证旁路抽头(约束①⑤):抽原始逐帧读 amount(配方,None=未读);采样去重在 LabelCapturer 内。
         if self._labeler.enabled:
-            _reason = "change" if (amount is not None and amount != self.tracker.latest_pot_bb) else "tick"
             self._labeler.tap("pot_size", pot_img, amount, raw_text=pot_text,
                               wide_frame=self.capturer.get_cached_frame(), roi=rois.pot_size,
-                              hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None),
-                              reason=_reason)
+                              hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
 
         # Hand-start signal via 总底池 label (observer-mode fallback when hero ROI
         # is unchanged + community-reset window is too narrow for 250 ms tick).
@@ -2789,6 +2789,12 @@ class PipelineOrchestrator:
             self._start_new_hand(db, hero_1, hero_2)
             # start_new_hand reset latest_pot_bb=None and _hand_pot_peak=None;
             # the guard below will pass and amount becomes the new hand's first pot reading.
+
+        # 防抖(2026-06-10):同值连续≥2帧才接受 → 杀单帧动画毛刺 + 尖峰(治 spike-lock:单帧 13353
+        # 到不了 2 帧、永不被接受、也就不会锁死后续正确读)。None=本帧无读 → hold 上一池值。
+        amount = pot_debounce_step(self._pot_debounce, amount)
+        if amount is None:
+            return
 
         # T2 pot monotonicity sanity: pot can only INCREASE within a hand (or stay
         # same). A drop > 10% is almost certainly OCR misread (e.g. lost a digit:

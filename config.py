@@ -102,6 +102,8 @@ SHOWDOWN_WHITE_TH = int(os.getenv("POKEMIR_SHOWDOWN_WHITE_TH", "50"))  # 白计�
 # 空=【关】零开销;POKEMIR_LABEL_SIGNAL=pot_size 开(先跑通总底池闭环)。五硬约束见主题文档。
 LABEL_SIGNAL = os.getenv("POKEMIR_LABEL_SIGNAL", "").strip()
 LABEL_DIR = os.getenv("POKEMIR_LABEL_DIR", os.path.join("data", "label_sessions"))
+LABEL_MAX = int(os.getenv("POKEMIR_LABEL_MAX", "200"))            # 采够张数 → 停存 + 打印提示(Ctrl-C 退)
+LABEL_INTERVAL_SEC = float(os.getenv("POKEMIR_LABEL_INTERVAL", "3.0"))  # 稳态每隔此秒补一张(去重之外的清晰样本)
 
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
 VISION_MODEL = os.getenv("POKEMIR_VISION_MODEL", "HuggingFaceTB/SmolVLM-256M-Instruct")

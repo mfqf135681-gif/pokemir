@@ -463,6 +463,20 @@ def reconcile_underread_amount(action, amount, stack_delta, margin=8, ratio=2):
     return amount, None
 
 
+def pot_debounce_step(state, amount, run_th=2):
+    """pot 防抖(2026-06-10):同值连续 ≥run_th 帧才接受 → 杀单帧动画毛刺/尖峰(治 spike-lock:
+    单帧 13353 永远到不了 2 帧、不被接受)。None=本帧无读(配方在动画帧返 None)→ 不打断游程、
+    不接受(hold 上值)。state={'pending','count'};返回 accepted(float)或 None。纯逻辑,Linux 单测。"""
+    if amount is None:
+        return None
+    if amount == state.get('pending'):
+        state['count'] = state.get('count', 0) + 1
+    else:
+        state['pending'] = amount
+        state['count'] = 1
+    return amount if state['count'] >= run_th else None
+
+
 def reconstruct_hand_chips(initial, final, pot=None, sb=0, bb=0, ante=0):
     """#226 筹码级重建(2026-06-06):从手末全座 stack 端点重建每手 per-seat 净额 + 赢家 + rake。
 
