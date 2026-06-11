@@ -306,6 +306,7 @@ class PipelineOrchestrator:
         self._action_amt_wait = {}       # A(amount抓帧):每座"等金额settle"已跳帧数;记录/换手 reset
         self._AMT_SETTLE_MAX = 3         # 金额None最多等这么多帧(实测frame2即settle;此为永不settle的cap)
         self._action_blank_run = {}      # 吞街修:每座动作区连续空白帧数;≥2 清 prev 文本(详见 idle 路注释)
+        self._hand_id_lock = {}          # ID手内冻结:本手 座位→名字 首用即锁(_hand_player_name);换手清
         # 总底池检测改【颜色】(2026-06-10):phash 因 8×8 下"总底池"汉字 vs 数字形状太像(inter=2)
         # 放弃;实测总底池=高饱和青字(白V>180像素=0)、数字=白(白V>180一堆)→ 颜色干净可分。
         # 先 shadow 量 white/teal 两计数(_pot_label_color)→ live 出分布再定阈,同 showdown_corner。
@@ -674,6 +675,7 @@ class PipelineOrchestrator:
         self._pot_label_latched = False  # 新手清总底池结算 latch(每手一个结算帧)
         self._action_amt_wait = {}  # 新手清"等金额settle"跳帧计数
         self._action_blank_run = {}  # 新手清动作区空白游程(prev 文本本身由 detector reset 清)
+        self._hand_id_lock = {}  # 新手清 ID 冻结(换人合法发生在手间,新手重新首用锁定)
         c1 = self.card_recognizer.recognize_single(hero_1)
         c2 = self.card_recognizer.recognize_single(hero_2)
         hand.hero_cards = []
@@ -792,6 +794,21 @@ class PipelineOrchestrator:
         else:
             self._inject_post_events(db)   # OCR 路径:hand-start 内联(community 未发时盲注 ROI 准)
 
+    def _hand_player_name(self, sidx, default=None):
+        """ID 手内冻结(2026-06-11 验尸):133手审计 24 个洞里 15 个=同手同座名字漂移
+        (fold_area 被 overlay 污染→头像hash连续发散→evict→重认到别名,'11191↔好好千他们'
+        一对就 7 手)。换人只发生在手与手之间 → 本手事件归属【首用即锁】:首次取到真名后,
+        本手内一律用锁定名,_capture_player_ids 的中途改名只影响下一手。
+        占位名(Player_/TempUser_)不锁:TempUser→真名升级有 _upgrade_tempuser_to_real
+        的 DB 同步兜底,锁死反而阻断升级。"""
+        live = self.tracker.player_id_map.get(sidx, default)
+        locked = self._hand_id_lock.get(sidx)
+        if locked is not None:
+            return locked
+        if live is not None and not str(live).startswith(("Player_", "TempUser_")):
+            self._hand_id_lock[sidx] = live
+        return live
+
     def _seat_position(self, seat_idx):
         """seat → Position(取 tracker 位置映射,兜底 BTN;ante 的 position 仅元数据)。"""
         from events.models import Position
@@ -807,7 +824,7 @@ class PipelineOrchestrator:
         """造 1 条 synthetic 强制注 event(POST_SB/BB/ANTE)+ 持久化。玩家未知则跳(不伪造名污染画像)。"""
         if self.tracker.is_skippable_seat(seat_idx):
             return
-        player_name = self.tracker.player_id_map.get(seat_idx)
+        player_name = self._hand_player_name(seat_idx)  # ID 手内冻结:盲注与动作同名源
         if not player_name:
             diag.emit("post.injection_skipped",
                       {"reason": "player_unknown", "seat": seat_idx, "action": action_type.value},
@@ -1186,6 +1203,22 @@ class PipelineOrchestrator:
                                "raw_text": text},
                               hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
                 continue
+            # #239 垃圾名护栏(2026-06-11 审计):纯数字串/超短串 = OCR 把筹码数字、残缺笔画
+            # 当名字读('11191' 系一串筹码值,作为别名吸走真名 7 手;'111'/'0260'/'4111' 同源)。
+            # 不注册、不进下方模糊合并(否则越合并越毒),走 avatar TempUser fallback 保身份连续。
+            # 注意:含数字的真名(KV095/加加288)合法 → 只拒【纯】数字和 len<2,不拒混合。
+            if text.isdigit() or len(text) < 2:
+                if avatar_hash and avatar_hash not in self.tracker._avatar_fingerprints:
+                    temp_name = f"TempUser_{avatar_hash[:8]}"
+                    self.tracker.player_id_map[seat.seat_index] = temp_name
+                    self.tracker._avatar_fingerprints[avatar_hash] = temp_name
+                    diag.emit("player.tempuser_assigned",
+                              {"seat": seat.seat_index, "hash_prefix": avatar_hash[:8],
+                               "temp_name": temp_name, "reason": "garbage_name_rejected",
+                               "raw_text": text},
+                              hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
+                continue
+
             # #3 Fuzzy match against names already in the registry (any seat).
             # cutoff=0.75 chosen so 4-char names with 1-char OCR drift match (ratio
             # 0.75 exactly) while 7-char names with 2-char drift don't (ratio 0.71).
@@ -2518,7 +2551,8 @@ class PipelineOrchestrator:
                 # Detect facing action from previous actions in this hand
                 facing = self._build_facing_action(sidx)
 
-                player_name = self.tracker.player_id_map.get(sidx, f"Player_{sidx}")
+                # ID 手内冻结:本手首用名锁定,中途改名(头像误evict→别名)只影响下一手
+                player_name = self._hand_player_name(sidx, default=f"Player_{sidx}")
                 event = self.tracker.normalizer.create_event(
                     hand=self.tracker.current_hand,
                     player_name=player_name,
