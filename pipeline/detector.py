@@ -53,6 +53,9 @@ class StateTracker:
         # A′(2026-06-11)amount 陈旧值地板:本街已提交(过门)bet/call/raise 金额最大值,盲注注入播种 bb。
         # 区别 _street_to_call(stack_delta 喂,噪声层):此值只收高桩已入库金额,供 amount settle 闸用。
         self._street_amt_max: float = 0.0
+        # A″(2026-06-11)自身规则地板:每座本街已提交金额(盲注播种+过门金额抬高)。call/raise/bet
+        # 必然严格增加自己本街投入 → 新读数 ≤ 此值 = 陈旧(读到自己旧显示);对地板被漏抓污染免疫。
+        self._seat_street_amt: dict[int, float] = {}
         # #4 Avatar image fingerprint registry — maps phash → canonical player name.
         # Persistent across hands (not reset by start_new_hand), forms the foundation
         # of "same avatar = same player" identity regardless of OCR character drift.
@@ -241,6 +244,7 @@ class StateTracker:
                 self._street_to_call = 0.0
                 self._street_has_bet = False
                 self._street_amt_max = 0.0  # A′:新街投入显示清零,地板同步清
+                self._seat_street_amt = {}  # A″:每座本街投入同步清
                 # T106 Sprint 2 Step 5A: HandPhase shadow mirror
                 # 由 community card count 转移驱动 hand_phase 推进.shadow 写,
                 # 不参与决策读路径(Sprint 2 完成后才接读).force() 跳过 linear
@@ -308,6 +312,7 @@ class StateTracker:
         self._street_to_call = 0.0
         self._street_has_bet = False
         self._street_amt_max = 0.0  # A′:换手清地板,等盲注注入重新播种
+        self._seat_street_amt = {}  # A″:换手清每座投入
         # 12a state: reset went-all-in tracking on new hand
         self._went_all_in_this_hand = set()
         # Timer / decision-time / folded-seats: reset per hand

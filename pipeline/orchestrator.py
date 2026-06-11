@@ -852,8 +852,11 @@ class PipelineOrchestrator:
                    "amount": amount, "source": "table_input"}, hand_id=hand.id)
         # A′(2026-06-11):盲注播种本街金额地板 — SB/BB 投入即本街显示下限,供 amount settle 闸
         # 识别"动作首帧读到旧盲注值"(live 实测 SB call 记 20=小盲 10/11、BB raise 记 40=大盲 5/5)。
+        # A″:同时播种该座自身投入(SB 读回 2、BB 读回 4 即"读到自己旧显示")。
         if action_type in (ActionType.POST_SB, ActionType.POST_BB):
             self.tracker._street_amt_max = max(self.tracker._street_amt_max, amount)
+            self.tracker._seat_street_amt[seat_idx] = max(
+                self.tracker._seat_street_amt.get(seat_idx, 0.0), amount)
 
     def _tick_active_set_and_blinds(self, db):
         """P0(2026-06-06)每 tick:读精确活跃集(standing per-tick 信号)+ on-change 诊断(记 fold
@@ -2639,41 +2642,49 @@ class PipelineOrchestrator:
 
                 event.action_type = final_action  # may be overridden
 
-                # step1(2026-06-06):amount 漏读兜底 — last-actor 跟注时下注区显示窗口极短,
-                # 常读成该玩家自己盲注筹码(2/4)而非真额;stack 跌幅不受影响 → 明显 > 下注区即兜底。
-                # 用户翻牌谱钉死 2 例(可乐SB读2/真25、神啊BB读4/真30);纯逻辑已 Linux 单测。
-                new_amount, amount_override_reason = reconcile_underread_amount(
-                    final_action.value, event.amount, stack_delta)
-                if amount_override_reason:
-                    logger.info(f"[amount兜底] seat_{sidx} {amount_override_reason}")
-                    event.amount = new_amount
-
-                # A(2026-06-11)amount 抓帧时机修:bet/call/raise 金额在动作 overlay 首帧还在动画 →
-                # recipe 返 None(label 实测每事件 frame1=None→frame2=值);overlay 持续 4-8 tick(T46-B)→
-                # 【推迟 commit】:金额 None 时本帧不记录(也不设 dedup 时间戳)→ 下帧金额 settle 读到后,
-                # action_text 变("加注"→"加注 30")→ check_action_change 视为变 → fresh 记录。最多等
-                # _AMT_SETTLE_MAX 帧(防永不 settle 卡死),超则记 None。check/fold/all-in 无金额不等。
-                # 跳帧不走 2457(那是 idle 路)也到不了 2751 → _prev_stack 保持动作前值,stack_delta 反而更准。
-                # A′(2026-06-11)陈旧值扩展:None 治好后 live 数据现第二模式 — 该座动作前 overlay
-                # 已挂旧数字(盲注/本街先前投入),动作首帧读到旧值非 None → 立刻提交错值(09:26 场
-                # SB call 记 20=小盲 10/11、BB raise 记 40=大盲 5/5、raise≤bb 共 9/25)。规则:
-                # call 的 settle 显示(本街累计)必 ≥ 本街已提交最高注 _street_amt_max(盲注播种 bb),
-                # bet/raise 必 >;不满足视同未 settle 继续等。地板被误抬高也只多等到 cap(那时读数
-                # 已 settle=真值,照常提交),不丢事件;cap 后仍陈旧 emit 诊断留痕。
+                # ── 金额 settle 三重闸(A / A′ / A″)+ 兜底殿后 ──────────────────
+                # A (2026-06-11):overlay 首帧金额还在动画 → recipe 返 None → 推迟 commit,
+                #   下帧 settle 后 action_text 变 → fresh 记录;最多等 _AMT_SETTLE_MAX 帧。
+                # A′(2026-06-11):动作前 overlay 已挂旧数字(盲注/本街先前投入)→ 首帧读旧值非
+                #   None 直接提交错值(修前 SB call=小盲 10/11)。规则:call 读数必 ≥ 本街最高注
+                #   _street_amt_max(盲注播种 bb),bet/raise 必 >;不满足视同未 settle。
+                # A″(2026-06-11 审计 1202 手):call 读数=自己刚提交的加注额(258,真值 516)
+                #   能穿过 A′(等于地板不小于) → 自身规则:bet/call/raise 的新读数必须严格 >
+                #   自己本街已提交额 _seat_street_amt(call/raise 必然增加自己投入,等于=陈旧)。
+                #   此规则不依赖地板,对"地板被漏抓污染"免疫。
+                # 闸序倒置(2026-06-11 验尸,替换 2026-06-06 的 step1 抢跑式兜底):stack 兜底
+                #   原在闸前 — 首帧陈旧"加注 2"+ 同帧 stack 误读(323→真289误93)= 兜底改写 230
+                #   越闸落库(真值 36),毒地板连累后续真值变 suspect、真值帧死于 dedup。倒置后:
+                #   先等 settle;【只有封顶后金额仍 None/仍陈旧】才轮到 stack 兜底(其原始职责=
+                #   金额彻底缺时的最后一招;干净读数永远优先于 stack 推算)。
+                # 封顶提交不丢事件;封顶后仍陈旧 emit stale_suspect 留痕(含 own_prev 供归因)。
                 _needs_amt = final_action in (ActionType.BET, ActionType.RAISE, ActionType.CALL)
                 _amt_floor = self.tracker._street_amt_max
-                _amt_stale = (_needs_amt and event.amount is not None and _amt_floor > 0
-                              and (event.amount < _amt_floor if final_action == ActionType.CALL
-                                   else event.amount <= _amt_floor))
+                _own_prev = self.tracker._seat_street_amt.get(sidx, 0.0)
+                _amt_stale = (_needs_amt and event.amount is not None and (
+                    (_amt_floor > 0
+                     and (event.amount < _amt_floor if final_action == ActionType.CALL
+                          else event.amount <= _amt_floor))
+                    or event.amount <= _own_prev))
                 if (_needs_amt and (event.amount is None or _amt_stale)
                         and self._action_amt_wait.get(sidx, 0) < self._AMT_SETTLE_MAX):
                     self._action_amt_wait[sidx] = self._action_amt_wait.get(sidx, 0) + 1
                     continue
+                amount_override_reason = None
+                if _needs_amt and (event.amount is None or _amt_stale):
+                    # 封顶仍没有可信读数 → stack 兜底殿后(2026-06-06 step1 的原始场景:
+                    # last-actor 短窗读成自己盲注;stack 跌幅明显大于读数才覆盖,纯逻辑已单测)
+                    new_amount, amount_override_reason = reconcile_underread_amount(
+                        final_action.value, event.amount, stack_delta)
+                    if amount_override_reason:
+                        logger.info(f"[amount兜底@cap] seat_{sidx} {amount_override_reason}")
+                        event.amount = new_amount
                 if _amt_stale:
                     diag.emit("amount.stale_suspect",
                               {"seat": sidx, "action": final_action.value, "amount": event.amount,
-                               "street_amt_max": _amt_floor,
-                               "waited": self._action_amt_wait.get(sidx, 0)},
+                               "street_amt_max": _amt_floor, "own_prev": _own_prev,
+                               "waited": self._action_amt_wait.get(sidx, 0),
+                               "reconciled": bool(amount_override_reason)},
                               hand_id=self.tracker.current_hand.id)
                 self._action_amt_wait[sidx] = 0
 
@@ -2808,9 +2819,11 @@ class PipelineOrchestrator:
                     self.event_repo.create(db, event)
                     sub_ms["seat_parse_persist"] += (time.perf_counter() - _pt) * 1000.0
 
-                # A′:过门(高桩)事件金额抬本街地板 — 低桩 skip/dedup skip 不算(dedup 同值已计)
+                # A′/A″:过门(高桩)事件金额抬两级地板 — 低桩 skip/dedup skip 不算(dedup 同值已计)
                 if _needs_amt and event.amount is not None:
                     self.tracker._street_amt_max = max(self.tracker._street_amt_max, event.amount)
+                    self.tracker._seat_street_amt[sidx] = max(
+                        self.tracker._seat_street_amt.get(sidx, 0.0), event.amount)
 
                 # T1 Visual debug artifacts: low-confidence events get a screenshot
                 # dump for human review. User can browse data/review/<hand_id>/ +
