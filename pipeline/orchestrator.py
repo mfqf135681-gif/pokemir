@@ -217,7 +217,7 @@ class PipelineOrchestrator:
         if DIGIT_RECIPE_LIVE:
             from pipeline.digit_reader import DigitReader
             base = Path(ROI_CONFIG_DIR)
-            for zone in ("stack", "amount", "pot", "potprev", "herobet"):
+            for zone in ("stack", "amount", "pot", "potprev", "herobet", "winxx"):
                 f = base / f"digit_templates_{profile}_{zone}.json"
                 if f.is_file():
                     self._zone_readers[zone] = DigitReader.load(str(f))
@@ -1871,10 +1871,12 @@ class PipelineOrchestrator:
         active_seats 非空 → 只扫这些座(只有牌里的人能赢 + 缩面 + 滤非活跃座聊天);空 → 全座。"""
         hlo, hhi, smin, vmin = self._yellow_hsv
         for seat in self.roi_manager.rois.seat_regions:
-            if active_seats is not None and seat.seat_index not in active_seats:
+            si = seat.seat_index
+            if active_seats is not None and si not in active_seats:
                 continue  # 只扫活跃集座
-            if seat.seat_index in self._hand_win_seats:
-                continue  # 已锁,省一次抠图
+            already = si in self._hand_win_seats
+            if already and not self._labeler.enabled:
+                continue  # 已锁 + 非标注 → 省抠图(production 优化;标注模式逐帧采 +xx 验金额)
             roi = getattr(seat, "win_amount_area", None)
             if roi is None or getattr(roi, "width", 0) < 2:
                 continue
@@ -1885,8 +1887,19 @@ class PipelineOrchestrator:
             hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
             m = ((hsv[..., 0] >= hlo) & (hsv[..., 0] <= hhi) &
                  (hsv[..., 1] >= smin) & (hsv[..., 2] >= vmin))
-            if int(m.sum()) > self._win_yellow_count:  # 黄像素数量(框无关,治稀释)
-                self._hand_win_seats.add(seat.seat_index)
+            if int(m.sum()) <= self._win_yellow_count:  # 黄像素数量(框无关,治稀释)
+                continue
+            # +xx 在显:读金额(digit 配方,allow_icon 丢首格"+";winxx 无专模板时 _reader_for 回退 stack)
+            # + 信源验证抽头(LABEL_SIGNAL=win_amount 时存 crop+读值供盲标)。先用现有模板看准度,不行再自建。
+            _amt = None
+            if DIGIT_RECIPE_LIVE and self._digit_reader is not None:
+                _amt = self._reader_for("winxx").read(img, allow_icon=True)
+            if self._labeler.enabled:
+                self._labeler.tap("win_amount", img, float(_amt) if _amt is not None else None,
+                                  wide_frame=self.capturer.get_cached_frame(), roi=roi, seat=si,
+                                  hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
+            if not already:
+                self._hand_win_seats.add(si)  # presence latch(#241)不变
 
     def _capture_seat_stacks(self) -> dict[int, float]:
         """Snapshot per-seat stack via OCR (digit-only allowlist).
