@@ -258,6 +258,7 @@ class PipelineOrchestrator:
         self._win_yellow_count = int(os.getenv("POKEMIR_WIN_YELLOW_COUNT", "35"))  # 录像验空隙15-60,35居中
         self._yellow_hsv = (18, 38, 70, 120)  # H[lo,hi] S>min V>min(cv2),probe 验过
         self._hand_win_seats = set()  # 本手 +xx latch(per-tick 扫,某 tick 见到就锁;_start_new_hand 重置)
+        self._hand_win_amounts = {}   # 本手 +xx 金额 latch(seat→float;喂 hands.result;_start_new_hand 重置)
         self._hand_start_tick = 0     # 本手起 global tick;+xx 跳发牌窗(牌背飞=开局)用
         self._xx_deal_skip = int(os.getenv("POKEMIR_XX_DEAL_SKIP", "3"))  # 跳每手前 N tick(发牌窗,治s0牌背飞)
         if SEAT_OCCUPANCY_LIVE:
@@ -498,10 +499,10 @@ class PipelineOrchestrator:
             # #241(rebuy 前置):每 tick 扫 +xx(瞬态,某 tick 见到即 latch 该座这手"合法进账")。
             # 两道约束(治误报):① 跳每手前 _xx_deal_skip tick(发牌窗,牌背飞入s0)
             # ② 只扫活跃集座(只有牌里的人能赢 + 活跃集发言概率更低)。活跃集空则回退全座。
-            # _empty_refs gate 是 #241(rebuy占用)需要;但 +xx 信源验证(LABEL_SIGNAL=win_amount)也要扫,
-            # 故标注该信号时绕过 empty_refs 闸(production 行为不变)。
-            _want_win_scan = self._empty_refs or (self._labeler.enabled and "win_amount" in self._labeler.signals)
-            if self.tracker.has_active_hand and _want_win_scan and \
+            # 2026-06-11 常开(原 _empty_refs 闸 = 只有 #241 rebuy 消费它的年代;现 hands.result
+            # 赢家归属也吃它 → 133 手 result 全 null 的直接原因就是这道闸)。成本=活跃座黄像素
+            # 计数(便宜)+ 命中时 digit 读;验收时看 tick_stats 的 win_scan 项确认无回归。
+            if self.tracker.has_active_hand and \
                     (self.tracker._global_tick_counter - self._hand_start_tick) >= self._xx_deal_skip:
                 _tw = time.perf_counter()
                 self._scan_win_amount(self._active_set or None)
@@ -718,6 +719,7 @@ class PipelineOrchestrator:
         # hamming 供 live 调阈(空 vs 占位的真实间隔只有占位帧才看得到)。_empty_refs 缺则跳过。
         occupancy = self._classify_occupancy()
         self._hand_win_seats = set()  # #241:重置上一手 +xx latch
+        self._hand_win_amounts = {}   # 重置上一手 +xx 金额 latch
         self._hand_start_tick = self.tracker._global_tick_counter  # #241:记本手起点,+xx 跳发牌窗
 
         # 摊牌 baseline 强初始化 — 之前 baseline 只在 fold_area OCR 为空时更新,
@@ -900,7 +902,10 @@ class PipelineOrchestrator:
                 self._seat_gone_ticks[s] = self._seat_gone_ticks.get(s, 0) + 1
                 if (cur_street != "river" and self._seat_gone_ticks[s] >= 2
                         and s not in self.tracker._folded_seats
-                        and not (SHOWDOWN_GATE and self._showdown_latched)):  # #235:摊牌后 card_marker 消失=亮牌非弃牌,不补
+                        and not (SHOWDOWN_GATE and self._showdown_latched)  # #235:摊牌后 card_marker 消失=亮牌非弃牌,不补
+                        and not self._pot_label_latched):  # 幽灵fold修(2026-06-11 审计≥31例):总底池
+                    # latch=进结算(132/133 手可靠),结算期全桌 card_marker 消失是收牌动画,
+                    # 不是弃牌 — 此前这些被补成"赢家/全下者弃牌"污染归属。latch 后一律不补。
                     self._rescue_silent_fold(db, s, cur_street)
         # 惰性盲注注入:等发牌完成(活跃非空)才派;非空但定不出 SB/BB 也不再重试(那是按钮/活跃问题非时机)
         if self._blinds_pending:
@@ -921,7 +926,7 @@ class PipelineOrchestrator:
         与 fold_ocr 互补:这里只补 fold_ocr 没标过的(去重见 caller)。"""
         self.tracker._folded_seats.add(seat)
         hand = self.tracker.current_hand
-        player_name = self.tracker.player_id_map.get(seat)
+        player_name = self._hand_player_name(seat)  # ID 手内冻结:救援 fold 与动作同名源
         diag.emit("fold.activeset_rescue",
                   {"seat": seat, "street": street, "player": player_name},
                   hand_id=hand.id if hand else None)
@@ -1286,6 +1291,18 @@ class PipelineOrchestrator:
             insurance_results = self._infer_insurance(cur, final_stacks)
             if insurance_results:
                 cur.raw_data["insurance_inferred"] = insurance_results
+            # hands.result 赢家归属(2026-06-11):双独立信源 — ① +xx 黄字 latch(显示层
+            # 直读赢家座+赢额,盲标~100%)② chip_reconstruction(端点筹码差推赢家+净额)。
+            # 两源一致 → 高置信归属;不一致两边照存(sources_agree=False),裁决权归审计/
+            # 求解器,识别层不拍板。修前 133 手 result 全 null(+xx 扫描被 _empty_refs 闸死)。
+            _recon_w = (cur.raw_data.get("chip_reconstruction") or {}).get("winners") or []
+            _xx = sorted(self._hand_win_seats)
+            cur.result = {
+                "win_seats_xx": _xx,
+                "win_amounts_xx": {str(s): a for s, a in sorted(self._hand_win_amounts.items())},
+                "winners_endpoint": _recon_w,
+                "sources_agree": (set(_xx) == set(_recon_w)) if (_xx or _recon_w) else None,
+            }
             # Showdown card detection: scan non-folded seats' fold_area with CNN.
             # WePoker reveals 2 hole cards at avatar center at showdown.
             _sc = time.perf_counter()
@@ -1968,8 +1985,10 @@ class PipelineOrchestrator:
             if active_seats is not None and si not in active_seats:
                 continue  # 只扫活跃集座
             already = si in self._hand_win_seats
-            if already and not self._labeler.enabled:
-                continue  # 已锁 + 非标注 → 省抠图(production 优化;标注模式逐帧采 +xx 验金额)
+            # 2026-06-11:已锁但金额还没读到 → 继续扫(+xx 数字比黄色出现略晚/有动画,首黄帧
+            # 常读不出);拿到非 None 金额后才停(后读覆盖先读=取更 settle 的值)。
+            if already and si in self._hand_win_amounts and not self._labeler.enabled:
+                continue
             roi = getattr(seat, "win_amount_area", None)
             if roi is None or getattr(roi, "width", 0) < 2:
                 continue
@@ -1991,6 +2010,8 @@ class PipelineOrchestrator:
                 self._labeler.tap("win_amount", img, float(_amt) if _amt is not None else None,
                                   wide_frame=self.capturer.get_cached_frame(), roi=roi, seat=si,
                                   hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
+            if _amt is not None:
+                self._hand_win_amounts[si] = float(_amt)  # 赢额 latch(喂 hands.result 归属)
             if not already:
                 self._hand_win_seats.add(si)  # presence latch(#241)不变
 
@@ -2584,7 +2605,9 @@ class PipelineOrchestrator:
                     continue
                 # #235 摊牌闸:本手已进结算后,fold_ocr 读到的"盖牌/弃牌"是摊牌 muck(决策点之后)→
                 # 截断不收(治普通局那种 conf1.0"盖牌"假弃牌;all-in 者/赢家不会被记 fold)。
-                if (SHOWDOWN_GATE and self._showdown_latched
+                # 幽灵fold修(2026-06-11):压制条件加"总底池 latch"——摊牌白角闸覆盖有洞
+                # (06-10 审计 4 手全没 latch),而总底池 latch 132/133 手可靠且语义=进结算。
+                if (((SHOWDOWN_GATE and self._showdown_latched) or self._pot_label_latched)
                         and parsed["action_type"] == ActionType.FOLD):
                     diag.emit("showdown.fold_suppressed", {"seat": sidx, "text": action_text},
                               hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
