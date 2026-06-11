@@ -302,17 +302,9 @@ class PipelineOrchestrator:
         self.tracker = StateTracker()
         self._labeler = LabelCapturer()  # 信源验证:旁路抽头目标信号(LABEL_SIGNAL 空→禁用)
         self._pot_debounce = {}          # pot 防抖游程({pending,count});换手 _start_new_hand 重置
-        # 总底池 phash(shadow,2026-06-10):结算帧检测,先 diag-only 验,再接收手/摊牌读取窗。
-        # 复用 ActionPhashReader(refs={"总底池":[...]});缺 rois/pot_label_phash_<profile>.json → None no-op。
-        self._pot_label_phash = None
-        try:
-            from pipeline.action_phash import ActionPhashReader as _APR
-            _plp = Path(ROI_CONFIG_DIR) / f"pot_label_phash_{profile}.json"
-            if _plp.is_file():
-                self._pot_label_phash = _APR.load(str(_plp))
-                logger.info(f"[总底池phash] 已载 {_plp.name} 阈值={self._pot_label_phash.threshold}(shadow)")
-        except Exception as _e:
-            logger.warning(f"[总底池phash] 载入失败 {_e!r} → 跳过")
+        # 总底池检测改【颜色】(2026-06-10):phash 因 8×8 下"总底池"汉字 vs 数字形状太像(inter=2)
+        # 放弃;实测总底池=高饱和青字(白V>180像素=0)、数字=白(白V>180一堆)→ 颜色干净可分。
+        # 先 shadow 量 white/teal 两计数(_pot_label_color)→ live 出分布再定阈,同 showdown_corner。
 
         # #10 Load persistent player registry (avatar fingerprints) from disk
         registry = _load_player_registry()
@@ -2739,6 +2731,16 @@ class PipelineOrchestrator:
         # T57(2026-05-29):传 sub_ms 给 _tick 用,merge 进 phase_ms.
         self.tracker._seat_subphase_ms = sub_ms
 
+    def _pot_label_color(self, pot_img):
+        """总底池颜色检测计数(2026-06-10,替 phash):实测总底池=高饱和青字、数字=白字。
+        white=白数字核(S<60&V>180,数字多/总底池0);teal=亮饱和青(V>120&64≤S≤215,总底池字/数字少)。
+        返回 (white, teal)。阈值由 live pot.label_measure 分布定后再判。"""
+        hsv = cv2.cvtColor(pot_img, cv2.COLOR_BGR2HSV)
+        S, V = hsv[..., 1], hsv[..., 2]
+        white = int(((S < 60) & (V > 180)).sum())
+        teal = int(((V > 120) & (S >= 64) & (S <= 215)).sum())
+        return white, teal
+
     def _process_pot(self, db, rois):
         """Read pot size from ROI and update tracker state.
 
@@ -2774,12 +2776,15 @@ class PipelineOrchestrator:
                               wide_frame=self.capturer.get_cached_frame(), roi=rois.pot_size,
                               hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
 
-        # 总底池 phash shadow(2026-06-10,diag-only):配方读空时若是结算帧 → emit(先验检测,
-        # 不接收手/摊牌窗)。结算帧正是配方返 None 处,故 amount is None 时才查。缺 ref → no-op。
-        if amount is None and self._pot_label_phash is not None:
-            if self._pot_label_phash.match(pot_img):
+        # 总底池颜色【测量】shadow(2026-06-10):配方读空时量 white(白数字核 S<60&V>180)/
+        # teal(亮饱和青 V>120&64≤S≤215=总底池字),emit 供标定。仅 content 帧(略纯空池)。
+        # 预期:总底池 white≈0 teal高;数字 white高 teal低;空池 both≈0。live 出分布再定阈+判定。
+        if amount is None:
+            _w, _tl = self._pot_label_color(pot_img)
+            if _w > 20 or _tl > 40:
                 _hid = self.tracker.current_hand.id if self.tracker.current_hand else None
-                diag.emit("pot.label_detected", {"hand_id": str(_hid) if _hid else None}, hand_id=_hid)
+                diag.emit("pot.label_measure", {"white": _w, "teal": _tl,
+                          "hand_id": str(_hid) if _hid else None}, hand_id=_hid)
 
         # Hand-start signal via 总底池 label (observer-mode fallback when hero ROI
         # is unchanged + community-reset window is too narrow for 250 ms tick).
