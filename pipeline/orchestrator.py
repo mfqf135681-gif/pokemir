@@ -341,14 +341,26 @@ class PipelineOrchestrator:
             logger.debug(f"DB probe failed: {type(exc).__name__}")
             return False
 
-    def start(self):
-        """Run the main capture loop."""
+    def start(self, max_minutes: float | None = None):
+        """Run the main capture loop.
+
+        max_minutes: 到点自动停(挂机长局验收用),走与 Ctrl+C 相同的干净退出路径
+        (当前 tick 跑完、_shutdown 落库)。None = 不限时(原行为)。
+        """
         self.running = True
-        logger.info("Pipeline started — capturing every %dms", CAPTURE_INTERVAL_MS)
+        deadline = (time.time() + max_minutes * 60.0) if max_minutes else None
+        if deadline:
+            logger.info("Pipeline started — capturing every %dms, auto-stop in %.0f min",
+                        CAPTURE_INTERVAL_MS, max_minutes)
+        else:
+            logger.info("Pipeline started — capturing every %dms", CAPTURE_INTERVAL_MS)
 
         try:
             while self.running:
                 self._tick()
+                if deadline and time.time() >= deadline:
+                    logger.info("Pipeline auto-stopped — max-minutes %.0f reached", max_minutes)
+                    break
                 time.sleep(CAPTURE_INTERVAL_MS / 1000.0)
         except KeyboardInterrupt:
             logger.info("Pipeline stopped by user")

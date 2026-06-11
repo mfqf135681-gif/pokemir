@@ -31,6 +31,13 @@ def main():
         help="观战模式 — 用户未坐下。关闭 hero seat 自动检测,所有 seat 走对手摊牌捕获。"
              "Used in pipeline mode; ignored in api mode.",
     )
+    parser.add_argument(
+        "--max-minutes",
+        type=float,
+        default=None,
+        help="到点自动停止录制(分钟),挂机长局验收用,如 --max-minutes 120。"
+             "干净退出(当前 tick 跑完+落库),与 Ctrl+C 同路径。默认不限时。",
+    )
     args = parser.parse_args()
 
     if args.command == "pipeline":
@@ -67,7 +74,7 @@ def main():
         # ⚠️⚠️⚠️ 临时压测块 结束 ⚠️⚠️⚠️
         from pipeline.orchestrator import PipelineOrchestrator
         orchestrator = PipelineOrchestrator(roi_profile=args.profile, observer_mode=args.observer)
-        orchestrator.start()
+        orchestrator.start(max_minutes=args.max_minutes)
     else:
         import uvicorn
         from api.server import create_app
