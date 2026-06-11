@@ -33,6 +33,9 @@ def main():
     ap.add_argument("--out", default="", help="省略 → rois/pot_label_phash_<profile>.json")
     ap.add_argument("--crop-out", default="", help="裁图存放目录;省 → tools/output/pot_label")
     ap.add_argument("--grid", type=int, default=8, help="phash 网格(grid²位;build/live 须一致)")
+    ap.add_argument("--sat-th", type=int, default=255,
+                    help="抠字 S<此(默认255=【亮度模式】:实测总底池是高饱和青字非白,白模式60抠不到→空hash)")
+    ap.add_argument("--val-th", type=int, default=100, help="抠字 V>此(总底池字V120-172、底色V~87 → 100 罩字滤底)")
     args = ap.parse_args()
 
     prof = json.loads((Path(_ROOT) / "rois" / f"{args.profile}.json").read_text(encoding="utf-8"))
@@ -52,7 +55,7 @@ def main():
         crop = img[t:t + h, l:l + w]
         name = "frame_" + os.path.splitext(os.path.basename(fp))[0]
         cv2.imwrite(str(crop_dir / f"{name}.png"), crop)   # 眼验裁对没
-        hh = text_shape_hash(crop, grid=args.grid)
+        hh = text_shape_hash(crop, args.sat_th, args.val_th, grid=args.grid)
         print(f"  {name}: hash len={len(hh)} {'(空=没抠到白字,sat/val要调)' if not hh else ''}")
         if hh:
             label_hashes.append((name, hh))
@@ -65,7 +68,7 @@ def main():
             crop = cv2.imread(str(sess / rec["crop"]))
             if crop is None:
                 continue
-            hh = text_shape_hash(crop, grid=args.grid)
+            hh = text_shape_hash(crop, args.sat_th, args.val_th, grid=args.grid)
             if not hh:
                 continue
             raw = rec.get("raw_text") or ""
@@ -96,7 +99,7 @@ def main():
 
     out = args.out or str(Path(_ROOT) / "rois" / f"pot_label_phash_{args.profile}.json")
     json.dump({"refs": {"总底池": lh}, "match_threshold": int(thr), "grid": args.grid,
-               "sat_th": 60, "val_th": 100, "margin": 0, "first_char": False},
+               "sat_th": args.sat_th, "val_th": args.val_th, "margin": 0, "first_char": False},
               open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     print(f"✅ 参考已存 {out}(裁图见 {crop_dir} — 打开确认罩住'总底池');live ActionPhashReader.load 读,先 shadow 验")
 
