@@ -2452,6 +2452,12 @@ class PipelineOrchestrator:
                         self.tracker._prev_stack[sidx] = stack_now
                     timer_handled = True
             if timer_handled:
+                # 吞街修补漏(2026-06-11 复盘):timer 在此 continue → 空白游程不会累积 →
+                # "过牌→思考计时→又过牌"仍被 prev 文本吞。timer 出现 = 该座正在决策 =
+                # 上一动作气泡必然已结束 → 直接清 prev(语义比"等空白"强,且覆盖"气泡
+                # 无空白期直接切 timer"的盲区)。
+                self.tracker._prev_action_texts.pop(sidx, None)
+                self._action_blank_run[sidx] = 0
                 continue
 
             # #235(2026-06-08):删 T120 专读弃牌 fold_text_area 块(与 fold_area 重复)。
@@ -2890,6 +2896,14 @@ class PipelineOrchestrator:
                     if event.amount is None and az_allin_amount is not None:
                         # 金额=本街累计口径(与 bet/call/raise 一致):此前投入 + 全推的剩余栈
                         event.amount = self.tracker._seat_street_amt.get(sidx, 0.0) + az_allin_amount
+                    if event.amount is not None:
+                        # 复盘补漏(2026-06-11):shove 抬本街地板 — 后续跟注者的 settle 显示
+                        # ≥ shove 额,地板不抬则其首帧陈旧值(如自己旧加注额)可能漏网(1202手
+                        # BB call 516 读回 258 即此型,A″ 只防"有过本街投入"的座)。即便此
+                        # all-in 手末被 veto,地板虚高也只让后续读数多等到 cap 提交真值,无丢失。
+                        self.tracker._street_amt_max = max(self.tracker._street_amt_max, event.amount)
+                        self.tracker._seat_street_amt[sidx] = max(
+                            self.tracker._seat_street_amt.get(sidx, 0.0), event.amount)
                     self._allin_pending[sidx] = event
                     diag.emit("all_in.write_deferred",
                               {"seat": sidx, "amount": event.amount},
