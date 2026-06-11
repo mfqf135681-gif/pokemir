@@ -32,13 +32,15 @@ def fetch(dsn, since):
     hands = [{"id": r[0], "started_at": r[1], "pot": r[2]} for r in cur.fetchall()]
     cur.execute(
         """SELECT ae.hand_id::text, ae.sequence_number, ae.street, ae.player_name,
-                  ae.action_type, ae.amount, (ae.raw_data->>'stack_before')::float
+                  ae.action_type, ae.amount, (ae.raw_data->>'stack_before')::float,
+                  ae.position
            FROM action_events ae JOIN hands h ON h.id = ae.hand_id
            WHERE h.started_at > %s ORDER BY ae.hand_id, ae.sequence_number""", (since,))
     ev = defaultdict(list)
-    for hid, seq, street, player, atype, amount, stk_b in cur.fetchall():
+    for hid, seq, street, player, atype, amount, stk_b, pos in cur.fetchall():
         ev[hid].append({"seq": seq, "street": street, "player": player,
-                        "action": atype, "amount": amount, "stk_b": stk_b})
+                        "action": atype, "amount": amount, "stk_b": stk_b,
+                        "pos": pos})
     conn.close()
     return hands, ev
 
