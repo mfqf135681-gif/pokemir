@@ -483,7 +483,7 @@ class PipelineOrchestrator:
             # ② 只扫活跃集座(只有牌里的人能赢 + 活跃集发言概率更低)。活跃集空则回退全座。
             # _empty_refs gate 是 #241(rebuy占用)需要;但 +xx 信源验证(LABEL_SIGNAL=win_amount)也要扫,
             # 故标注该信号时绕过 empty_refs 闸(production 行为不变)。
-            _want_win_scan = self._empty_refs or (self._labeler.enabled and self._labeler.signal == "win_amount")
+            _want_win_scan = self._empty_refs or (self._labeler.enabled and "win_amount" in self._labeler.signals)
             if self.tracker.has_active_hand and _want_win_scan and \
                     (self.tracker._global_tick_counter - self._hand_start_tick) >= self._xx_deal_skip:
                 _tw = time.perf_counter()
@@ -2421,6 +2421,11 @@ class PipelineOrchestrator:
                         crop = self.capturer.capture_roi(seat_roi.amount_area)
                     # 各区模板:amount 专用 reader(无 _amount.json 则回退 stack/default)
                     v = self._reader_for("amount").read(crop, allow_icon=True)
+                    if self._labeler.enabled:  # 信源验证抽头(LABEL_SIGNAL=amount)
+                        self._labeler.tap("amount", crop, float(v) if v is not None else None,
+                                          wide_frame=self.capturer.get_cached_frame(),
+                                          roi=seat_roi.amount_area, seat=sidx,
+                                          hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
                     if v is not None:
                         amount_text = str(int(v))
                     else:
@@ -2788,6 +2793,20 @@ class PipelineOrchestrator:
         if self._labeler.enabled:
             self._labeler.tap("pot_size", pot_img, amount, raw_text=pot_text,
                               wide_frame=self.capturer.get_cached_frame(), roi=rois.pot_size,
+                              hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
+
+        # 上街池 potprev 信源验证(LABEL_SIGNAL=potprev):live production 本不读它,这里读+tap 供验证
+        # (验证专用,不改 production 行为)。配方 zone="potprev"(无专模板回退 stack)。
+        if self._labeler.enabled and "potprev" in self._labeler.signals and rois.pot_size_previous is not None:
+            _pp_img = self.capturer.capture_roi(rois.pot_size_previous)
+            _pp = None
+            if (DIGIT_RECIPE_LIVE and self._digit_reader is not None
+                    and _pp_img is not None and _pp_img.size > 0):
+                _ppv = self._reader_for("potprev").read(_pp_img)
+                if _ppv is not None:
+                    _pp = float(_ppv)
+            self._labeler.tap("potprev", _pp_img, _pp,
+                              wide_frame=self.capturer.get_cached_frame(), roi=rois.pot_size_previous,
                               hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
 
         # 总底池颜色【判定】(2026-06-10,18/18验收,替原文字 OCR 开手):配方读空时量 white(白数字核)/

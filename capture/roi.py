@@ -25,6 +25,7 @@ class TableROIs:
 
     # Pot size area
     pot_size: ROIRegion = field(default_factory=lambda: ROIRegion("pot_size", 0, 0, 120, 30))
+    pot_size_previous: ROIRegion | None = None  # 上街池(街初/上街结束底池);信源验证 potprev 读它
 
     # Hero action panel ROIs (2026-05-26 added — bottom of WePoker shows these only for hero):
     #   give_pot_button = "让池" 小圆按钮(让池给小盲)— signal for special concede
@@ -111,6 +112,8 @@ class TableROIs:
             rois.hero_card_2 = _tuple_to_roi(data["hero_card_2"], "hero_card_2")
         if data.get("pot_size"):
             rois.pot_size = _tuple_to_roi(data["pot_size"], "pot_size")
+        if data.get("pot_size_previous"):
+            rois.pot_size_previous = _tuple_to_roi(data["pot_size_previous"], "pot_size_previous")
         if data.get("give_pot_button"):
             rois.give_pot_button = _tuple_to_roi(data["give_pot_button"], "give_pot_button")
         if data.get("free_action_button"):
