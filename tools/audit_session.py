@@ -104,6 +104,23 @@ def winner_check(hands, ev, tol=6.0):
                 cs[k] += e["stk_b"]
         for (p, _s), v in cs.items():
             inv[p] += v
+        # 未跟注退还(2026-06-11):某街最高投入若无人跟满(max>第二高),差额结算时退回
+        # 最高者(短all-in/全场弃牌场景;被跟满的街 max==第二高 → 退还0)。pot显示含退还
+        # 前金额 → 赢家期望净得需扣"退给别人"的部分;退还归赢家自己时 pot−inv 不变。
+        # ⚠️ 只在该手守恒 EXACT(记录完整)时启用:raw 数据漏抓的跟注会让最高投入【假装】
+        # 没被跟满 → 虚算退还(首跑不带此条件:归属 61%→59% 反噬 + 出现负期望)。
+        refund, refund_owner = 0.0, None
+        cons_status, _, _ = hand_conservation(ev[h["id"]], h["pot"])
+        if cons_status == "EXACT":
+            by_street = defaultdict(list)
+            for (p, s), v in cs.items():
+                by_street[s].append((v, p))
+            for s, lst in by_street.items():
+                lst.sort(reverse=True)
+                if len(lst) >= 2 and lst[0][0] > lst[1][0]:
+                    r = lst[0][0] - lst[1][0]
+                    if r > refund:       # 实际只可能发生在最后下注街,取最大者即它
+                        refund, refund_owner = r, lst[0][1]
         # 净得:有紧邻下一手栈的玩家
         nets = {}
         for e in ev[h["id"]]:
@@ -121,6 +138,8 @@ def winner_check(hands, ev, tol=6.0):
             continue                       # 净得>底池 = rebuy 嫌疑,不判
         judged += 1
         expect = h["pot"] - inv.get(w, 0.0)
+        if refund_owner is not None and refund_owner != w:
+            expect -= refund             # 退还给非赢家 → 赢家实拿 = pot − 退还
         if abs(nets[w] - expect) <= max(tol, 0.05 * h["pot"]):
             passed += 1
         else:
