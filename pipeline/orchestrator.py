@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE, ALLIN_STACKZERO, ALLIN_ZERO_RUN, SHOWDOWN_GATE, SHOWDOWN_WHITE_TH
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE, ALLIN_STACKZERO, ALLIN_ZERO_RUN, SHOWDOWN_GATE, SHOWDOWN_WHITE_TH, POT_LABEL_WHITE_TH, POT_LABEL_TEAL_TH
 from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips, pot_debounce_step
 from pipeline.label_capture import LabelCapturer  # 信源验证标注采集侧(LABEL_SIGNAL 空时全 no-op)
 from difflib import get_close_matches
@@ -302,6 +302,7 @@ class PipelineOrchestrator:
         self.tracker = StateTracker()
         self._labeler = LabelCapturer()  # 信源验证:旁路抽头目标信号(LABEL_SIGNAL 空→禁用)
         self._pot_debounce = {}          # pot 防抖游程({pending,count});换手 _start_new_hand 重置
+        self._pot_label_latched = False  # 总底池颜色判定:本手是否已 latch 结算帧;每手 reset
         # 总底池检测改【颜色】(2026-06-10):phash 因 8×8 下"总底池"汉字 vs 数字形状太像(inter=2)
         # 放弃;实测总底池=高饱和青字(白V>180像素=0)、数字=白(白V>180一堆)→ 颜色干净可分。
         # 先 shadow 量 white/teal 两计数(_pot_label_color)→ live 出分布再定阈,同 showdown_corner。
@@ -652,6 +653,7 @@ class PipelineOrchestrator:
         self._az_state = {}  # #243:新手清 all-in stack→0 影子检测态(每手一座只 emit 一次)
         self._showdown_latched = False  # #235:新手清摊牌闸 latch
         self._pot_debounce = {}  # 新手清 pot 防抖游程(新手底池从小重起,别和上手游程串)
+        self._pot_label_latched = False  # 新手清总底池结算 latch(每手一个结算帧)
         c1 = self.card_recognizer.recognize_single(hero_1)
         c2 = self.card_recognizer.recognize_single(hero_2)
         hand.hero_cards = []
@@ -2753,19 +2755,15 @@ class PipelineOrchestrator:
         self.tracker._pot_before_tick = self.tracker.latest_pot_bb
 
         pot_img = self.capturer.capture_roi(rois.pot_size)
-        # 2026-06-10:pot 走 digit 配方 + 【砍 EasyOCR 兜底】。实测 13/13 污染帧(飞筹码/总底池/半截数字)
-        # 都是 EasyOCR 兜底【硬编数】(咨0→0、鸵5→5、13353…),配方在它们上正确返 None。
-        # → 配方开:读不出=本帧无读(None,不回落)→ 下方防抖 hold 上值,污染基本归零。
-        # 例外:BUTTON_CUT=0 仍读 EasyOCR 文本喂"总底池"开手兜底(该路 BUTTON_CUT 开时 75min/94手 fire=0)。
-        # 配方关(POKEMIR_DIGIT_RECIPE_LIVE=0):退回旧 EasyOCR 全路径。
+        # 2026-06-10:pot 数字走 digit 配方 + 砍 EasyOCR 兜底(13/13污染帧都是兜底硬编数,配方正确返None)。
+        # 配方开:读不出=本帧无读(None,不回落)→ 下方防抖 hold。**总底池/结算改【颜色】判定(非文字OCR)**。
+        # 配方关(POKEMIR_DIGIT_RECIPE_LIVE=0):退回旧 EasyOCR 全路径(休眠安全网)。
         amount = None
         pot_text = None
         if DIGIT_RECIPE_LIVE and self._digit_reader is not None:
             _v = self._reader_for("pot").read(pot_img)  # zone="pot"(_pot.json);旧"pot_size"查不到退回stack
             if _v is not None:
                 amount = float(_v)
-            if not BUTTON_CUT:
-                pot_text = self.ocr.read_text(pot_img)  # 仅为"总底池"开手兜底(BUTTON_CUT=0 旧路)
         else:
             pot_text = self.ocr.read_text(pot_img)
             amount = ActionRecognizer._extract_amount(pot_text)
@@ -2776,42 +2774,18 @@ class PipelineOrchestrator:
                               wide_frame=self.capturer.get_cached_frame(), roi=rois.pot_size,
                               hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
 
-        # 总底池颜色【测量】shadow(2026-06-10):配方读空时量 white(白数字核 S<60&V>180)/
-        # teal(亮饱和青 V>120&64≤S≤215=总底池字),emit 供标定。仅 content 帧(略纯空池)。
-        # 预期:总底池 white≈0 teal高;数字 white高 teal低;空池 both≈0。live 出分布再定阈+判定。
-        if amount is None:
+        # 总底池颜色【判定】(2026-06-10,18/18验收,替原文字 OCR 开手):配方读空时量 white(白数字核)/
+        # teal(亮饱和青)。white<阈 且 teal≥阈 = 结算帧(总底池显示)→ 每手 latch 一次 emit pot.label_detected。
+        # 实测:总底池=高饱和青字(white≈0 teal403-530)、数字=白(white高)、空/暗(both低),正交可分。
+        # (旧"总底池"文字 OCR 开手块已删:BUTTON_CUT 权威切手、该路 75min/94手 fire=0=纯死代码。)
+        # 用途(收手标记/摊牌读取窗)待②单独接 showdown;本步仅 latch + emit,不改行为。
+        if amount is None and not self._pot_label_latched:
             _w, _tl = self._pot_label_color(pot_img)
-            if _w > 20 or _tl > 40:
+            if _w < POT_LABEL_WHITE_TH and _tl >= POT_LABEL_TEAL_TH:
+                self._pot_label_latched = True
                 _hid = self.tracker.current_hand.id if self.tracker.current_hand else None
-                diag.emit("pot.label_measure", {"white": _w, "teal": _tl,
+                diag.emit("pot.label_detected", {"white": _w, "teal": _tl,
                           "hand_id": str(_hid) if _hid else None}, hand_id=_hid)
-
-        # Hand-start signal via 总底池 label (observer-mode fallback when hero ROI
-        # is unchanged + community-reset window is too narrow for 250 ms tick).
-        # User-confirmed:"总底池" 文本只在新手开始时短暂出现.
-        # Triple-guard against false positive:
-        #   (1) label present in OCR text
-        #   (2) there is an active hand to end
-        #   (3) new amount < 50% of hand_pot_peak (real new-hand pot is much smaller)
-        # All three must hold;mid-hand stray "总底池" misread alone won't trigger.
-        if (pot_text and "总底池" in pot_text
-                and self.tracker.has_active_hand
-                and amount is not None
-                and self.tracker._hand_pot_peak is not None
-                and amount < self.tracker._hand_pot_peak * 0.5):
-            old_peak = self.tracker._hand_pot_peak
-            old_hand_id = self.tracker.current_hand.id if self.tracker.current_hand else None
-            logger.info(f"[hand-start] 总底池 label + pot drop {old_peak}→{amount}, "
-                        f"ending previous hand")
-            diag.emit("hand_start.via_pot_label",
-                      {"old_pot_peak": old_peak, "new_pot": amount, "pot_text": pot_text},
-                      hand_id=old_hand_id)
-            hero_1 = self.capturer.capture_roi(rois.hero_card_1) if rois.hero_card_1 else None
-            hero_2 = self.capturer.capture_roi(rois.hero_card_2) if rois.hero_card_2 else None
-            self._end_current_hand(db)
-            self._start_new_hand(db, hero_1, hero_2)
-            # start_new_hand reset latest_pot_bb=None and _hand_pot_peak=None;
-            # the guard below will pass and amount becomes the new hand's first pot reading.
 
         # 防抖(2026-06-10):同值连续≥2帧才接受 → 杀单帧动画毛刺 + 尖峰(治 spike-lock:单帧 13353
         # 到不了 2 帧、永不被接受、也就不会锁死后续正确读)。None=本帧无读 → hold 上一池值。
