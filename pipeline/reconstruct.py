@@ -456,8 +456,13 @@ def reconcile_underread_amount(action, amount, stack_delta, margin=8, ratio=2):
     实证:可乐(SB2)跟allin净投25读成2 / 神啊(BB4)跟到34净投30读成4(用户翻牌谱钉死)。"""
     if action not in ("call", "bet", "raise"):
         return amount, None
-    if amount is None or stack_delta is None or stack_delta <= 0:
+    if stack_delta is None or stack_delta <= 0:
         return amount, None
+    if amount is None:
+        # 2026-06-11 amount 抓帧时机修:下注区金额只闪几帧、动作 overlay 往往 outlast 它 → 记录动作
+        # 那刻金额已清=None(label 验:recipe 本身~100%、是时机问题)。stack 跌幅(净投入,持久可靠
+        # ~100%)即本动作投入=amount。"下注区瞬态、stack跌幅持久"(见 digit-ocr-stack-recipe)。
+        return stack_delta, f"amount None→{stack_delta}(下注区瞬态漏抓,stack跌幅兜底)"
     if stack_delta - amount >= margin and stack_delta >= ratio * amount:
         return stack_delta, f"amount {amount}→{stack_delta}(下注区last-actor短窗漏读,stack跌幅兜底)"
     return amount, None
