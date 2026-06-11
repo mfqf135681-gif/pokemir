@@ -91,6 +91,9 @@ SEAT_OCCUPANCY_LIVE = os.getenv("POKEMIR_SEAT_OCCUPANCY", "0").lower() in ("1", 
 # 活跃集(本手持牌,非raw occupancy)。默认【开】(纯 diag,零行为变化);=0 关。
 ALLIN_STACKZERO = os.getenv("POKEMIR_ALLIN_STACKZERO", "1").lower() in ("1", "true", "yes")
 ALLIN_ZERO_RUN = int(os.getenv("POKEMIR_ALLIN_ZERO_RUN", "1"))  # 首个0即发(实测无单帧0噪声;v1 用2+瞬时闸→0命中,改1+was_active latch)
+# all-in 写库分层(2026-06-11 #243 收尾):检测即内存mark(实时档),写库推迟到手末过闸
+# (broken 看护拒"结算前栈读回正数"的瞬态假阳)。=0 回退旧"检测即写库"(验收期逃生阀)。
+ALLIN_DEFER_WRITE = os.getenv("POKEMIR_ALLIN_DEFER", "1").lower() in ("1", "true", "yes")
 # 2026-06-09 #235 第一步:摊牌闸。showdown_corner 白角(未弃座亮牌)→ 本手 latch 结算 →
 # 压制结算期假弃牌(silent-fold 救援 + fold_ocr 盖牌/弃牌)。治三手深挖那个"全下者/赢家弃牌"
 # 污染(card_marker 摊牌消失被误判弃)。18001帧验白角可分(摊牌81-156 vs 非摊牌≤20)。

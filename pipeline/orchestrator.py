@@ -15,7 +15,7 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE, ALLIN_STACKZERO, ALLIN_ZERO_RUN, SHOWDOWN_GATE, SHOWDOWN_WHITE_TH, POT_LABEL_WHITE_TH, POT_LABEL_TEAL_TH
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE, ALLIN_STACKZERO, ALLIN_ZERO_RUN, ALLIN_DEFER_WRITE, SHOWDOWN_GATE, SHOWDOWN_WHITE_TH, POT_LABEL_WHITE_TH, POT_LABEL_TEAL_TH
 from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips, pot_debounce_step
 from pipeline.label_capture import LabelCapturer  # 信源验证标注采集侧(LABEL_SIGNAL 空时全 no-op)
 from difflib import get_close_matches
@@ -307,6 +307,7 @@ class PipelineOrchestrator:
         self._AMT_SETTLE_MAX = 3         # 金额None最多等这么多帧(实测frame2即settle;此为永不settle的cap)
         self._action_blank_run = {}      # 吞街修:每座动作区连续空白帧数;≥2 清 prev 文本(详见 idle 路注释)
         self._hand_id_lock = {}          # ID手内冻结:本手 座位→名字 首用即锁(_hand_player_name);换手清
+        self._allin_pending = {}         # all-in 写库分层:本手待手末过闸的 all_in 事件(seat→event);换手清
         # 总底池检测改【颜色】(2026-06-10):phash 因 8×8 下"总底池"汉字 vs 数字形状太像(inter=2)
         # 放弃;实测总底池=高饱和青字(白V>180像素=0)、数字=白(白V>180一堆)→ 颜色干净可分。
         # 先 shadow 量 white/teal 两计数(_pot_label_color)→ live 出分布再定阈,同 showdown_corner。
@@ -676,6 +677,7 @@ class PipelineOrchestrator:
         self._action_amt_wait = {}  # 新手清"等金额settle"跳帧计数
         self._action_blank_run = {}  # 新手清动作区空白游程(prev 文本本身由 detector reset 清)
         self._hand_id_lock = {}  # 新手清 ID 冻结(换人合法发生在手间,新手重新首用锁定)
+        self._allin_pending = {}  # 新手清 all-in 待写队列(上手未 flush 的此刻已无效)
         c1 = self.card_recognizer.recognize_single(hero_1)
         c2 = self.card_recognizer.recognize_single(hero_2)
         hand.hero_cards = []
@@ -1251,6 +1253,8 @@ class PipelineOrchestrator:
         # 12a-pre: snapshot per-seat stack BEFORE finalize, while tracker.current_hand
         # is still valid. Stored on hand.raw_data for insurance / rake validation.
         final_stacks = self._capture_seat_stacks()
+        # all-in 写库闸:手末统一 flush(此刻 broken 看护已定稿;hand 仍有效,事件带原 seq)
+        self._flush_pending_allins(db)
         cur = self.tracker.current_hand
         if cur is not None:
             if cur.raw_data is None:
@@ -1892,6 +1896,35 @@ class PipelineOrchestrator:
                        "was_active": st['was_active'], "active_now": is_active}, hand_id=hid)
         return None
 
+    def _flush_pending_allins(self, db):
+        """all-in 写库闸·手末执行(2026-06-11,#243 收尾)。
+
+        分层语义(回答"实时建议时四闸太严?"):检测瞬间已点亮内存 mark
+        (_went_all_in_this_hand + diag)= 实时档,亚秒级,实时引擎将来订阅它;
+        本方法只守【写库档】= 画像/复盘吃的耐久记录,假阳会永久毒数据。
+        闸:①活跃集+②本手曾持牌(was_active latch,检测内已强制)
+            ③归零持续到结算(broken 看护:结算前 stack 读回正数 = 瞬态假阳,
+              live 实测两例假阳【罗湖1401/东胜57】均属此类;结算后赢家栈回填不算)
+        未过闸 → emit veto 诊断丢弃(证据链在 diag 可追溯,不进主表)。
+        """
+        for sidx, event in self._allin_pending.items():
+            st = self._az_state.get(sidx) or {}
+            hid = self.tracker.current_hand.id if self.tracker.current_hand else None
+            if st.get('broken'):
+                diag.emit("all_in.write_vetoed",
+                          {"seat": sidx, "reason": "zero_broken_before_settle",
+                           "amount": event.amount}, hand_id=hid)
+                continue
+            if db is not None:
+                try:
+                    self.event_repo.create(db, event)
+                except Exception:
+                    logger.warning(f"all-in flush seat_{sidx} persist failed", exc_info=True)
+                    continue
+            diag.emit("all_in.write_confirmed",
+                      {"seat": sidx, "amount": event.amount}, hand_id=hid)
+        self._allin_pending = {}
+
     # 占用判定区:stack+id(20260603 录像验:占位紧簇 24-40、空隙 16-24、空座≈0,干净 bimodal)。
     # fold_area 剔除(头像区 弃牌/timer/摊牌/表情噪声 → 占位 hamming 12-48 乱飘、偶掉 5-10 误判空)。
     # 多区取 max:任一区 > 阈即占位(占位时 stack/id 都高,空座两区都≈0)。
@@ -2356,6 +2389,18 @@ class PipelineOrchestrator:
             az_allin_amount = None
             if ALLIN_STACKZERO and self.tracker.has_active_hand:
                 az_allin_amount = self._detect_allin_stackzero(sidx, stack_now)
+                # 四闸③"归零持续到结算"看护(2026-06-11):fire 后若【结算开始前】stack 又读回
+                # 正常数字 = 瞬态假阳(座位易主/误读,live 实测罗湖1401/东胜57 两例)→ 标 broken,
+                # 手末 flush 时拒写。结算后(总底池latch/摊牌latch)赢家栈合法回填,不算 broken —
+                # 否则会误杀"全推后赢了翻倍"的真 all-in。容差 >5 同 12a 的 stack_after 判零口径。
+                _az_st = self._az_state.get(sidx)
+                if (_az_st and _az_st.get('emitted') and not _az_st.get('broken')
+                        and stack_now is not None and stack_now > 5
+                        and not (self._pot_label_latched or self._showdown_latched)):
+                    _az_st['broken'] = True
+                    diag.emit("all_in.zero_broken",
+                              {"seat": sidx, "stack_now": stack_now},
+                              hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
 
             # fold_area is a MULTI-PURPOSE overlay zone at the avatar center.
             # WePoker shows different things at different game states:
@@ -2814,7 +2859,19 @@ class PipelineOrchestrator:
                     )
                     continue
 
-                if db is not None:
+                # all-in 写库分层(2026-06-11,#243 收尾):检测即标记(内存 mark/diag = 实时档,
+                # 上面已设 _went_all_in_this_hand),【写库】推迟到手末过闸(_flush_pending_allins:
+                # ②本手有事件 ③归零持续到结算未 broken)。复盘/画像吃的是耐久记录,手末确认零
+                # 延迟成本;实时建议(后期)订阅内存 mark,与四闸无关。POKEMIR_ALLIN_DEFER=0 回旧行为。
+                if final_action == ActionType.ALL_IN and ALLIN_DEFER_WRITE:
+                    if event.amount is None and az_allin_amount is not None:
+                        # 金额=本街累计口径(与 bet/call/raise 一致):此前投入 + 全推的剩余栈
+                        event.amount = self.tracker._seat_street_amt.get(sidx, 0.0) + az_allin_amount
+                    self._allin_pending[sidx] = event
+                    diag.emit("all_in.write_deferred",
+                              {"seat": sidx, "amount": event.amount},
+                              hand_id=self.tracker.current_hand.id)
+                elif db is not None:
                     _pt = time.perf_counter()
                     self.event_repo.create(db, event)
                     sub_ms["seat_parse_persist"] += (time.perf_counter() - _pt) * 1000.0
