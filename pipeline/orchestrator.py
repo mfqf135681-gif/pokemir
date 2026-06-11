@@ -481,7 +481,10 @@ class PipelineOrchestrator:
             # #241(rebuy 前置):每 tick 扫 +xx(瞬态,某 tick 见到即 latch 该座这手"合法进账")。
             # 两道约束(治误报):① 跳每手前 _xx_deal_skip tick(发牌窗,牌背飞入s0)
             # ② 只扫活跃集座(只有牌里的人能赢 + 活跃集发言概率更低)。活跃集空则回退全座。
-            if self.tracker.has_active_hand and self._empty_refs and \
+            # _empty_refs gate 是 #241(rebuy占用)需要;但 +xx 信源验证(LABEL_SIGNAL=win_amount)也要扫,
+            # 故标注该信号时绕过 empty_refs 闸(production 行为不变)。
+            _want_win_scan = self._empty_refs or (self._labeler.enabled and self._labeler.signal == "win_amount")
+            if self.tracker.has_active_hand and _want_win_scan and \
                     (self.tracker._global_tick_counter - self._hand_start_tick) >= self._xx_deal_skip:
                 _tw = time.perf_counter()
                 self._scan_win_amount(self._active_set or None)
