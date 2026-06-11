@@ -49,7 +49,9 @@ def _parse_blocks(lines):
 
 def main():
     ap = argparse.ArgumentParser(description="采 stack 数字模板 → JSON(管线兜底读用)")
-    ap.add_argument("--session", required=True, help=r"采模板的录像目录")
+    ap.add_argument("--session", default="", help=r"采模板的录像目录(--from-labeled 模式不需要)")
+    ap.add_argument("--from-labeled", default="",
+                    help="信源验证 label session 目录:直接吃 crop+labeled.jsonl(跳过录像/真值txt/seat_rois)")
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--field", default="stack")
     ap.add_argument("--harvest-file", action="append", default=[],
@@ -72,6 +74,53 @@ def main():
     args = ap.parse_args()
 
     import cv2
+
+    # 信源验证 label session 直采:crop 已是 ROI、labeled.jsonl 带真值 → 跳过录像+真值txt+seat_rois。
+    if args.from_labeled:
+        sess = Path(args.from_labeled)
+        labeled = [json.loads(l) for l in open(sess / "labeled.jsonl", encoding="utf-8") if l.strip()]
+
+        def _cells(g):
+            return digit_ocr.segment_cells(digit_reader._col_ink(g, args.ink_th),
+                                           digit_reader.GAP_TH, digit_reader.MIN_GAP,
+                                           digit_reader.MIN_CELL_W, digit_reader.MAX_MERGE_W)
+
+        pool, harv, kept, skipped = {}, [], 0, 0
+        for rec in labeled:
+            truth = str(rec.get("truth", "")).strip()
+            if not truth.isdigit():        # null/x/空/非数字 → 跳(动画/总底池帧)
+                continue
+            img = cv2.imread(str(sess / rec["crop"]))
+            if img is None:
+                continue
+            g = digit_reader._gray_normalize(img)
+            cells = _cells(g)
+            if len(cells) != len(truth):
+                skipped += 1
+                continue
+            for (x0, x1), ch in zip(cells, truth):
+                pool.setdefault(ch, []).append(g[:, x0:x1 + 1].copy())
+            harv.append((sess / rec["crop"], truth))
+            kept += 1
+        have = sorted(pool); miss = sorted(set("0123456789") - set(pool))
+        print(f"采到 pool(从 {kept} 张,切格不齐跳 {skipped}):有 {have}  各样本数 "
+              f"{ {c: len(pool[c]) for c in have} }  缺 {miss}")
+        if miss:
+            print(f"  ⚠️ 缺 {miss} → 这些数字读不出,多录几手含这些数字的池再采补。")
+        reader = digit_reader.DigitReader(exemplars=pool, ink_th=args.ink_th)
+        reader.save(args.out)
+        print(f"模板已存 {args.out}")
+        ok = bad = 0; bads = []
+        for cp, val in harv:
+            got = reader.read(cv2.imread(str(cp)))
+            if str(got) == val:
+                ok += 1
+            else:
+                bad += 1; bads.append((cp.name, val, got))
+        print(f"自检(回读 crop):对 {ok} / 错 {bad}  precision={ok / max(ok + bad, 1):.1%}")
+        for nm, val, got in bads[:20]:
+            print(f"  ✗ {nm} 真'{val}' → 读 {got}")
+        return
 
     icon_right = {int(x) for x in args.icon_right_seats.split(",") if x.strip()}
     prof = json.loads((Path(_ROOT) / "rois" / f"{args.profile}.json").read_text(encoding="utf-8"))

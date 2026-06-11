@@ -302,6 +302,17 @@ class PipelineOrchestrator:
         self.tracker = StateTracker()
         self._labeler = LabelCapturer()  # 信源验证:旁路抽头目标信号(LABEL_SIGNAL 空→禁用)
         self._pot_debounce = {}          # pot 防抖游程({pending,count});换手 _start_new_hand 重置
+        # 总底池 phash(shadow,2026-06-10):结算帧检测,先 diag-only 验,再接收手/摊牌读取窗。
+        # 复用 ActionPhashReader(refs={"总底池":[...]});缺 rois/pot_label_phash_<profile>.json → None no-op。
+        self._pot_label_phash = None
+        try:
+            from pipeline.action_phash import ActionPhashReader as _APR
+            _plp = Path(ROI_CONFIG_DIR) / f"pot_label_phash_{profile}.json"
+            if _plp.is_file():
+                self._pot_label_phash = _APR.load(str(_plp))
+                logger.info(f"[总底池phash] 已载 {_plp.name} 阈值={self._pot_label_phash.threshold}(shadow)")
+        except Exception as _e:
+            logger.warning(f"[总底池phash] 载入失败 {_e!r} → 跳过")
 
         # #10 Load persistent player registry (avatar fingerprints) from disk
         registry = _load_player_registry()
@@ -2748,7 +2759,7 @@ class PipelineOrchestrator:
         amount = None
         pot_text = None
         if DIGIT_RECIPE_LIVE and self._digit_reader is not None:
-            _v = self._reader_for("pot_size").read(pot_img)
+            _v = self._reader_for("pot").read(pot_img)  # zone="pot"(_pot.json);旧"pot_size"查不到退回stack
             if _v is not None:
                 amount = float(_v)
             if not BUTTON_CUT:
@@ -2762,6 +2773,13 @@ class PipelineOrchestrator:
             self._labeler.tap("pot_size", pot_img, amount, raw_text=pot_text,
                               wide_frame=self.capturer.get_cached_frame(), roi=rois.pot_size,
                               hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
+
+        # 总底池 phash shadow(2026-06-10,diag-only):配方读空时若是结算帧 → emit(先验检测,
+        # 不接收手/摊牌窗)。结算帧正是配方返 None 处,故 amount is None 时才查。缺 ref → no-op。
+        if amount is None and self._pot_label_phash is not None:
+            if self._pot_label_phash.match(pot_img):
+                _hid = self.tracker.current_hand.id if self.tracker.current_hand else None
+                diag.emit("pot.label_detected", {"hand_id": str(_hid) if _hid else None}, hand_id=_hid)
 
         # Hand-start signal via 总底池 label (observer-mode fallback when hero ROI
         # is unchanged + community-reset window is too narrow for 250 ms tick).
