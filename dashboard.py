@@ -28,7 +28,7 @@ except ImportError:
 import streamlit as st
 
 from dashboard.db import db_health_check
-from dashboard.pages import coach, labeling, live, replay, settings
+from dashboard.pages import coach, labeling, live, profile, replay, settings
 
 st.set_page_config(
     page_title="Pokemir",
