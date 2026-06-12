@@ -38,8 +38,6 @@ def main():
     ap.add_argument("--sat-th", type=int, default=60)
     ap.add_argument("--val-th", type=int, default=100)
     ap.add_argument("--grid", type=int, default=16, help="hash 网格(8=64位粗;16=256位细);append 时沿用现有")
-    ap.add_argument("--first-char", action=argparse.BooleanOptionalAction, default=True,
-                    help="只 hash 第一个字(跟/加/下/过 互异,治加注下注共享'注');append 沿用现有")
     ap.add_argument("--append", action="store_true",
                     help="追加进现有 action_refs JSON(补缺座,不覆盖已采的多座参考)")
     args = ap.parse_args()
@@ -57,13 +55,13 @@ def main():
 
     out = args.out or os.path.join("rois", f"action_refs_{args.profile}.json")
     refs = {}
-    base_th, base_margin, base_grid, base_first = args.threshold, args.margin, args.grid, args.first_char
+    base_th, base_margin, base_grid = args.threshold, args.margin, args.grid
     if args.append and os.path.exists(out):  # 追加:载现有参考,新锚续上去(沿用现有 grid 保兼容)
         with open(out, encoding="utf-8") as f:
             ex = json.load(f)
         refs = ex.get("refs", {})
         base_th, base_margin = int(ex.get("match_threshold", args.threshold)), int(ex.get("margin", args.margin))
-        base_grid = int(ex.get("grid", 8)); base_first = bool(ex.get("first_char", False))
+        base_grid = int(ex.get("grid", 8))
         log.info(f"追加模式:载现有 {out}({', '.join(f'{w}:{len(h)}' for w, h in refs.items())}) grid={base_grid}")
     for tok in args.anchors.split(","):
         tok = tok.strip()
@@ -89,7 +87,7 @@ def main():
         if a.left < 0 or a.top < 0 or a.left + a.width > W or a.top + a.height > H:
             log.error(f"锚 {tok} 坐标越界"); sys.exit(2)
         crop = frame[a.top:a.top + a.height, a.left:a.left + a.width]
-        h = text_shape_hash(crop, args.sat_th, args.val_th, base_grid, base_first)
+        h = text_shape_hash(crop, args.sat_th, args.val_th, base_grid)
         word = LABEL_TO_WORD[label]
         if not h:
             log.error(f"⚠️ 锚 {tok} 抠不出文字(空 hash)→ 调 --sat-th/--val-th 或换锚"); sys.exit(2)
@@ -97,7 +95,7 @@ def main():
         log.info(f"参考 [{label}→{word}] ← {os.path.basename(fp)} seat{seat}")
 
     payload = {"version": 1, "profile": args.profile,
-               "sat_th": args.sat_th, "val_th": args.val_th, "grid": base_grid, "first_char": base_first,
+               "sat_th": args.sat_th, "val_th": args.val_th, "grid": base_grid,
                "match_threshold": base_th, "margin": base_margin, "refs": refs}
     with open(out, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)

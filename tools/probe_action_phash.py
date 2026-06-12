@@ -74,13 +74,12 @@ def main():
                     help="逗号分隔 frame_substr:seat:action,如 f_000097:0:check,f_000200:3:raise")
     ap.add_argument("--refs-json", default="",
                     help="改载现成参考文件(如 rois/action_refs_party_poker_8.json)验整套多座矩阵;"
-                         "给它则 grid/first_char/sat/val 都从文件读,忽略 --anchors")
+                         "给它则 grid/sat/val 都从文件读,忽略 --anchors")
     ap.add_argument("--thresholds", default="6,8,10,12")
     ap.add_argument("--text-mask", action="store_true",
                     help="用色盲+归一化文字形状 hash(治下注多色 + 各座位置不一);否则用 _avg_hash_64")
     ap.add_argument("--sat-text-th", type=int, default=60, help="抠白字的饱和上限(<=判文字)")
     ap.add_argument("--grid", type=int, default=16, help="text-mask hash 网格(8粗/16细;须与参考同)")
-    ap.add_argument("--first-char", action=argparse.BooleanOptionalAction, default=True, help="只hash第一个字")
     ap.add_argument("--val-text-th", type=int, default=100, help="抠白字的亮度下限(>=判文字)")
     ap.add_argument("--dump", action="store_true")
     args = ap.parse_args()
@@ -92,15 +91,14 @@ def main():
             ref_json = _json.load(f)
         args.text_mask = True  # 参考文件必走 text-shape
         args.grid = int(ref_json.get("grid", args.grid))
-        args.first_char = bool(ref_json.get("first_char", args.first_char))
         args.sat_text_th = int(ref_json.get("sat_th", args.sat_text_th))
         args.val_text_th = int(ref_json.get("val_th", args.val_text_th))
-        log.info(f"载参考文件 {args.refs_json}: grid={args.grid} first_char={args.first_char} "
+        log.info(f"载参考文件 {args.refs_json}: grid={args.grid} "
                  f"sat={args.sat_text_th} val={args.val_text_th}")
     elif not args.anchors:
         log.error("须给 --anchors 或 --refs-json 其一"); sys.exit(2)
 
-    hashfn = (lambda c: text_shape_hash(c, args.sat_text_th, args.val_text_th, args.grid, args.first_char)) if args.text_mask else _avg_hash_64
+    hashfn = (lambda c: text_shape_hash(c, args.sat_text_th, args.val_text_th, args.grid)) if args.text_mask else _avg_hash_64
     if args.text_mask:
         log.info("hash 模式:色盲+归一化文字形状(text-mask)")
 
