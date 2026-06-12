@@ -4,7 +4,7 @@
 >
 > 🚨 **总数上限 10 条**。超过 10 条说明项目正在用红线代替架构治理，应做拆分。
 >
-> 📅 **最近一次复审**：2026-05-17（v0.2.1 落地 + 22:30 重计合并 + 退役 2 条）；2026-05-18（增补 R-10 项目工件隔离）
+> 📅 **最近一次复审**：2026-05-17（v0.2.1 落地）；2026-05-18（增补 R-10）；**2026-06-12（R-4/R-5 合并为契约件红线，腾位给 R-5 识别层冻结；授权=用户同意冻结+保险条款）**
 > 📌 **下次复审节点**：2026-08-17（季度复审）
 > 📚 **当前清单授权**：`requirement-discussions/2026-05-17_21-00-00_项目红线清单.md`（status: confirmed，阶段 7 方案 B + 阶段 8 方案 A）
 
@@ -17,8 +17,8 @@
 | R-1 | 牌室 ToS 合规 | 引入键鼠注入 / 进程内存 / 抓包 / 非白名单 Win hook | 立即停止；REQ 评估 ToS |
 | R-2 | 凭据硬编码禁止 | 源码 default 含真实密码/token；或代码内 `password=` / `token=` 字面量 | 立即停止；迁 .env；轮换 |
 | R-3 | 数据仅限用户自控基础设施 | 向**第三方运维可读**的服务（公有 SaaS）发送 hands / action_events / * 表数据 | 立即停止；保留至用户自控目标；REQ 讨论脱敏 |
-| R-4 | API 契约不可绕过 | 新增/修改对外接口或字段；修改 `contracts/api.yaml` | 阻塞；契约已声明 + 修改须 confirmed 讨论 |
-| R-5 | 数据模型契约不可绕过 | 新增/修改数据库表或字段写入；修改 `contracts/models.sql` | 阻塞；契约已声明 + 修改须 confirmed 讨论 |
+| R-4 | 契约件不可绕过（API+数据模型） | 新增/修改对外接口或字段；新增/修改表或字段写入；修改 `contracts/api.yaml` / `contracts/models.sql` | 阻塞；契约已声明 + 修改须 confirmed 讨论 |
+| R-5 | 识别层冻结（recognition-freeze 契约） | 修改 `contracts/recognition-freeze.md` §2 冻结范围内代码（orchestrator/detector/action_phash/recognition/capture live 路径） | 阻塞；走冻结契约 §4 解冻流程（含求解器保险条款）；豁免=数据/配置运维、tools/*、解释层新模块 |
 | R-6 | ORM 与 SQL 模型同步 | 修改 `contracts/models.sql` | 阻塞；同步 `storage/models.py`；必要时生成 Alembic migration |
 | R-7 | ROI 配置结构一致性 | 修改 `rois/*` 或 `tools/roi_config.py` 配置结构 | 阻塞；change-log §7 提示重跑 roi_config |
 | R-8 | 视觉识别配置一致性 | 修改 `recognition/` 模型加载相关代码 | 阻塞；change-log §7 提示核对 `POKEMIR_MODEL_DIR` / `HF_ENDPOINT` |
@@ -109,7 +109,7 @@
 
 ---
 
-### R-4：API 契约不可绕过
+### R-4：契约件不可绕过（API + 数据模型；2026-06-12 由原 R-4/R-5 合并）
 
 **触发的判定逻辑**：
 - 新增对外接口调用 → 触发，必须在 `contracts/api.yaml` 有定义
@@ -131,23 +131,25 @@
 
 ---
 
-### R-5：数据模型契约不可绕过
+### R-5：识别层冻结（2026-06-12 立，吸收原 R-5 名额；原数据模型条款并入 R-4）
 
 **触发的判定逻辑**：
-- 新增 / 修改数据库表或字段写入 → 触发
-- 新增 / 修改索引 → 触发
-- **修改 `contracts/models.sql` 本身 → 触发**（合规动作含必须的 confirmed 讨论授权）
+- 修改 `contracts/recognition-freeze.md` §2 冻结范围内代码 → 触发
+  （`pipeline/orchestrator.py` / `pipeline/detector.py` / `pipeline/action_phash.py` / `recognition/*` / `capture/*` live 路径）
+- 修改 `contracts/recognition-freeze.md` 本身 → 触发（须用户 confirmed）
 
-**为什么是红线**：数据模型契约保护数据结构一致性。本项目用 PostgreSQL，schema 漂移会导致 ORM 与实际表结构不符。
+**为什么是红线**：识别层信号耦合密、回归面不可见，历史上每次"顺手优化"都付出过天级追凶成本
+（230 毒值 / allowlist 退化 / first_char 埋雷 s4 全盲）。冻结时点已通过三场跨桌型审计体检
+（基线见冻结契约 §3）。改识别层从默认允许翻转为默认禁止+举证解冻。
 
 **合规动作**：
-1. 先确认 `contracts/models.sql` 已声明对应表和字段
-2. 未声明 → 停止，进入 REQ 模式讨论契约修订
-3. 经 REQ `confirmed` 后修订契约 + 同步 ORM（见 R-6）
-4. change-log §1 / §4 显式 cross-link
-5. change-log §5 记录
+1. 停止修改，检查是否命中豁免（数据/配置运维、`tools/*`、解释层新模块、纯注释、安全修复）
+2. 非豁免 → 走 `contracts/recognition-freeze.md` §4 解冻流程：审计数据归因 → §5 登记 case → 用户确认
+3. 🛡️ 保险条款：求解器(#226)解不平且归因识别层的手自动成 case；同类 ≥3 该信号自动解冻
+4. 修复后全量审计回归（audit_session + audit_holes 对基线）→ 回冻
+5. change-log §5 记录 `R-5 触发 + case 引用 + 审计结果`
 
-**例外条款**：同 R-4。
+**例外条款**：见 `contracts/recognition-freeze.md` §2 豁免清单（运维/工具/解释层/注释/安全）。
 
 ---
 
