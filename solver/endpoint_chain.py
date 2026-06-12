@@ -25,6 +25,7 @@ CONTINUOUS = "CONTINUOUS"        # |gap| ≤ tol:正常连续
 REBUY = "REBUY"                  # gap > tol:两手之间补码/增购
 SUSPECT_READ = "SUSPECT_READ"    # gap < -tol:筹码凭空减少 = 某端读数嫌疑
 GAP_UNKNOWN = "GAP_UNKNOWN"      # 端点缺读,无法判
+DUP_IN_HAND = "DUP_IN_HAND"      # 同名玩家在同一手出现两次(ID 重影,常见于半截首手)
 
 
 @dataclass
@@ -67,6 +68,12 @@ def classify_seams(chain: list[HandPoint], tol: float = 6.0) -> list[Seam]:
         s = Seam(player=a.player, prev_hand=a.hand_id, next_hand=b.hand_id,
                  prev_final=a.final, next_initial=b.initial, gap=None,
                  sources=[f"final@{a.hand_id[:8]}", f"initial@{b.hand_id[:8]}"])
+        if a.hand_id == b.hand_id:
+            # 同名同手两个端点 = ID 重影(首跑实数据:半截首手 时来运转转 占两座,
+            # 自接缝 gap=-189 假嫌疑)。两点都不可信,标 DUP 不算 gap。
+            s.kind = DUP_IN_HAND
+            seams.append(s)
+            continue
         if a.final is not None and b.initial is not None:
             s.gap = round(b.initial - a.final, 1)
             if abs(s.gap) <= tol:
@@ -78,6 +85,31 @@ def classify_seams(chain: list[HandPoint], tol: float = 6.0) -> list[Seam]:
                 s.kind = SUSPECT_READ
         seams.append(s)
     return seams
+
+
+OUTLIER_HAND = "OUTLIER_HAND"    # 链级:单手端点离群(前后两接缝反号互抵)
+
+
+def pair_outliers(seams: list[Seam], cancel_frac: float = 0.5) -> list[dict]:
+    """链级单点离群检测(2026-06-12 首跑实数据发现的签名):同一玩家相邻两条接缝
+    反号且大致互抵(SUSPECT_READ 后跟 REBUY,|gap_i+gap_{i+1}| ≤ cancel_frac×max(|·|))
+    = 夹在中间那一手的端点读偏了,不是真补码/真嫌疑(854366:-404→+552 实锤型)。
+
+    只产出标记(中间手 hand_id + 证据),不改 seam 分类不改数据(圈梁纪律4/5);
+    下游(rake 样本/归属/砖1)拿到标记自行决定剔除。"""
+    out = []
+    for a, b in zip(seams, seams[1:]):
+        if a.player != b.player or a.next_hand != b.prev_hand:
+            continue
+        if a.gap is None or b.gap is None:
+            continue
+        opposite = (a.kind, b.kind) in ((SUSPECT_READ, REBUY), (REBUY, SUSPECT_READ))
+        cancels = abs(a.gap + b.gap) <= cancel_frac * max(abs(a.gap), abs(b.gap))
+        if opposite and cancels:
+            out.append({"kind": OUTLIER_HAND, "player": a.player,
+                        "hand": a.next_hand, "gap_in": a.gap, "gap_out": b.gap,
+                        "sources": a.sources + b.sources})
+    return out
 
 
 def hand_residuals(hands_points: dict[str, list[HandPoint]],

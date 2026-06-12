@@ -19,11 +19,11 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from solver.endpoint_chain import (  # noqa: E402
     REBUY, SUSPECT_READ, HandPoint, attribute_winners, classify_seams,
-    hand_residuals, rake_baseline,
+    hand_residuals, pair_outliers, rake_baseline,
 )
 
 
-def fetch(dsn, since):
+def fetch(dsn, since, until):
     import psycopg2
     conn = psycopg2.connect(dsn)
     cur = conn.cursor()
@@ -31,14 +31,15 @@ def fetch(dsn, since):
         """SELECT h.id::text, h.pot_size_final,
                   h.raw_data->'player_stacks_initial', h.raw_data->'player_stacks_final',
                   h.result->'win_amounts_xx'
-           FROM hands h WHERE h.started_at > %s AND h.ended_at IS NOT NULL
-           ORDER BY h.started_at""", (since,))
+           FROM hands h WHERE h.started_at > %s AND h.started_at < %s AND h.ended_at IS NOT NULL
+           ORDER BY h.started_at""", (since, until))
     hands = [{"id": r[0], "pot": r[1], "init": r[2] or {}, "fin": r[3] or {},
               "xx": r[4] or {}} for r in cur.fetchall()]
     cur.execute(
         """SELECT ae.hand_id::text, ae.player_name, (ae.raw_data->>'stack_before')::float
            FROM action_events ae JOIN hands h ON h.id = ae.hand_id
-           WHERE h.started_at > %s AND ae.action_type = 'post_ante'""", (since,))
+           WHERE h.started_at > %s AND h.started_at < %s AND ae.action_type = 'post_ante'""",
+        (since, until))
     antes = defaultdict(list)
     for hid, player, stk in cur.fetchall():
         antes[hid].append((player, stk))
@@ -63,13 +64,15 @@ def seat_player_map(hand, antes):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", required=True)
+    ap.add_argument("--until", default="2100-01-01",
+                    help="上界(不含);不给会把后续 session 粘进来,跨场接缝失真")
     ap.add_argument("--tol", type=float, default=6.0)
     args = ap.parse_args()
     dsn = os.getenv("POKEMIR_AUDIT_DSN")
     if not dsn:
         sys.exit("需 POKEMIR_AUDIT_DSN(只读)")
 
-    hands, antes = fetch(dsn, args.since)
+    hands, antes = fetch(dsn, args.since, args.until)
     by_player = defaultdict(list)       # player → [HandPoint]
     by_hand = {}                        # hand_id → [HandPoint]
     unmapped = 0
@@ -90,18 +93,26 @@ def main():
 
     print(f"== 砖0 端点链清洗:{len(hands)} 手(since {args.since});座位映射缺口 {unmapped} 座次 ==")
 
-    # ① 接缝
-    seams = []
+    # ① 接缝(+ 链级单点离群:反号互抵对 = 中间手端点读偏,非真补码)
+    seams, outliers = [], []
     for player, chain in by_player.items():
-        seams += classify_seams(sorted(chain, key=lambda x: x.idx), tol=args.tol)
+        ss = classify_seams(sorted(chain, key=lambda x: x.idx), tol=args.tol)
+        seams += ss
+        outliers += pair_outliers(ss)
+    outlier_hands = {(o["player"], o["hand"]) for o in outliers}
     kinds = defaultdict(int)
     for s in seams:
         kinds[s.kind] += 1
-    print(f"\n== ① 接缝分类({len(seams)} 条) ==")
+    print(f"\n== ① 接缝分类({len(seams)} 条;链级离群手 {len(outliers)}) ==")
     for k, n in sorted(kinds.items(), key=lambda kv: -kv[1]):
         print(f"  {k:14s} {n}")
+    for o in outliers:
+        print(f"  OUTLIER_HAND {o['player']:<14s} {o['hand'][:8]} "
+              f"(入{o['gap_in']:+.0f}/出{o['gap_out']:+.0f})")
     for s in seams:
-        if s.kind in (REBUY, SUSPECT_READ):
+        if s.kind in (REBUY, SUSPECT_READ) and \
+                (s.player, s.next_hand) not in outlier_hands and \
+                (s.player, s.prev_hand) not in outlier_hands:
             print(f"  {s.kind:12s} {s.player:<14s} gap={s.gap:+8.1f}"
                   f"{'  [整数]' if s.round_hint else ''}  {s.prev_hand[:8]}→{s.next_hand[:8]}")
 

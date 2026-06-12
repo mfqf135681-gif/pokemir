@@ -102,3 +102,36 @@ class TestAttribution:
         pts = [hp("h1", 0, "A", 500, 498), hp("h1", 0, "B", 300, 299)]
         r = attribute_winners(pts, pot=50)
         assert r["winners"] == [] and r["agree_xx"] is None
+
+
+class TestPairOutliers:
+    def test_misread_middle_hand(self):
+        # 854366 实锤型: -404 后 +552 互抵 → 中间手端点离群
+        from solver.endpoint_chain import pair_outliers
+        chain = [hp("h1", 0, "A", 900, 880), hp("h2", 1, "A", 476, 460),
+                 hp("h3", 2, "A", 1012, 1000)]
+        seams = classify_seams(chain)
+        outs = pair_outliers(seams)
+        assert len(outs) == 1 and outs[0]["hand"] == "h2"
+
+    def test_true_rebuy_not_flagged(self):
+        # 真补码: 大正 gap 后链继续连续 → 无反号对,不标
+        from solver.endpoint_chain import pair_outliers
+        chain = [hp("h1", 0, "A", 100, 20), hp("h2", 1, "A", 520, 480),
+                 hp("h3", 2, "A", 478, 430)]
+        assert pair_outliers(classify_seams(chain)) == []
+
+    def test_non_cancelling_not_flagged(self):
+        # 反号但不互抵(-300 后 +30)→ 不是单点离群,不标
+        from solver.endpoint_chain import pair_outliers
+        chain = [hp("h1", 0, "A", 900, 880), hp("h2", 1, "A", 580, 560),
+                 hp("h3", 2, "A", 590, 550)]
+        assert pair_outliers(classify_seams(chain)) == []
+
+    def test_dup_in_hand(self):
+        # 半截首手同名占两座(时来运转转型)→ DUP 标记不算 gap
+        from solver.endpoint_chain import DUP_IN_HAND
+        chain = [hp("h1", 0, "A", 500, 480), hp("h1", 0, "A", 300, 290),
+                 hp("h2", 1, "A", 480, 470)]
+        s = classify_seams(chain)
+        assert s[0].kind == DUP_IN_HAND and s[0].gap is None
