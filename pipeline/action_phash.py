@@ -23,10 +23,15 @@ logger = logging.getLogger(__name__)
 LABEL_TO_WORD = {"check": "过牌", "raise": "加注", "call": "跟注", "bet": "下注", "fold": "弃牌"}
 
 
-def text_norm_img(crop, sat_th=60, val_th=100):
+def text_norm_img(crop, sat_th=60, val_th=100, min_ink_px=20, min_ink_frac=0.15):
     """抠白字(S<sat_th 且 V>val_th,排除高饱和底色)→ 文字外接框裁出 → resize 16×16 二值图。
     去底色(治下注多色)+ 去位置/尺度(治各座 ROI 相对位置不一)。无字 → None。
-    框内应为单个汉字(首字框),输出方形。BGR(imread)与 BGRA(mss 截屏)都吃。Win-only(cv2)。"""
+    框内应为单个汉字(首字框),输出方形。BGR(imread)与 BGRA(mss 截屏)都吃。Win-only(cv2)。
+
+    墨量闸(2026-06-12):真汉字在外接框内墨占比 ~30-50%;旧门槛"≥4 亮像素即出 hash"
+    把斑点/气泡碎片放进来当形状(auto_collect 事故:空气泡种子产出 6% 墨的垃圾参考,
+    跨座空配距离 0 → 假覆盖)。双闸:绝对 ≥min_ink_px 像素 且 外接框内占比 ≥min_ink_frac
+    → 否则返 None(builder 当场报"抠不出字",live 不出假动作)。"""
     import cv2
     import numpy as np
     if crop is None or getattr(crop, "size", 0) == 0 or crop.ndim != 3:
@@ -35,9 +40,11 @@ def text_norm_img(crop, sat_th=60, val_th=100):
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     mask = ((hsv[..., 1] < sat_th) & (hsv[..., 2] > val_th)).astype(np.uint8)
     ys, xs = np.where(mask)
-    if len(xs) < 4:
+    if len(xs) < min_ink_px:
         return None
     text = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    if float(text.mean()) < min_ink_frac:   # 外接框内墨占比(斑点散布时占比极低)
+        return None
     return cv2.resize(text * 255, (16, 16), interpolation=cv2.INTER_AREA)
 
 
