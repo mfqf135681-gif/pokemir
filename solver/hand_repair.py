@@ -138,9 +138,13 @@ def solve_hand(facts: HandFacts, tol: float = 6.0, rake_allow: float = 30.0) -> 
     residual = round(gap - fixed, 1)
 
     # ③ 残余 → 唯一赢家侧(C2′ 端点二次印证;rake 用容忍带,不硬给数)
+    # 护栏(2026-06-12 单测猎出):存在【无端点读数的投入者】时禁用赢家侧兜底——
+    # 缺口可能是他们的,吸到赢家头上=张冠李戴;宁可 UNSOLVED 让病因分类指 MAPPING_GAP。
+    contributors = {p for (p, _st) in facts.street_contrib}
+    has_unmapped_contributor = bool(contributors - set(facts.nets))
     winners = sorted(facts.xx_winners | {p for p, n in facts.nets.items() if n > tol})
     winner_fix = 0.0
-    if residual > tol and len(winners) == 1:
+    if residual > tol and len(winners) == 1 and not has_unmapped_contributor:
         w = winners[0]
         if w in facts.nets:
             # C2′:投入_w ≈ pot - rake - net_w;其缺口 = (pot - net_w - 投入_w(已记)) 减 rake∈[0,rake_allow]

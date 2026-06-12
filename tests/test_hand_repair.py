@@ -106,3 +106,50 @@ class TestStreetAssign:
         r = solve_hand(f)
         m = next(x for x in r.repairs if x.player == "B")
         assert m.street_uncertain and m.delta == 92.0
+
+
+class TestDiagnose:
+    def _facts(self, pot, contrib, nets, xx=()):
+        return HandFacts(hand_id="d", pot_final=pot, antes={},
+                         street_contrib=contrib, nets=nets, xx_winners=set(xx))
+
+    def test_pot_suspect_low(self):
+        # 输家端点共流出 600,pot 只有 200 → pot 读小了(J-7 指向 pot)
+        from solver.diagnose import POT_SUSPECT_LOW, classify_unsolved
+        f = self._facts(200.0, {("A", "flop"): 100.0}, {"A": -600.0, "B": 560.0}, xx=("B",))
+        r = solve_hand(f)
+        assert classify_unsolved(f, r)["cause"] == POT_SUSPECT_LOW
+
+    def test_record_overread(self):
+        # -2467 型:记录远超 pot 且端点撑不住
+        from solver.diagnose import RECORD_OVERREAD, classify_unsolved
+        f = self._facts(100.0, {("A", "flop"): 2500.0}, {"A": -50.0, "B": 42.0}, xx=("B",))
+        r = solve_hand(f)
+        assert r.status == UNSOLVED
+        assert classify_unsolved(f, r)["cause"] == RECORD_OVERREAD
+
+    def test_mapping_gap(self):
+        # 投入者 C 没有端点读数 → 缺口找不到主
+        from solver.diagnose import MAPPING_GAP, classify_unsolved
+        f = self._facts(300.0, {("A", "flop"): 100.0, ("C", "flop"): 50.0},
+                        {"A": -100.0, "B": 130.0}, xx=("B",))
+        r = solve_hand(f)
+        assert classify_unsolved(f, r)["cause"] == MAPPING_GAP
+
+    def test_insurance_suspect(self):
+        # 正小额残余 + 本手有 all-in → 保费走池外。
+        # 构造:赢家 C2′ 印证失败(net=90 → implied=-10 vs residual=30,差40>36)→ UNSOLVED
+        from solver.diagnose import INSURANCE_SUSPECT, classify_unsolved
+        f = self._facts(130.0, {("A", "flop"): 50.0, ("B", "flop"): 50.0},
+                        {"A": -54.0, "B": 90.0}, xx=("B",))
+        r = solve_hand(f)
+        assert r.status == UNSOLVED
+        assert classify_unsolved(f, r, has_allin=True)["cause"] == INSURANCE_SUSPECT
+
+    def test_small_residual(self):
+        from solver.diagnose import SMALL_RESIDUAL, classify_unsolved
+        f = self._facts(111.0, {("A", "flop"): 50.0, ("B", "flop"): 50.0},
+                        {"A": -54.0, "B": 49.0}, xx=("B",))
+        r = solve_hand(f)
+        if r.status == UNSOLVED:
+            assert classify_unsolved(f, r)["cause"] == SMALL_RESIDUAL

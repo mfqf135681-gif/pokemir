@@ -13,6 +13,7 @@ import sys
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from solver.diagnose import classify_unsolved  # noqa: E402
 from solver.hand_repair import EXACT, REPAIRED, UNSOLVED, HandFacts, solve_hand  # noqa: E402
 from tools.solve_session import fetch as fetch_endpoints, seat_player_map  # noqa: E402
 
@@ -81,12 +82,20 @@ def main():
 
     hands, antes_ep = fetch_endpoints(dsn, args.since, args.until)
     events = fetch_events(dsn, args.since, args.until)
-    reports, pots = [], {}
+    reports, pots, causes = [], {}, defaultdict(list)
     for h in hands:
         sm = seat_player_map(h, antes_ep)
-        facts = build_facts(h, events.get(h["id"], []), sm)
-        reports.append(solve_hand(facts, tol=args.tol))
+        evs = events.get(h["id"], [])
+        facts = build_facts(h, evs, sm)
+        r = solve_hand(facts, tol=args.tol)
+        reports.append(r)
         pots[h["id"]] = h["pot"]
+        if r.status == UNSOLVED:
+            # 砖2:病因分类(J-7 pot反审 / 保险 / 映射缺口 / 小额残余)
+            d = classify_unsolved(facts, r,
+                                  has_allin=any(e[2] == "all_in" for e in evs),
+                                  has_insurance_hint=bool(h.get("insurance")))
+            causes[d["cause"]].append((h["id"][:8], d["evidence"]))
 
     n = len(reports)
     by = defaultdict(list)
@@ -128,6 +137,12 @@ def main():
             print(f"  {r.hand_id[:8]} {x.kind:16s} {x.player:<14s} Δ{x.delta:<8.1f} "
                   f"街[{st}]{' ⚠️街不定' if x.street_uncertain else ''}")
             shown += 1
+
+    print(f"\n== UNSOLVED 病因分类(砖2) ==")
+    for cause, lst in sorted(causes.items(), key=lambda kv: -len(kv[1])):
+        print(f"  {cause:20s} {len(lst)}")
+        for hid, ev in lst[:3]:
+            print(f"      {hid} {ev}")
 
     print(f"\n== UNSOLVED 登记簿行(喂 recognition-freeze §5) ==")
     for r in by[UNSOLVED][:10]:
