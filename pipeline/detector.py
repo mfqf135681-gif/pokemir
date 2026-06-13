@@ -304,6 +304,8 @@ class StateTracker:
         )
         self.normalizer.reset()
         self._prev_action_texts.clear()
+        self._last_action_at.clear()   # 2026-06-12 复盘:dedup 跨手残留(尤其加金额维度后同玩家
+        #   下手又 call 同额)会误判重复 → 每手清(既有遗留,本轮顺手治;手间隔通常>5s 故影响小)
         self._prev_community_count = 0
         self.latest_pot_bb = None
         self._hand_pot_peak = None

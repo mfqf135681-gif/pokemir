@@ -100,6 +100,7 @@ def _solve_recent(limit: int) -> list[dict]:
     from solver.diagnose import classify_unsolved
     from solver.endpoint_chain import HandPoint, heal_finals
     from solver.hand_repair import UNSOLVED, solve_hand
+    from solver.replay_view import build_solved_timeline
     from tools.solve_hands import build_facts
     from tools.solve_session import seat_player_map
 
@@ -165,11 +166,14 @@ def _solve_recent(limit: int) -> list[dict]:
             cause = classify_unsolved(facts, rep,
                                       has_allin=any(e["action"] == "all_in" for e in evs),
                                       has_insurance_hint=bool(h["insurance"]))
+        # 复盘审计修(2026-06-12):存完整 tl,详情页直接渲染缓存结果 —— 列表(愈合后)与
+        # 详情【同一次求解】,杜绝"列表标已补账、详情显补不平"的状态打架(单手重算无链=无愈合)。
+        tl = build_solved_timeline(facts, rep, evs, cause=cause)
         out.append({"hid": h["id"], "t": h["t"], "pot": h["pot"], "status": rep.status,
                     "cause": (cause or {}).get("cause"),
                     "cause_cn": _CAUSE_CN.get((cause or {}).get("cause"), ""),
                     "repairs_n": len(rep.repairs), "gap_before": rep.gap_before,
-                    "residual": rep.gap_after})
+                    "residual": rep.gap_after, "tl": tl})
     return list(reversed(out))   # 回到时间降序(最近在前)
 
 
@@ -177,15 +181,8 @@ def _render_solved_replay():
     """🧮 逐手求解复盘:批量求解(缓存)→ 按状态筛选(精准定位补不平)→ 单手时间线。
 
     展示铁律(solver/replay_view 同源):推断行带 🔧 与原始记录双重区分,
-    UNSOLVED 必须透出病因与残余 —— 绝不把推算的冒充看见的。"""
-    from dashboard.db import safe_query
-    from solver.diagnose import classify_unsolved
-    from solver.endpoint_chain import HandPoint, heal_finals
-    from solver.hand_repair import UNSOLVED, solve_hand
-    from solver.replay_view import build_solved_timeline
-    from tools.solve_hands import build_facts
-    from tools.solve_session import seat_player_map
-
+    UNSOLVED 必须透出病因与残余 —— 绝不把推算的冒充看见的。
+    求解全在 _solve_recent(缓存,含链愈合);本函数只筛选+渲染缓存 tl。"""
     st.subheader("🧮 逐手求解复盘 — 识别记录 + 账房先生补账")
 
     col_n, col_f = st.columns([1, 2])
@@ -221,39 +218,9 @@ def _render_solved_replay():
         tail = f" — {r['cause_cn']}" if r["status"] == "UNSOLVED" and r["cause_cn"] else ""
         return f"{ic} {r['t']}  pot={r['pot']}  {r['hid'][:8]}{tail}"
 
-    label_map = {_label(r): r["hid"] for r in shown}
+    label_map = {_label(r): r for r in shown}
     choice = st.selectbox(f"选一手(共 {len(shown)} 手)", list(label_map.keys()))
-    hid = label_map[choice]
-
-    # 单手详情:复用与批量同源的求解(单手不愈合,愈合需链;若需愈合该手已在概览反映)
-    hrow = safe_query(
-        """SELECT h.pot_size_final AS pot, h.raw_data->'player_stacks_initial' AS init,
-                  h.raw_data->'player_stacks_final' AS fin, h.result->'win_amounts_xx' AS xx,
-                  h.seats AS seats, h.raw_data->>'sb_seat' AS sb_seat,
-                  h.raw_data->>'bb_seat' AS bb_seat, h.raw_data->>'button_seat_index' AS btn_seat,
-                  h.raw_data->'insurance_inferred' AS insurance
-           FROM hands h WHERE h.id = :hid""", {"hid": hid})
-    erows = safe_query(
-        """SELECT sequence_number AS seq, street, player_name AS player,
-                  action_type AS action, amount, (raw_data->>'stack_before')::float AS stk_b
-           FROM action_events WHERE hand_id = :hid ORDER BY sequence_number""", {"hid": hid})
-    if not hrow:
-        st.warning("该手数据不完整。")
-        return
-    h = {**hrow[0], "id": hid, "init": hrow[0]["init"] or {}, "fin": hrow[0]["fin"] or {},
-         "xx": hrow[0]["xx"] or {}, "seats": hrow[0]["seats"] or {},
-         "insurance": hrow[0]["insurance"] or []}
-    ante_pairs = [(e["player"], e["stk_b"]) for e in (erows or []) if e["action"] == "post_ante"]
-    ev_tuples = [(e["player"], e["street"], e["action"], e["amount"], e["stk_b"]) for e in (erows or [])]
-    sm = seat_player_map(h, {hid: ante_pairs})
-    facts = build_facts(h, ev_tuples, sm)
-    report = solve_hand(facts)
-    cause = None
-    if report.status == UNSOLVED:
-        cause = classify_unsolved(facts, report,
-                                  has_allin=any(e["action"] == "all_in" for e in (erows or [])),
-                                  has_insurance_hint=bool(h["insurance"]))
-    tl = build_solved_timeline(facts, report, erows or [], cause=cause)
+    tl = label_map[choice]["tl"]   # 直接取批量求解(含愈合)缓存的 tl,列表/详情同源一致
 
     # 状态横幅(配色:绿/蓝/橙)
     if tl["status"] == "EXACT":
