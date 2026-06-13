@@ -135,3 +135,54 @@ class TestPairOutliers:
                  hp("h2", 1, "A", 480, 470)]
         s = classify_seams(chain)
         assert s[0].kind == DUP_IN_HAND and s[0].gap is None
+
+
+class TestHealFinals:
+    def test_heal_clobbered_winner_final(self):
+        # bafca031 型:赢家 final 被摊牌动画拍坏(读 1,真 1110),Σnet 暴负 → 下一手 initial 回填。
+        # 含死钱座 D1/D2 使守恒 Σnet 真实趋零(无死钱则 Σ 不闭合,band 校不过)
+        from solver.endpoint_chain import heal_finals
+        by_player = {
+            "W": [hp("h1", 0, "W", 1000.0, 1.0), hp("h2", 1, "W", 1110.0, 1090.0)],
+            "L": [hp("h1", 0, "L", 200.0, 110.0)],     # 输 90
+            "D1": [hp("h1", 0, "D1", 50.0, 40.0)],     # 死钱 -10
+            "D2": [hp("h1", 0, "D2", 50.0, 40.0)],     # 死钱 -10
+        }
+        _, recs = heal_finals(by_player, {"h1": 200.0, "h2": 2000.0})
+        assert len(recs) == 1 and recs[0]["player"] == "W" and recs[0]["healed_final"] == 1110.0
+        assert recs[0]["net_after"] == 110.0     # 回填后该座 net 落可信带(由 -999 变 +110)
+
+    def test_no_heal_when_conservation_already_ok(self):
+        # 正常手:Σnet 在合理带 → 不动
+        from solver.endpoint_chain import heal_finals
+        by_player = {
+            "A": [hp("h1", 0, "A", 500.0, 590.0), hp("h2", 1, "A", 590.0, 580.0)],
+            "B": [hp("h1", 0, "B", 300.0, 210.0)],
+        }
+        _, recs = heal_finals(by_player, {"h1": 100.0})
+        assert recs == []
+
+    def test_heal_rejected_when_next_is_rebuy(self):
+        # 触发愈合,但坏读座下一手 initial 是 rebuy(5000)→ 回填后 Σnet 暴正出带 → 整手拒绝
+        # (防 rebuy 污染抹掉真账;all-or-nothing 保守:宁可不修也不写错)
+        from solver.endpoint_chain import heal_finals
+        by_player = {
+            "W": [hp("h1", 0, "W", 1000.0, 1.0), hp("h2", 1, "W", 5000.0, 4980.0)],
+            "L": [hp("h1", 0, "L", 200.0, 110.0)],
+            "D1": [hp("h1", 0, "D1", 50.0, 40.0)],
+            "D2": [hp("h1", 0, "D2", 50.0, 40.0)],
+        }
+        _, recs = heal_finals(by_player, {"h1": 200.0, "h2": 9000.0})
+        assert recs == []   # rebuy 的 5000 回填使 Σnet 出带 → 不接受
+
+    def test_no_heal_without_next_hand(self):
+        # 坏读但无下一手(玩家离桌/session 末手)→ 无可回填 → 不修(diagnose 落 FINAL_SNAPSHOT_SUSPECT)
+        from solver.endpoint_chain import heal_finals
+        by_player = {
+            "W": [hp("h1", 0, "W", 1000.0, 1.0)],
+            "L": [hp("h1", 0, "L", 200.0, 110.0)],
+            "D1": [hp("h1", 0, "D1", 50.0, 40.0)],
+            "D2": [hp("h1", 0, "D2", 50.0, 40.0)],
+        }
+        _, recs = heal_finals(by_player, {"h1": 200.0})
+        assert recs == []

@@ -37,7 +37,7 @@ def fetch_events(dsn, since, until):
     return ev
 
 
-def build_facts(h, events, seat_map):
+def build_facts(h, events, seat_map, final_override=None):
     antes, contrib, folded = {}, {}, {}
     for player, street, atype, amount, stk_b in events:
         if atype == "post_ante" and amount:
@@ -56,10 +56,12 @@ def build_facts(h, events, seat_map):
                 contrib[k] = contrib.get(k, 0.0) + float(stk_b)
         elif atype == "fold" and player not in folded:
             folded[player] = street
-    # 端点净额 + +xx 赢家(座→玩家映射来自值匹配)
+    # 端点净额 + +xx 赢家(座→玩家映射来自值匹配)。final_override:链愈合(砖4)回填值
     nets, xx = {}, set()
     for seat, player in seat_map.items():
         i, f = h["init"].get(seat), h["fin"].get(seat)
+        if player in (final_override or {}):
+            f = final_override[player]   # 用下一手 initial 回填的愈合 final
         if i is not None and f is not None:
             nets[player] = float(f) - float(i)
         if seat in (h["xx"] or {}):
@@ -80,18 +82,38 @@ def main():
     if not dsn:
         sys.exit("需 POKEMIR_AUDIT_DSN(只读)")
 
+    from solver.endpoint_chain import HandPoint, heal_finals
+
     hands, antes_ep = fetch_endpoints(dsn, args.since, args.until)
     events = fetch_events(dsn, args.since, args.until)
-    reports, pots, causes = [], {}, defaultdict(list)
+
+    # 砖4 第一遍:建跨手端点链 → 链愈合(摊牌动画拍坏的 final 用下一手 initial 回填)
+    seat_maps = {h["id"]: seat_player_map(h, antes_ep) for h in hands}
+    by_player = defaultdict(list)
+    pots = {}
+    for idx, h in enumerate(hands):
+        pots[h["id"]] = h["pot"]
+        for seat, player in seat_maps[h["id"]].items():
+            i, f = h["init"].get(seat), h["fin"].get(seat)
+            by_player[player].append(HandPoint(
+                hand_id=h["id"], idx=idx, player=player,
+                initial=float(i) if i is not None else None,
+                final=float(f) if f is not None else None))
+    _, heal_records = heal_finals(by_player, pots, tol=args.tol)
+    overrides = defaultdict(dict)   # hand_id → {player: healed_final}
+    for rec in heal_records:
+        overrides[rec["hand"]][rec["player"]] = rec["healed_final"]
+
+    # 第二遍:用愈合后的 final 求解
+    reports, causes = [], defaultdict(list)
     for h in hands:
-        sm = seat_player_map(h, antes_ep)
+        sm = seat_maps[h["id"]]
         evs = events.get(h["id"], [])
-        facts = build_facts(h, evs, sm)
+        facts = build_facts(h, evs, sm, final_override=overrides.get(h["id"]))
         r = solve_hand(facts, tol=args.tol)
         reports.append(r)
-        pots[h["id"]] = h["pot"]
         if r.status == UNSOLVED:
-            # 砖2:病因分类(J-7 pot反审 / 保险 / 映射缺口 / 小额残余)
+            # 砖2:病因分类(FINAL坏读 / J-7 pot反审 / 保险 / 映射缺口 / 小额残余)
             d = classify_unsolved(facts, r,
                                   has_allin=any(e[2] == "all_in" for e in evs),
                                   has_insurance_hint=bool(h.get("insurance")))

@@ -114,9 +114,11 @@ class TestDiagnose:
                          street_contrib=contrib, nets=nets, xx_winners=set(xx))
 
     def test_pot_suspect_low(self):
-        # 输家端点共流出 600,pot 只有 200 → pot 读小了(J-7 指向 pot)
+        # 多输家:各自亏 120(均 < pot,非 final 坏读)但合计 240 > pot 200 → pot 读小了。
+        # (单人亏超整池属 FINAL_SNAPSHOT_SUSPECT,不是 pot 低读 —— 两类分界)
         from solver.diagnose import POT_SUSPECT_LOW, classify_unsolved
-        f = self._facts(200.0, {("A", "flop"): 100.0}, {"A": -600.0, "B": 560.0}, xx=("B",))
+        f = self._facts(200.0, {("A", "flop"): 100.0, ("C", "flop"): 100.0},
+                        {"A": -120.0, "C": -120.0, "B": 232.0}, xx=("B",))
         r = solve_hand(f)
         assert classify_unsolved(f, r)["cause"] == POT_SUSPECT_LOW
 
@@ -153,3 +155,19 @@ class TestDiagnose:
         r = solve_hand(f)
         if r.status == UNSOLVED:
             assert classify_unsolved(f, r)["cause"] == SMALL_RESIDUAL
+
+
+class TestFinalSnapshotSuspect:
+    def test_impossible_loss_flagged_first(self):
+        # 赢家 final 坏读(net < -pot)→ FINAL_SNAPSHOT_SUSPECT,且压过 pot/保险误判
+        from solver.diagnose import FINAL_SNAPSHOT_SUSPECT, classify_unsolved
+        f = HandFacts(hand_id="bad", pot_final=772.0,
+                      antes={"W": 4.0, "L": 4.0},
+                      street_contrib={("W", "preflop"): 36.0, ("L", "preflop"): 36.0,
+                                      ("L", "flop"): 338.0, ("W", "flop"): 338.0},
+                      nets={"W": -3251.0, "L": -367.0},   # W 是赢家但 final 坏读成 net -3251
+                      xx_winners={"W"})
+        r = solve_hand(f)
+        assert r.status == UNSOLVED
+        d = classify_unsolved(f, r, has_allin=True)
+        assert d["cause"] == FINAL_SNAPSHOT_SUSPECT and "W" in d["evidence"]

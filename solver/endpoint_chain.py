@@ -112,6 +112,78 @@ def pair_outliers(seams: list[Seam], cancel_frac: float = 0.5) -> list[dict]:
     return out
 
 
+FINAL_HEALED = "FINAL_HEALED"    # 本手某座 final 读坏(摊牌动画),用下一手 initial 回填
+
+
+def heal_finals(by_player: dict[str, list[HandPoint]],
+                pot_of: dict[str, float], tol: float = 6.0,
+                rake_allow: float = 30.0) -> tuple[dict, list[dict]]:
+    """链愈合(砖4,bafca031 实案):摊牌结算动画拍坏 final → 用【下一手 initial】回填。
+
+    触发签名:某手 Σnet ≪ -(pot+rake)(钱凭空蒸发)——摊牌者 final 被读成假低值
+    (bafca031:赢家 seat5 final 读 1、真 ~3900,net 假装 -3251)。
+    回填:该手某玩家 net < -(pot+tol)(输得比整池还多=物理不可能)→ 取其下一手
+    initial 当愈合后 final。
+    🔒 守恒自校(2+印证 + 防 rebuy 污染):回填后该手 Σnet 必须落回
+    [-(pot+rake_allow), tol] 才接受;否则回退原值(真 all-in 输光+下手 rebuy 会让
+    Σnet 偏正 → 自动拒绝,不会抹掉真实输光)。
+
+    返回 (healed_by_player, heal_records);原 HandPoint 不改(造新对象,纪律4)。
+    """
+    # 玩家 → {idx: 下一手 initial}
+    next_init: dict[str, dict[int, float]] = {}
+    for player, chain in by_player.items():
+        ordered = sorted(chain, key=lambda x: x.idx)
+        nxt = next_init.setdefault(player, {})
+        for a, b in zip(ordered, ordered[1:]):
+            if b.initial is not None:
+                nxt[a.idx] = b.initial
+
+    # 按手归组(用 hand_id)
+    by_hand: dict[str, list[HandPoint]] = {}
+    for chain in by_player.values():
+        for p in chain:
+            by_hand.setdefault(p.hand_id, []).append(p)
+
+    overrides: dict[tuple[str, str], float] = {}   # (hand_id, player) → healed final
+    records: list[dict] = []
+    for hid, pts in by_hand.items():
+        pot = pot_of.get(hid)
+        if pot is None:
+            continue
+        # 逐座判:net < -(pot+tol) = 输得比整池还多 = 物理不可能 = final 坏读(触发签名)。
+        # 不要求全手 Σnet 闭合 —— 弃牌座常无 final 读,Σ 永远凑不齐(real-data 教训:
+        # 全手守恒带太严,bafca031 因死钱座缺 final 被拒)。改【逐座可信度】校验:
+        # 回填后该座 net 必落 [-(pot+tol), pot+tol](赢不超整池、亏不超整池)= 由不可能
+        # 变可信。next_init 是独立读(下一手开局快照)→ 2 印证:本手 final 坏 vs 下手 init 信。
+        # rebuy 防护:rebuy 抬高 next_init → 回填 net 超 +pot → 出带自动拒(不抹真账)。
+        for p in pts:
+            if p.net is None or p.net >= -(pot + tol):
+                continue   # 非"不可能亏",不碰(含真 all-in 输光:亏≤自身栈≤对手栈,通常≥-pot)
+            ni = next_init.get(p.player, {}).get(p.idx)
+            if ni is None or p.initial is None:
+                continue   # 无下一手可回填 → 留 FINAL_SNAPSHOT_SUSPECT
+            healed_net = ni - p.initial
+            if -(pot + tol) <= healed_net <= pot + tol:
+                overrides[(hid, p.player)] = ni
+                records.append({"kind": FINAL_HEALED, "hand": hid, "player": p.player,
+                                "healed_final": ni, "net_before": round(p.net, 1),
+                                "net_after": round(healed_net, 1)})
+    # 造愈合后的新链(原对象不动)
+    healed_by_player: dict[str, list[HandPoint]] = {}
+    for player, chain in by_player.items():
+        new_chain = []
+        for p in chain:
+            ov = overrides.get((p.hand_id, p.player))
+            if ov is not None:
+                new_chain.append(HandPoint(hand_id=p.hand_id, idx=p.idx, player=p.player,
+                                           initial=p.initial, final=ov, win_xx=p.win_xx))
+            else:
+                new_chain.append(p)
+        healed_by_player[player] = new_chain
+    return healed_by_player, records
+
+
 def hand_residuals(hands_points: dict[str, list[HandPoint]],
                    tol_seat: float = 6.0, rake_cap: float = 500.0) -> dict:
     """② 手内残差:每手 Σnet ≈ -rake(钱只能流向 rake)。

@@ -7,6 +7,9 @@
 病因(按检验顺序,首中即归):
   POT_SUSPECT_LOW   端点说输家们实际输掉的钱 > pot+rake容忍 → pot 读小了
                     (钱物理上离开了输家的栈,pot 却装不下 → J-7 三角指向 pot)
+  FINAL_SNAPSHOT_SUSPECT 某座净额 < -(pot+tol)=输得比整池还多(物理不可能)→ 其 final
+                    被摊牌动画拍坏(bafca031:赢家 final 读 1)。链愈合(heal_finals)
+                    未能修复时落此类(如 session 末手无下一手可回填)。【首位检查】
   RECORD_OVERREAD   已记录投入 > pot 且 > 端点能支持的量 → 某笔金额记大了(-2467 型)
   INSURANCE_SUSPECT 残余为正小额 且 本手有 all-in/保险推断 → 保费/赔付走了池外
   MAPPING_GAP       有投入记录的玩家缺端点(座位映射缺口)→ 缺口找不到主
@@ -15,6 +18,7 @@
 """
 from __future__ import annotations
 
+FINAL_SNAPSHOT_SUSPECT = "FINAL_SNAPSHOT_SUSPECT"
 POT_SUSPECT_LOW = "POT_SUSPECT_LOW"
 RECORD_OVERREAD = "RECORD_OVERREAD"
 INSURANCE_SUSPECT = "INSURANCE_SUSPECT"
@@ -31,6 +35,15 @@ def classify_unsolved(facts, report, has_allin: bool = False,
     residual = report.gap_after if report.gap_after is not None else report.gap_before
     pot = facts.pot_final or 0.0
     recorded = facts.recorded_total()
+
+    # 【首位】final 坏读:任一座(含赢家)输得比整池还多 = 物理不可能 = 其 final 被摊牌动画
+    # 拍坏(bafca031 赢家 final 读 1)。此签名必须在 losses/pot 推断【之前】判,
+    # 否则坏读会污染 losses 把锅甩给 pot(POT_SUSPECT_LOW)或被小额残余误判保险。
+    impossible = sorted(p for p, n in facts.nets.items() if n < -(pot + tol))
+    if impossible:
+        return {"cause": FINAL_SNAPSHOT_SUSPECT,
+                "evidence": f"净额<-pot 的座(final坏读)={impossible};链愈合无下一手可回填"}
+
     losses = sum(-n for p, n in facts.nets.items()
                  if n < -tol and p not in facts.xx_winners)
 
