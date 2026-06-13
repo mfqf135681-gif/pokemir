@@ -82,7 +82,8 @@ class StateTracker:
         # action_type),value=unix ts。同 key 5 秒窗口内重复触发直接 skip,
         # 治 call/raise overlay 持续 1-2 秒导致 4-8 tick 反复入库的 bug。
         # 持久跨手(不重置),依靠时间窗自然衰减。
-        self._last_action_at: dict[tuple[str, str, str], float] = {}
+        # 值=(last_ts, last_amount):amount 入键判重(2026-06-12 dedup 解冻修,见 orchestrator)
+        self._last_action_at: dict[tuple[str, str, str], tuple[float, float | None]] = {}
         # T52(2026-05-29):pixel diff trigger 缓存(Phase 0 实测 9.17x speedup)
         # 单 ROI cv2.absdiff < 1μs,40 ROI 0.21ms,远小于 OCR 10ms.
         # 思路:每 ROI 比上 tick 像素差,< 阈值 → 复用上次 OCR 结果(避免无意义重 OCR).

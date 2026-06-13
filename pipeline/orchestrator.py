@@ -2822,28 +2822,44 @@ class PipelineOrchestrator:
                               hand_id=self.tracker.current_hand.id, level="WARN")
 
                 # T46-B(2026-05-29):action debounce — call/raise overlay 持续 1-2 秒
-                # 4-8 个 tick 反复触发同一 action 入库(数据里看到 hand 6d91f66b 同
-                # 玩家同 street 多次 fold 等怪象)。5 秒窗口内同 (player,street,
+                # 4-8 个 tick 反复触发同一 action 入库。5 秒窗口内同 (player,street,
                 # action_type) 视为重复,直接 skip + emit diag。
-                # 合法 second-call/raise(对手 reraise 后我再加注)间隔通常 > 5s,
-                # 不会误杀。
+                # ⚠️2026-06-12 解冻修(bafca031 实案,识别冻结 case #1):原键只看
+                # (player,street,action) 不看【金额】→ 误杀同街合法二次动作 ——
+                # limp跟4→面对加注再跟36、加注36→被3bet再加注120,这些金额必变却被
+                # 当重复吞(没如果有结 preflop 两次 call 间隔 4.78s<5s 被误删,大锅多bet
+                # 重灾)。修:金额维度入键 —— 金额差 ≤ AMT_DUP_TOL = 同一动作重复读(去);
+                # 显著不同 = 合法二次动作(留)。check/fold 金额恒 None → 退回纯时间窗
+                # (同街二次 check/fold 不存在,时间窗对它们正确)。
                 import time as _t
                 _now_ts = _t.time()
                 _action_str = (final_action.value if final_action else
                                (event.action_type.value if event.action_type else "unknown"))
                 _street_str = event.street.value if event.street else ""
                 _dedup_key = (event.player_name, _street_str, _action_str)
-                _last_ts = self.tracker._last_action_at.get(_dedup_key, 0.0)
-                if _now_ts - _last_ts < 5.0:
+                _amt = event.amount
+                _last = self.tracker._last_action_at.get(_dedup_key)   # (ts, amount) | None
+                _AMT_DUP_TOL = 2.0   # 金额抖动容忍(settle 后重复读应同值;真二次动作差≫此)
+                _is_dup = False
+                if _last is not None and _now_ts - _last[0] < 5.0:
+                    _last_amt = _last[1]
+                    if _amt is None and _last_amt is None:
+                        _is_dup = True                              # check/fold 重复读
+                    elif (_amt is not None and _last_amt is not None
+                          and abs(_amt - _last_amt) <= _AMT_DUP_TOL):
+                        _is_dup = True                              # 同金额 = 同动作重复帧
+                    # 否则金额显著不同 = 合法二次动作(limp→call/raise→reraise)→ 不去重
+                if _is_dup:
                     diag.emit(
                         "action.dedup_skip",
                         {"player": event.player_name, "street": _street_str,
-                         "action": _action_str,
-                         "ts_delta_sec": round(_now_ts - _last_ts, 2)},
+                         "action": _action_str, "amount": _amt,
+                         "last_amount": _last[1] if _last else None,
+                         "ts_delta_sec": round(_now_ts - _last[0], 2)},
                         hand_id=self.tracker.current_hand.id,
                     )
                     continue
-                self.tracker._last_action_at[_dedup_key] = _now_ts
+                self.tracker._last_action_at[_dedup_key] = (_now_ts, _amt)
 
                 # Track folded seats (for showdown CNN skip + insurance defaults)
                 if final_action == ActionType.FOLD:

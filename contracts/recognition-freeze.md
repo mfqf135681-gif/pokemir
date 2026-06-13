@@ -57,7 +57,6 @@
 
 ## 5. 解冻 case 登记簿
 
-(空 — 求解器开工后由审计/求解器追加)
-
 | 日期 | hand_id | 归因信号 | 现象 | 状态 |
 |---|---|---|---|---|
+| 2026-06-12 | bafca031 | action dedup(orchestrator `_process_seat_actions`) | dedup 键 `(player,street,action)` 不含金额 → 同街合法二次动作(limp跟4→面对加注再跟36,间隔4.78s<5s窗)被当重复吞;大锅多bet重灾。用户肉眼复盘+`action.dedup_skip`诊断坐实归因识别层 | **已解冻修复** 2026-06-12:键加金额维度(差≤2=重复读去/显著不同=合法二次动作留),check/fold恒None退回纯时间窗;7场景模拟+全测试套验回归后回冻 |
