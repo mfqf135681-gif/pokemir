@@ -37,25 +37,31 @@ def fetch_events(dsn, since, until):
     return ev
 
 
-def build_facts(h, events, seat_map, final_override=None):
-    antes, contrib, folded = {}, {}, {}
+def build_facts(h, events, seat_map, final_override=None, street_solver=True):
+    """street_solver=True(砖5):用 solve_street_contrib 时序求解每街投入(call 锁定最高注 +
+    raise 栈/单调净化,治 amount 误读爆值);False=旧裸 max 聚合(对比/回退用)。"""
+    antes, folded = {}, {}
     for player, street, atype, amount, stk_b in events:
         if atype == "post_ante" and amount:
             antes[player] = antes.get(player, 0.0) + float(amount)
-        elif atype in ("post_sb", "post_bb") and amount is not None:
-            k = (player, street)
-            contrib[k] = max(contrib.get(k, 0.0), float(amount))
-        elif atype in BRC and amount is not None:
-            k = (player, street)
-            contrib[k] = max(contrib.get(k, 0.0), float(amount))
-        elif atype == "all_in":
-            k = (player, street)
-            if amount is not None:
-                contrib[k] = max(contrib.get(k, 0.0), float(amount))
-            elif stk_b is not None:   # 旧场次 all_in 无金额 → 端点回补(同 audit 口径)
-                contrib[k] = contrib.get(k, 0.0) + float(stk_b)
         elif atype == "fold" and player not in folded:
             folded[player] = street
+    if street_solver:
+        from solver.street_solve import solve_street_contrib
+        contrib = solve_street_contrib(events)
+    else:
+        contrib = {}
+        for player, street, atype, amount, stk_b in events:
+            if atype in ("post_sb", "post_bb") and amount is not None:
+                k = (player, street); contrib[k] = max(contrib.get(k, 0.0), float(amount))
+            elif atype in BRC and amount is not None:
+                k = (player, street); contrib[k] = max(contrib.get(k, 0.0), float(amount))
+            elif atype == "all_in":
+                k = (player, street)
+                if amount is not None:
+                    contrib[k] = max(contrib.get(k, 0.0), float(amount))
+                elif stk_b is not None:
+                    contrib[k] = contrib.get(k, 0.0) + float(stk_b)
     # 端点净额 + +xx 赢家(座→玩家映射来自值匹配)。final_override:链愈合(砖4)回填值
     nets, xx = {}, set()
     for seat, player in seat_map.items():
