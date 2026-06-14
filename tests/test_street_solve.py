@@ -95,3 +95,36 @@ def test_ante_excluded():
     out = solve_street_contrib(evs)
     # A 只有 call 到 0(无人 raise,cur_max=0)→ 不产 contrib;ante 不计
     assert ("A", "preflop") not in out or out[("A", "preflop")] == 0.0
+
+
+def test_short_call_capped_by_stack():
+    # 多人all-in盲区(2026-06-14):C全推1000抬高cur_max,短码D只有300,跟=全推300(非1000)
+    evs = [
+        E("A", "flop", "all_in", None, 500),
+        E("C", "flop", "all_in", None, 1000),
+        E("D", "flop", "call", 1000, 300),       # 短码跟:栈300 < 最高注1000 → 实投300
+    ]
+    out = solve_street_contrib(evs)
+    assert out[("D", "flop")] == 300.0           # 栈封顶,非高估到1000
+    assert out[("C", "flop")] == 1000.0
+
+
+def test_normal_call_unaffected_by_cap():
+    # 栈够的正常跟注:栈上界不影响,仍跟满最高注
+    evs = [
+        E("A", "preflop", "raise", 100, 2000),
+        E("B", "preflop", "call", 100, 2000),    # 栈2000 ≥ 100 → 跟满
+    ]
+    out = solve_street_contrib(evs)
+    assert out[("B", "preflop")] == 100.0
+
+
+def test_short_call_after_partial_invest():
+    # 已投X后短码跟:到额=min(最高注, 已投+剩余栈)
+    evs = [
+        E("BB", "preflop", "post_bb", 10, 400),
+        E("B", "preflop", "raise", 600, 600),
+        E("BB", "preflop", "call", 600, 390),    # BB已投10,行动前栈390 → 到额=min(600,10+390)=400
+    ]
+    out = solve_street_contrib(evs)
+    assert out[("BB", "preflop")] == 400.0       # 全推到栈,非跟满600

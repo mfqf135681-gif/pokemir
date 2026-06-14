@@ -52,8 +52,15 @@ def solve_street_contrib(events, tol: float = 2.0) -> dict:
                 else:
                     contrib[player] = max(contrib.get(player, 0.0), cur_max)
             elif action == "call":
-                # 焦点/最后行动者动画期误读 → 不信 call 那帧金额,锁定到当前最高注(前位稳定)
-                contrib[player] = max(contrib.get(player, 0.0), cur_max)
+                # 焦点/最后行动者动画期误读 → 不信 call 那帧金额,锁定到当前最高注(前位稳定)。
+                # 栈上界(2026-06-14 用户揪出盲区):短码玩家面对 > 自己栈的注,"跟"=全推到
+                # 自己栈(短码 call = all-in),跟不满最高注。多人 all-in 局 cur_max 被抬高 →
+                # 这种短码跟最常见、高估最严重。到额 = min(最高注, 已投+行动前栈);stk_b 缺则
+                # 退回 cur_max(无栈信息,假设跟满)。注:不解【最大全推未跟满的退还】(归退还规则)。
+                target = cur_max
+                if stk_b is not None:
+                    target = min(cur_max, contrib.get(player, 0.0) + stk_b)
+                contrib[player] = max(contrib.get(player, 0.0), target)
             elif action == "all_in":
                 # 全推:投入 = 行动前栈(stk_b);可能 > cur_max(over-shove)或 ≤(短码)
                 if stk_b is not None:
