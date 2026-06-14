@@ -60,3 +60,4 @@
 | 日期 | hand_id | 归因信号 | 现象 | 状态 |
 |---|---|---|---|---|
 | 2026-06-12 | bafca031 | action dedup(orchestrator `_process_seat_actions`) | dedup 键 `(player,street,action)` 不含金额 → 同街合法二次动作(limp跟4→面对加注再跟36,间隔4.78s<5s窗)被当重复吞;大锅多bet重灾。用户肉眼复盘+`action.dedup_skip`诊断坐实归因识别层 | **已解冻修复** 2026-06-12:键加金额维度(差≤2=重复读去/显著不同=合法二次动作留),check/fold恒None退回纯时间窗;7场景模拟+全测试套验回归后回冻 |
+| 2026-06-13 | (全局) | event 落库缺座位号(orchestrator 4 个 raw_data 写点 + 手末) | action_events 只存 player_name 不存座位号,端点按座位存 → 求解器靠筹码值反推座位(两次读有差→失败=MAPPING_GAP,长局补不平最大头)。用户洞察:对账该以座位主键,名字退展示 | **已解冻修复** 2026-06-13:raw_data 记 seat_index(循环主键现成)+ 手末 seat_names(player_id_map 快照);**仅记已知数,零识别逻辑改动**;塞 raw_data 不碰表结构(避 R-4)。求解器优先用 seat_names 零反推,无则回退砖3。62 测试绿;⚠️ 历史数据走 fallback,实效需新录一局验 |
