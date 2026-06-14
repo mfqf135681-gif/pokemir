@@ -2035,8 +2035,13 @@ class PipelineOrchestrator:
             if seat.stack_area is None or seat.stack_area.width == 0:
                 continue
             img = self.capturer.capture_roi(seat.stack_area)
-            # T103 R15: %-aware stack OCR(all-in 后显胜率不当 chips)
-            amount = self._ocr_stack_chips(img, seat_idx=seat.seat_index)
+            # 端点采集改用数字配方(2026-06-14 解冻 case #3,用户揪地基盲区):此前用纯
+            # _ocr_stack_chips(EasyOCR)—— 全项目最差 stack 读法,却用在最关键的承重锚上。
+            # _stack_chips_recipe 是其【严格超集】:配方开→DigitReader主读(stack 验~100%)+
+            # EasyOCR 兜底;配方关→内部 fallback 到 _ocr_stack_chips,行为完全不变(零劣化)。
+            # 关键增益:all-in 玩家 final=0,EasyOCR 丢 lone-0→缺座(#243 同坑),配方读得出 0。
+            # ⚠️ 治"读法差"的缺座/读偏,治不了"动画期物理遮挡";读爆(RECORD_OVERREAD)在街投入侧、非此。
+            amount = self._stack_chips_recipe(img, seat_idx=seat.seat_index)
             if amount is not None:
                 stacks[seat.seat_index] = amount
         return stacks
