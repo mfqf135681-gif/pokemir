@@ -841,6 +841,7 @@ class PipelineOrchestrator:
             action_type=action_type, amount=amount, facing_action=None)
         event.confidence_score = 0.95
         event.raw_data = {
+            "seat_index": seat_idx,   # 座位主键(2026-06-13):对账层按座取端点,免玩家名反推(治 MAPPING_GAP)
             "synthetic": True, "source": "table_blind_injection",
             "stack_before": stack_before, "stack_after": stack_after,
             "stack_delta": amount, "blind_level_source": "table_input",
@@ -937,7 +938,8 @@ class PipelineOrchestrator:
                     hand=hand, player_name=player_name, position=self._seat_position(seat),
                     action_type=ActionType.FOLD, amount=None, facing_action=None)
                 event.confidence_score = 0.9
-                event.raw_data = {"synthetic": True, "source": "activeset_fold_rescue", "street": street}
+                event.raw_data = {"seat_index": seat, "synthetic": True,
+                                  "source": "activeset_fold_rescue", "street": street}
                 self.event_repo.create(db, event)
             except Exception:
                 logger.warning(f"activeset fold rescue event seat_{seat} failed", exc_info=True)
@@ -1059,6 +1061,7 @@ class PipelineOrchestrator:
             )
             event.confidence_score = 0.9
             event.raw_data = {
+                "seat_index": seat_idx,   # 座位主键(2026-06-13):同上,对账按座取端点
                 "synthetic": True,
                 "source": "post_injection",
                 "stack_before": stack_before,
@@ -1265,6 +1268,9 @@ class PipelineOrchestrator:
             if cur.raw_data is None:
                 cur.raw_data = {}
             cur.raw_data["player_stacks_final"] = final_stacks
+            # 座位→名字快照(2026-06-13):对账层按座位主键,名字仅展示/跨手画像锚定时贴
+            # (player_id_map = {seat_idx: name};名字读错/漂移只毒画像,不再毒对账)
+            cur.raw_data["seat_names"] = {int(k): v for k, v in self.tracker.player_id_map.items()}
             if self._empty_refs:  # #241:本手 +xx latch(合法进账座 = 赢/边池/保险),喂 rebuy 排除
                 cur.raw_data["win_phash_seats"] = sorted(self._hand_win_seats)
                 logger.info(f"[+xx] 本手合法进账座(黄数量阈{self._win_yellow_count}): {sorted(self._hand_win_seats) or '无'}")
@@ -2763,6 +2769,7 @@ class PipelineOrchestrator:
                 self._action_amt_wait[sidx] = 0
 
                 event.raw_data = {
+                    "seat_index": sidx,   # 座位主键(2026-06-13):对账层按座取端点,免玩家名反推(治 MAPPING_GAP)
                     "action_text": action_text,
                     "stack_before": stack_before,
                     "stack_after": stack_after,

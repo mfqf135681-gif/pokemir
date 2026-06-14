@@ -115,7 +115,8 @@ def _solve_recent(limit: int) -> list[dict]:
                   h.result->'win_amounts_xx' AS xx, h.seats AS seats,
                   h.raw_data->>'sb_seat' AS sb_seat, h.raw_data->>'bb_seat' AS bb_seat,
                   h.raw_data->>'button_seat_index' AS btn_seat,
-                  h.raw_data->'insurance_inferred' AS insurance
+                  h.raw_data->'insurance_inferred' AS insurance,
+                  h.raw_data->'seat_names' AS seat_names
            FROM hands h WHERE h.id IN ({_recent_sql})
            ORDER BY h.started_at""", {"lim": limit})   # 直接升序(链愈合需手序)
     if not hands:

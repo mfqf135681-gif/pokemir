@@ -32,12 +32,14 @@ def fetch(dsn, since, until):
                   h.raw_data->'player_stacks_initial', h.raw_data->'player_stacks_final',
                   h.result->'win_amounts_xx',
                   h.seats, h.raw_data->>'sb_seat', h.raw_data->>'bb_seat',
-                  h.raw_data->>'button_seat_index', h.raw_data->'insurance_inferred'
+                  h.raw_data->>'button_seat_index', h.raw_data->'insurance_inferred',
+                  h.raw_data->'seat_names'
            FROM hands h WHERE h.started_at > %s AND h.started_at < %s AND h.ended_at IS NOT NULL
            ORDER BY h.started_at""", (since, until))
     hands = [{"id": r[0], "pot": r[1], "init": r[2] or {}, "fin": r[3] or {},
               "xx": r[4] or {}, "seats": r[5] or {}, "sb_seat": r[6], "bb_seat": r[7],
-              "btn_seat": r[8], "insurance": r[9] or []} for r in cur.fetchall()]
+              "btn_seat": r[8], "insurance": r[9] or [], "seat_names": r[10] or {}}
+             for r in cur.fetchall()]
     cur.execute(
         """SELECT ae.hand_id::text, ae.player_name, (ae.raw_data->>'stack_before')::float
            FROM action_events ae JOIN hands h ON h.id = ae.hand_id
@@ -51,10 +53,14 @@ def fetch(dsn, since, until):
 
 
 def seat_player_map(hand, antes):
-    """seat(str) → player。砖3:容差匹配+约束传播(solver/mapping.map_seats),
-    锚=sb/bb/btn × hands.seats(确定性,优先);歧义留空不猜。
-    (砖2 的严格值匹配漏 8-12% 座次:initial 快照与 ante stack_before 是两次读,
-    常差几筹码 → MAPPING_GAP 22 手的根因。)"""
+    """seat(str) → player。
+    ⭐2026-06-13 座位主键根治:live 落库 hands.raw_data.seat_names = {seat: name}
+    (player_id_map 快照)→ 直接返回,零反推,MAPPING_GAP 整类消失。
+    历史数据(无 seat_names)回退砖3 容差匹配+锚(map_seats),向后兼容。"""
+    seat_names = hand.get("seat_names")
+    if seat_names:
+        return {str(s): p for s, p in seat_names.items() if p}
+    # —— 以下为历史数据 fallback(无 seat_names 的旧手):砖3 值匹配+传播+锚 ——
     from solver.mapping import map_seats
     seats_by_pos = hand.get("seats") or {}
     anchors = {}
