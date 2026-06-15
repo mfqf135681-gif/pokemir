@@ -990,6 +990,8 @@ class PipelineOrchestrator:
                 event.raw_data = {"seat_index": seat, "synthetic": True,
                                   "source": "activeset_fold_rescue", "street": street}
                 self.event_repo.create(db, event)
+                # [牌桌] 非-river 弃牌走活跃集救援(#235),不经动作循环 → 这里补人话流,否则看不到弃牌
+                self._feed_line(seat, player_name, ActionType.FOLD, None, street)
             except Exception:
                 logger.warning(f"activeset fold rescue event seat_{seat} failed", exc_info=True)
 
