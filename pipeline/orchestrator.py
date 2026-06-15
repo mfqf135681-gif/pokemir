@@ -2350,7 +2350,10 @@ class PipelineOrchestrator:
                     amount_items.append((sidx, img))
 
         # Phase 2: batch action OCR
-        if action_items:
+        # 2026-06-15 perf:phash 开时这遍批 EasyOCR 结果必被 phash 覆盖(_process_seat_actions
+        # 先用 phash 设 action_text、batched_action_results 永不被消费)→ 纯浪费(实测 169ms/tick,
+        # 把帧率从 ~10Hz 压到 2-5Hz)。补 phash 闸,与下方 amount 批的 `not DIGIT_RECIPE_LIVE` 对称。
+        if action_items and not (ACTION_PHASH_LIVE and self._action_phash is not None):
             images = [img for (_, img) in action_items]
             results = self.ocr.read_text_batch(
                 images, allowlist=ACTION_OCR_ALLOWLIST, scale=3
