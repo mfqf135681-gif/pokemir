@@ -626,6 +626,9 @@ class PipelineOrchestrator:
             top_str = " ".join(
                 f"{n_}={v['avg_ms']}ms({v['pct_of_tick']}%)" for n_, v in top_phases
             )
+            # 2026-06-15 诊断:phash 路径 3 路拆分(定位 seat_action_ocr 真凶,保证三个都显示)
+            _g = lambda k: phases_stats.get(k, {}).get("avg_ms", 0.0)
+            sa_str = f" | sa[cap={_g('sa_capture')} diff={_g('sa_diff')} phash={_g('sa_phash')}]"
             logger.info(
                 f"[tick stats] n={stats['n']} min={stats['min_ms']}ms "
                 f"median={stats['median_ms']}ms p95={stats['p95_ms']}ms "
@@ -633,7 +636,7 @@ class PipelineOrchestrator:
                 f"sleep={stats['sleep_ms']}ms → {stats['effective_hz']}Hz | "
                 f"db_avg={stats['db_avg_ms']}ms db_p95={stats['db_p95_ms']}ms "
                 f"db_max={stats['db_max_ms']}ms ({stats['db_pct_of_tick']}% of tick) | "
-                f"top phases: {top_str}"
+                f"top phases: {top_str}{sa_str}"
             )
             diag.emit(
                 "pipeline.tick_stats",
@@ -2429,6 +2432,10 @@ class PipelineOrchestrator:
             "seat_parse_persist": 0.0,
             # 2026-06-01 spike A:未计时 gap 定位
             "seat_artifact": 0.0,
+            # 2026-06-15 诊断:phash 路径 3 路拆分(定位 seat_action_ocr 155ms 真凶)
+            "sa_capture": 0.0,
+            "sa_diff": 0.0,
+            "sa_phash": 0.0,
         }
         # T73:pre-batch(OCR_BATCH=0 时 noop)
         _t = time.perf_counter()
@@ -2576,16 +2583,22 @@ class PipelineOrchestrator:
                 # T52 同款 diff 缓存:action_area 未变则复用上次结果(动作持久态→多数 tick 不重算)。
                 _t = time.perf_counter()
                 action_img = self.capturer.capture_roi(seat_roi.action_area)
+                sub_ms["sa_capture"] += (time.perf_counter() - _t) * 1000.0   # 诊断:抓图
                 _rk = f"seat_{sidx}_action"
                 _cached = self.tracker._last_roi_img.get(_rk)
                 _tick = self.tracker._global_tick_counter
                 _need_force = (_tick - self.tracker._roi_force_refresh_at.get(_rk, 0)) >= 4
-                if (_cached is not None and not _need_force and action_img is not None
-                        and _cached.shape == action_img.shape
-                        and float(cv2.absdiff(action_img, _cached).sum()) / (action_img.size or 1) < self._DIFF_THRESHOLD):
+                _td = time.perf_counter()
+                _diff_hit = (_cached is not None and not _need_force and action_img is not None
+                             and _cached.shape == action_img.shape
+                             and float(cv2.absdiff(action_img, _cached).sum()) / (action_img.size or 1) < self._DIFF_THRESHOLD)
+                sub_ms["sa_diff"] += (time.perf_counter() - _td) * 1000.0   # 诊断:diff 缓存判定
+                if _diff_hit:
                     action_text = self.tracker._last_roi_text.get(_rk, "")  # 未变 → 复用
                 else:
+                    _tm = time.perf_counter()
                     word = self._action_phash.match(action_img)
+                    sub_ms["sa_phash"] += (time.perf_counter() - _tm) * 1000.0   # 诊断:phash.match
                     action_text = word if word else ""
                     self.tracker._last_roi_img[_rk] = action_img
                     self.tracker._last_roi_text[_rk] = action_text
