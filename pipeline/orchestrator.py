@@ -397,7 +397,7 @@ class PipelineOrchestrator:
         # 2026-06-05:hand 转换拆分(startup 卡)+ 整 seat 循环 + detect_empty/showdown
         "hand_end", "hand_start", "detect_empty", "showdown_cnn", "seat_loop",
         # 2026-06-15 诊断:phash 路径 3 路拆分(必须登记进名单才进 phases_stats,否则显示恒 0)
-        "sa_capture", "sa_diff", "sa_phash",
+        "sa_capture", "sa_diff", "sa_phash", "sa_prebatch", "sa_ocrfb",
     )
 
     def _tick(self):
@@ -630,7 +630,8 @@ class PipelineOrchestrator:
             )
             # 2026-06-15 诊断:phash 路径 3 路拆分(定位 seat_action_ocr 真凶,保证三个都显示)
             _g = lambda k: phases_stats.get(k, {}).get("avg_ms", 0.0)
-            sa_str = f" | sa[cap={_g('sa_capture')} diff={_g('sa_diff')} phash={_g('sa_phash')}]"
+            sa_str = (f" | sa[cap={_g('sa_capture')} diff={_g('sa_diff')} phash={_g('sa_phash')}"
+                      f" pre={_g('sa_prebatch')} ocrfb={_g('sa_ocrfb')}]")
             logger.info(
                 f"[tick stats] n={stats['n']} min={stats['min_ms']}ms "
                 f"median={stats['median_ms']}ms p95={stats['p95_ms']}ms "
@@ -2438,11 +2439,15 @@ class PipelineOrchestrator:
             "sa_capture": 0.0,
             "sa_diff": 0.0,
             "sa_phash": 0.0,
+            "sa_prebatch": 0.0,
+            "sa_ocrfb": 0.0,
         }
         # T73:pre-batch(OCR_BATCH=0 时 noop)
         _t = time.perf_counter()
         self._pre_batch_action_amount_ocr(rois)
-        sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
+        _d = (time.perf_counter() - _t) * 1000.0
+        sub_ms["seat_action_ocr"] += _d
+        sub_ms["sa_prebatch"] += _d   # 诊断:pre_batch(OCR_BATCH 真实开关)
         # 2026-06-01 spike A:pre-batch 逐座 timer/fold_text/fold_area(BATCH_SEAT_OCR=0 noop)
         _t = time.perf_counter()
         self._pre_batch_seat_state_ocr(rois)
@@ -2631,7 +2636,9 @@ class PipelineOrchestrator:
                         allowlist=ACTION_OCR_ALLOWLIST,
                         ensemble=True,
                     )
-                    sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
+                    _d = (time.perf_counter() - _t) * 1000.0
+                    sub_ms["seat_action_ocr"] += _d
+                    sub_ms["sa_ocrfb"] += _d   # 诊断:EasyOCR 兜底(phash 未设 action_text 才进)
 
             # 金额拼接:phash 与 OCR 两路共用(#240 2026-06-07 修——原在 OCR 块内,phash 设了
             # action_text 就把金额拼接整段跳过 → phash 认出的 call/raise/bet 丢金额)。
