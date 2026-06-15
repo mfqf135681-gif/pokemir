@@ -824,6 +824,42 @@ class PipelineOrchestrator:
                 pass
         return Position.BTN
 
+    def _feed_line(self, sidx, player_name, action, amount, street):
+        """[牌桌] 人话动作流 —— 纯展示,供观战实时对账 + 落库前肉眼核对真值。
+        冻结豁免(契约 §2:纯日志,不改任何识别逻辑)。控制台带 [牌桌] 前缀(混在主日志里
+        可眼挑),另写干净文件 table_feed.log(无杂质,盯文件即可)。手切换自动插分隔行。"""
+        if not hasattr(self, "_feed_logger"):
+            import logging as _lg
+            fl = _lg.getLogger("pokemir.table_feed")
+            fl.setLevel(_lg.INFO)
+            fl.propagate = False
+            try:
+                fh = _lg.FileHandler("table_feed.log", encoding="utf-8")
+                fh.setFormatter(_lg.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
+                fl.addHandler(fh)
+            except Exception:
+                pass
+            self._feed_logger = fl
+        # 手切换 → 分隔行(免去找新手创建点,按 hand_id 变化自动插)
+        hid = self.tracker.current_hand.id if self.tracker.current_hand else None
+        if hid != getattr(self, "_feed_last_hand", None):
+            self._feed_last_hand = hid
+            sep = f"════════ 新一手  按钮=seat_{getattr(self, '_btn_confirmed', None)} ════════"
+            logger.info(sep)
+            self._feed_logger.info(sep)
+        _ZH = {ActionType.FOLD: "弃牌", ActionType.CHECK: "过牌", ActionType.CALL: "跟注",
+               ActionType.BET: "下注", ActionType.RAISE: "加注", ActionType.ALL_IN: "全押",
+               ActionType.POST_SB: "小盲", ActionType.POST_BB: "大盲", ActionType.POST_ANTE: "前注"}
+        _ST = {"preflop": "翻前", "flop": "翻牌", "turn": "转牌", "river": "河牌"}
+        if hasattr(street, "value"):
+            street = street.value
+        act_zh = _ZH.get(action, getattr(action, "value", str(action)))
+        st_zh = _ST.get(street, street or "?")
+        amt_s = f"{amount:g}" if amount is not None else "?(待核)"
+        line = f"[牌桌] {st_zh}  seat_{sidx} {(player_name or '?')}  {act_zh}  {amt_s}"
+        logger.info(line)
+        self._feed_logger.info(line)
+
     def _emit_forced_event(self, db, hand, seat_idx, action_type, amount, position):
         """造 1 条 synthetic 强制注 event(POST_SB/BB/ANTE)+ 持久化。玩家未知则跳(不伪造名污染画像)。"""
         if self.tracker.is_skippable_seat(seat_idx):
@@ -855,6 +891,8 @@ class PipelineOrchestrator:
         diag.emit("post.injection_done",
                   {"seat": seat_idx, "player": player_name, "action": action_type.value,
                    "amount": amount, "source": "table_input"}, hand_id=hand.id)
+        self._feed_line(seat_idx, player_name, action_type, amount,
+                        self.tracker.normalizer._current_street)
         # A′(2026-06-11):盲注播种本街金额地板 — SB/BB 投入即本街显示下限,供 amount settle 闸
         # 识别"动作首帧读到旧盲注值"(live 实测 SB call 记 20=小盲 10/11、BB raise 记 40=大盲 5/5)。
         # A″:同时播种该座自身投入(SB 读回 2、BB 读回 4 即"读到自己旧显示")。
@@ -2915,6 +2953,10 @@ class PipelineOrchestrator:
                         hand_id=self.tracker.current_hand.id,
                     )
                     continue
+
+                # [牌桌] 人话流:过了 dedup + 低桩闸 = 确认入库事件 → 输出供观战对账(纯日志,冻结豁免)
+                self._feed_line(sidx, event.player_name, final_action, event.amount,
+                                self.tracker.normalizer._current_street)
 
                 # all-in 写库分层(2026-06-11,#243 收尾):检测即标记(内存 mark/diag = 实时档,
                 # 上面已设 _went_all_in_this_hand),【写库】推迟到手末过闸(_flush_pending_allins:
