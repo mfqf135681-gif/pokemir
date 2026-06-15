@@ -1573,35 +1573,8 @@ class PipelineOrchestrator:
             except Exception:
                 logger.warning("canonicalize DB UPDATE failed", exc_info=True)
 
-    def _process_timer(self, sidx: int, countdown: int) -> None:
-        """Timer countdown digit just observed at fold_area. Track per seat:
-        first sighting → start clock; subsequent sightings update; if countdown
-        increased > 2 since last seen, timebank was used.
-        """
-        state = self.tracker._timer_state.get(sidx)
-        now = time.time()
-        if state is None:
-            # First appearance of countdown for this seat this hand
-            self.tracker._timer_state[sidx] = (countdown, now)
-            return
-        prev_countdown, started_at = state
-        if countdown > prev_countdown + 2:
-            # Countdown rebounded upward → timebank consumed
-            self.tracker._used_timebank[sidx] = True
-        # Keep started_at as the original start (decision_time = total elapsed)
-        self.tracker._timer_state[sidx] = (countdown, started_at)
-
-    def _finalize_timer(self, sidx: int) -> None:
-        """Timer disappeared (action happened or idle). Idempotent: only fires
-        if a timer state existed for this seat. Stores elapsed ms into
-        _pending_decision_time for attribution to the NEXT action event.
-        """
-        state = self.tracker._timer_state.pop(sidx, None)
-        if state is None:
-            return
-        _, started_at = state
-        decision_time_ms = int((time.time() - started_at) * 1000)
-        self.tracker._pending_decision_time[sidx] = decision_time_ms
+    # 2026-06-15:_process_timer / _finalize_timer 随 timer 整套退役删除(双OCR遗物,88ms/tick)。
+    #   决策耗时=只写不读死数据(要时用动作时间戳反推);吞街保护已移到换街清 _prev_action_texts。
 
     def _detect_hero_seat_index(self, rois) -> int | None:
         """检测 hero 自己的座位 index(几何上 seat.cards_area 与 hero_card_1 重叠)。
@@ -2153,6 +2126,9 @@ class PipelineOrchestrator:
             street = self.tracker.normalizer._current_street
             if street.value not in hand.community_cards:
                 hand.community_cards[street] = all_cards
+                # 2026-06-15:换街(新公共牌检出)→ 清文字变化闸,根治"过牌→过牌"跨街被同字吞
+                # (替退役的 timer 吞街代理;换街是直接确定信号,每次必触发、覆盖比 timer 全)。
+                self.tracker._prev_action_texts.clear()
                 if db is not None:
                     self.hand_repo.update(db, hand)
                 # Suppress "Street preflop: []" — that's redundant with the
@@ -2387,15 +2363,11 @@ class PipelineOrchestrator:
         # #235(2026-06-08):删【专读弃牌 fold_text_area】OCR。弃牌识别改:非river=活跃集(card_marker
         # 消失,已在跑)/ river=fold_area 读"弃牌"(摊牌免疫,本就保留管 all-in/基线)。fold_text_area
         # 与 fold_area 重复 → 删它省一次 batch OCR。fold_area 全留(all-in/baseline/river弃牌)。
-        timer_items, fold_items, stack_items = [], [], []
+        fold_items, stack_items = [], []   # 2026-06-15:timer 退役,不再收集/批读 timer 区(省 88ms)
         for seat_roi in rois.seat_regions:
             sidx = seat_roi.seat_index
             if self.tracker.is_skippable_seat(sidx):
                 continue
-            if seat_roi.timer_area is not None and seat_roi.timer_area.width > 0:
-                img = self.capturer.capture_roi(seat_roi.timer_area)
-                if img is not None and img.size > 0:
-                    timer_items.append((sidx, img))
             if seat_roi.fold_area is not None and seat_roi.fold_area.width > 0:
                 img = self.capturer.capture_roi(seat_roi.fold_area)
                 if img is not None and img.size > 0:
@@ -2404,10 +2376,6 @@ class PipelineOrchestrator:
                 img = self.capturer.capture_roi(seat_roi.stack_area)
                 if img is not None and img.size > 0:
                     stack_items.append((sidx, img))
-        if timer_items:
-            texts = self.ocr.read_text_batch([i for _, i in timer_items], allowlist="0123456789s ")
-            for (sidx, _), t in zip(timer_items, texts):
-                self._batched_timer_results[sidx] = t
         # #235 part2(2026-06-10):剥 fold_area batch OCR(~199ms,seat_actions 真瓶颈)。
         # all-in→stack→0 / 弃牌→活跃集+闸 / timer→timer_area,fold_area 不再需 read_text。
         # 仍存 img 给 avatar baseline;text 恒 None(下游已不读)。
@@ -2531,32 +2499,10 @@ class PipelineOrchestrator:
             action_text = None
             action_img = None  # T1: track for later artifact saving
 
-            # Branch 0 (2026-05-26): dedicated timer_area takes priority when configured.
-            # Smaller ROI = focused digit OCR, more accurate + faster.
-            # Falls through to fold_area path if timer not detected (or timer_area unconfigured).
-            timer_handled = False
-            if seat_roi.timer_area is not None and seat_roi.timer_area.width > 0:
-                _t = time.perf_counter()
-                if BATCH_SEAT_OCR and sidx in self._batched_timer_results:
-                    timer_text = self._batched_timer_results[sidx]  # spike A: batched
-                else:
-                    timer_img = self.capturer.capture_roi(seat_roi.timer_area)
-                    timer_text = self.ocr.read_text(timer_img, allowlist="0123456789s ")
-                sub_ms["seat_timer_ocr"] += (time.perf_counter() - _t) * 1000.0
-                tm = re.search(r"\b(\d{1,2})\b", timer_text or "") if timer_text else None
-                if tm and 0 <= int(tm.group(1)) <= 60:
-                    self._process_timer(sidx, int(tm.group(1)))
-                    if stack_now is not None:
-                        self.tracker._prev_stack[sidx] = stack_now
-                    timer_handled = True
-            if timer_handled:
-                # 吞街修补漏(2026-06-11 复盘):timer 在此 continue → 空白游程不会累积 →
-                # "过牌→思考计时→又过牌"仍被 prev 文本吞。timer 出现 = 该座正在决策 =
-                # 上一动作气泡必然已结束 → 直接清 prev(语义比"等空白"强,且覆盖"气泡
-                # 无空白期直接切 timer"的盲区)。
-                self.tracker._prev_action_texts.pop(sidx, None)
-                self._action_blank_run[sidx] = 0
-                continue
+            # 2026-06-15:timer 整套退役(双OCR遗物,88ms/tick)。原职责拆解:
+            #   ① decision_time/timebank = 只写不读死数据 → 删(要时用动作时间戳反推);
+            #   ② "过牌→过牌"跨街吞街修补 → 移到换街清 _prev_action_texts(_process_community_cards,
+            #      公共牌是直接确定信号,比 timer 代理覆盖更全)。此处不再读 timer。
 
             # #235(2026-06-08):删 T120 专读弃牌 fold_text_area 块(与 fold_area 重复)。
             # 弃牌识别:非river=活跃集(_rescue_silent_fold,card_marker消失)/ river=下方 fold_area
@@ -2574,10 +2520,8 @@ class PipelineOrchestrator:
                 # all-in:stack→0(#243)触发 → 合成 "全押" 喂现有 all-in 记录路径(替 fold_area "Allin")
                 if action_text is None and az_allin_amount is not None:
                     action_text = "全押"
-                    self._finalize_timer(sidx)  # timer ended via all-in
                 else:
-                    # idle / between actions:收尾 timer + 更新 idle_avatar baseline(摊牌幻觉检测用)
-                    self._finalize_timer(sidx)
+                    # idle / between actions:更新 idle_avatar baseline(摊牌幻觉检测用;timer 已退役)
                     # 仅非 skippable(fold/empty)座更新 idle baseline
                     if not self.tracker.is_skippable_seat(sidx) and fold_img is not None and fold_img.size > 0:
                         _t = time.perf_counter()
@@ -2973,15 +2917,8 @@ class PipelineOrchestrator:
                     self.tracker._folded_seats.add(sidx)
                 # Track ALL active seats (had any event this hand) for showdown gate
                 self.tracker._seats_with_events_this_hand.add(sidx)
-
-                # Attach decision_time (timer-derived) + timebank flag to event.raw_data.
-                # _finalize_timer was called when fold_area returned non-digit/empty —
-                # decision_time was stashed in _pending_decision_time keyed by sidx.
-                dt_ms = self.tracker._pending_decision_time.pop(sidx, None)
-                if dt_ms is not None:
-                    event.raw_data["decision_time_ms"] = dt_ms
-                if self.tracker._used_timebank.pop(sidx, False):
-                    event.raw_data["used_timebank"] = True
+                # 2026-06-15:decision_time/timebank 归因随 timer 退役删除(只写不读死数据;
+                # 要时用相邻动作 created_at 时间戳反推,属解释层,不占识别层 OCR)。
 
                 # T47-V(2026-05-29):trust ladder — 低桩(conf < 0.7,纯 P3 stack-
                 # derived,无 text/amount 高桩信号)不进 action_events 主表,只 emit
