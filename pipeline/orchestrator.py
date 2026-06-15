@@ -861,7 +861,13 @@ class PipelineOrchestrator:
             street = street.value
         act_zh = _ZH.get(action, getattr(action, "value", str(action)))
         st_zh = _ST.get(street, street or "?")
-        amt_s = f"{amount:g}" if amount is not None else "?(待核)"
+        if amount is not None:
+            amt_s = f"{amount:g}"
+        elif action in (ActionType.BET, ActionType.CALL, ActionType.RAISE, ActionType.ALL_IN,
+                        ActionType.POST_SB, ActionType.POST_BB, ActionType.POST_ANTE):
+            amt_s = "?(待核)"   # 需要金额却没读到 = 真漏读,要核
+        else:
+            amt_s = "—"         # check/fold 本就无金额,不标待核(避免误导成漏读)
         line = f"[牌桌] {st_zh}  seat_{sidx} {(player_name or '?')}  {act_zh}  {amt_s}"
         self._feed_logger.info(line)
 
