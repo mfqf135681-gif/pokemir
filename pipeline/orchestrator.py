@@ -830,22 +830,28 @@ class PipelineOrchestrator:
         可眼挑),另写干净文件 table_feed.log(无杂质,盯文件即可)。手切换自动插分隔行。"""
         if not hasattr(self, "_feed_logger"):
             import logging as _lg
+            import os as _os
             fl = _lg.getLogger("pokemir.table_feed")
             fl.setLevel(_lg.INFO)
             fl.propagate = False
+            sh = _lg.StreamHandler()   # 控制台:人话流走独立 handler,安静模式压主日志时它不受影响
+            sh.setFormatter(_lg.Formatter("%(message)s"))
+            fl.addHandler(sh)
             try:
                 fh = _lg.FileHandler("table_feed.log", encoding="utf-8")
                 fh.setFormatter(_lg.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
                 fl.addHandler(fh)
             except Exception:
                 pass
+            # 安静模式(POKEMIR_TABLE_QUIET=1,默认关):压住主日志技术行,控制台只剩 [牌桌] 人话流
+            if _os.environ.get("POKEMIR_TABLE_QUIET", "0") == "1":
+                _lg.getLogger().setLevel(_lg.WARNING)
             self._feed_logger = fl
         # 手切换 → 分隔行(免去找新手创建点,按 hand_id 变化自动插)
         hid = self.tracker.current_hand.id if self.tracker.current_hand else None
         if hid != getattr(self, "_feed_last_hand", None):
             self._feed_last_hand = hid
             sep = f"════════ 新一手  按钮=seat_{getattr(self, '_btn_confirmed', None)} ════════"
-            logger.info(sep)
             self._feed_logger.info(sep)
         _ZH = {ActionType.FOLD: "弃牌", ActionType.CHECK: "过牌", ActionType.CALL: "跟注",
                ActionType.BET: "下注", ActionType.RAISE: "加注", ActionType.ALL_IN: "全押",
@@ -857,7 +863,6 @@ class PipelineOrchestrator:
         st_zh = _ST.get(street, street or "?")
         amt_s = f"{amount:g}" if amount is not None else "?(待核)"
         line = f"[牌桌] {st_zh}  seat_{sidx} {(player_name or '?')}  {act_zh}  {amt_s}"
-        logger.info(line)
         self._feed_logger.info(line)
 
     def _emit_forced_event(self, db, hand, seat_idx, action_type, amount, position):
