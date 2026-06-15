@@ -318,6 +318,10 @@ class PipelineOrchestrator:
         self.tracker._avatar_fingerprints = dict(registry.get("fingerprints", {}))
         if self.tracker._avatar_fingerprints:
             logger.info(f"Loaded player registry: {len(self.tracker._avatar_fingerprints)} fingerprints")
+        # 性能修(2026-06-15):播种 canonicalize 已扫集 —— 载入的注册表名是往期 session 已
+        # canonicalize 过的,标为"已扫"避免首次手末把 N 个名全当新名触发 O(N²)(2654 名=64s)。
+        self._canon_seen = {n for n in self.tracker._avatar_fingerprints.values()
+                            if len(n) >= 3 and not n.startswith("TempUser_")}
 
         self.hand_repo = HandRepository()
         self.event_repo = ActionEventRepository()
@@ -1508,34 +1512,30 @@ class PipelineOrchestrator:
                      | set(self.tracker._avatar_fingerprints.values()))
         if len(names_set) <= 1:
             return
-        names = list(names_set)
-        # Build canonical map: alias → canonical (longest in cluster)
-        canonical: dict[str, str] = {n: n for n in names}
-        for i, n_i in enumerate(names):
-            if len(n_i) < 3:
-                continue
-            for n_j in names[i + 1:]:
-                if len(n_j) < 3:
+        # 性能修(2026-06-15,A):原 O(N²) 全量两两比对【每手末】跑 —— 注册表涨到 2654 名后
+        # 单次 ~数十秒(benchmark 实测 2646 名 = 64s 纯 CPU)→ 帧率从 10+Hz 崩到 2Hz。改增量:
+        # 只把【本轮新出现】的名字 × 现有全集比一遍(O(新×N),新通常 0-1 个 → 平时 O(0),来个
+        # 新玩家 ~48ms)。等价性:一对名字只需在其中一个【首次出现】时比一次——名字注册后不变,
+        # 每手重比是纯浪费;极罕见的"两个老名后来才变像"丢离线工具扫,live 不背 O(N²)。
+        # TempUser_<phash> 是空座 placeholder(跨合并会黏成鬼玩家)+ len<3 噪声,两者都排除。
+        cand = {n for n in names_set if len(n) >= 3 and not n.startswith("TempUser_")}
+        seen = getattr(self, "_canon_seen", set())
+        new_names = cand - seen
+        self._canon_seen = cand   # 刷新已扫集(离场名自然移除,防无限增长)
+        if not new_names:
+            return                # 常见情况:无新名 → 零成本退出
+        existing = list(cand)
+        canonical: dict[str, str] = {}   # 仅记本轮发现的 别名→规范名(longer 胜)
+        for n_new in new_names:
+            for n_old in existing:
+                if n_old == n_new:
                     continue
-                # T64a(2026-05-29):TempUser_<phash> 是空座背景 placeholder,
-                # 不是"真玩家不同写法".跨 TempUser 合并会把 15+ 个空座事件
-                # 黏成 1 个鬼玩家.让 T18 / T63 空座 detection 路径处理 placeholder,
-                # canonicalize 只处理真名 alias.
-                if n_i.startswith('TempUser_') or n_j.startswith('TempUser_'):
-                    continue
-                # Case-insensitive fuzzy compare
-                matches = get_close_matches(n_i.lower(), [n_j.lower()], n=1, cutoff=0.75)
-                if not matches:
-                    continue
-                # Aliased — pick longer as canonical (or first alphabetically tiebreak)
-                pick = n_i if len(n_i) > len(n_j) else (n_j if len(n_j) > len(n_i) else min(n_i, n_j))
-                # Apply: rewrite both their canonical entries
-                old_can_i = canonical.get(n_i, n_i)
-                old_can_j = canonical.get(n_j, n_j)
-                # Propagate to all entries that map to either
-                for k, v in list(canonical.items()):
-                    if v == old_can_i or v == old_can_j:
-                        canonical[k] = pick
+                if get_close_matches(n_new.lower(), [n_old.lower()], n=1, cutoff=0.75):
+                    pick = (n_new if len(n_new) > len(n_old)
+                            else (n_old if len(n_old) > len(n_new) else min(n_new, n_old)))
+                    canonical[n_old if pick == n_new else n_new] = pick
+        if not canonical:
+            return
         # Apply to player_id_map AND sync DB (UPDATE historical action_events).
         # Without DB sync,past rows永远是旧 alias,path B 聚合统计仍把两个名当独立玩家。
         db_updates: dict[str, str] = {}  # old_name → canonical
