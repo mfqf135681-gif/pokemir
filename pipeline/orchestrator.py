@@ -292,6 +292,9 @@ class PipelineOrchestrator:
         # _active_set 整手 per-tick 维护(<1ms/tick),on-change emit = 顺带记 fold 转移(喂 P1)。
         self._blinds_pending = False
         self._blinds_attempts = 0
+        self._blinds_prev_n = -1            # 盲注注入稳定闸:上帧活跃座数
+        self._blinds_stable_since = None    # 座数最近一次变化的墙钟(稳定 ≥0.4s = 发牌完成)
+        self._blinds_pending_since = 0.0    # 兜底超时基准(墙钟,对帧率鲁棒)
         self._active_set: set = set()
         self._az_state: dict = {}  # #243 第一步:per-seat all-in stack→0 影子检测态(每手 reset)
         self._showdown_latched = False  # #235 摊牌闸:本手是否已进结算(latch 后压制假弃牌;每手 reset)
@@ -803,6 +806,9 @@ class PipelineOrchestrator:
             self._blinds_pending = True
             self._blinds_attempts = 0
             self._active_set = set()
+            self._blinds_prev_n = -1
+            self._blinds_stable_since = None
+            self._blinds_pending_since = time.time()
             self._hand_dealt_seats = set()
             self._seat_gone_ticks = {}
         else:
@@ -980,16 +986,27 @@ class PipelineOrchestrator:
                     # latch=进结算(132/133 手可靠),结算期全桌 card_marker 消失是收牌动画,
                     # 不是弃牌 — 此前这些被补成"赢家/全下者弃牌"污染归属。latch 后一律不补。
                     self._rescue_silent_fold(db, s, cur_street)
-        # 惰性盲注注入:等发牌完成(活跃非空)才派;非空但定不出 SB/BB 也不再重试(那是按钮/活跃问题非时机)
+        # 惰性盲注注入(2026-06-15 稳定闸):等活跃集【稳定】再派,治高帧抢在发牌动画前 →
+        # 只 {6,7} 漏派 ante + 错 SB/BB。发牌期活跃集只增不减(派注前无人弃牌)→ 座数墙钟
+        # 稳定 0.4s = 发牌完成。墙钟判稳 + 墙钟超时,对帧率鲁棒(2Hz/17Hz 都等够发牌)。
         if self._blinds_pending:
             self._blinds_attempts += 1
+            _now = time.time()
             if active:
-                self._blinds_pending = False
-                self._inject_forced_from_blinds(db, active=active)
-            elif self._blinds_attempts >= 12:   # ~超时(发牌迟迟不检出=异常)→ 放弃,免无限挂
+                if len(active) != self._blinds_prev_n:
+                    self._blinds_prev_n = len(active)
+                    self._blinds_stable_since = _now
+                _stable = (self._blinds_stable_since is not None
+                           and _now - self._blinds_stable_since >= 0.4)
+                _giveup = (_now - self._blinds_pending_since) >= 5.0   # 兜底:迟迟不稳也别永挂
+                if _stable or _giveup:
+                    self._blinds_pending = False
+                    self._inject_forced_from_blinds(db, active=active)
+            elif (_now - self._blinds_pending_since) >= 5.0:   # 持续空 5s = 发牌未检出 → 放弃
                 self._blinds_pending = False
                 diag.emit("post.injection_skipped",
-                          {"reason": "active_empty_timeout", "attempts": self._blinds_attempts},
+                          {"reason": "active_empty_timeout",
+                           "secs": round(_now - self._blinds_pending_since, 1)},
                           hand_id=self.tracker.current_hand.id if self.tracker.current_hand else None)
                 logger.warning("[桌规派注] 活跃集持续为空(发牌未检出)→ 超时放弃本手盲注注入")
 
