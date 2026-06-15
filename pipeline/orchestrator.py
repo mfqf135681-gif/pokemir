@@ -396,6 +396,8 @@ class PipelineOrchestrator:
         "seat_artifact",
         # 2026-06-05:hand 转换拆分(startup 卡)+ 整 seat 循环 + detect_empty/showdown
         "hand_end", "hand_start", "detect_empty", "showdown_cnn", "seat_loop",
+        # 2026-06-15 诊断:phash 路径 3 路拆分(必须登记进名单才进 phases_stats,否则显示恒 0)
+        "sa_capture", "sa_diff", "sa_phash",
     )
 
     def _tick(self):
