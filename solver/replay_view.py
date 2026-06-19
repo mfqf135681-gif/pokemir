@@ -24,7 +24,12 @@ def build_solved_timeline(facts: HandFacts, report: RepairReport,
     # 标"🚫否决"(展示铁律:原始事件不隐藏,否决只是追加的解释)。键=(player, street),
     # 受 build_facts 的 veto 开关控制(veto=False → veto_log 空 → 不标,自动回退)。
     _false_allin = {(p, st) for k, p, st in facts.veto_log if k == "false_all_in"}
-    _winner_fold = {(p, st) for k, p, st in facts.veto_log if k == "winner_fold"}
+    _fold_note = {}   # (player, street) → 否决依据(两类弃牌否决:赢家误弃 / 输家假弃)
+    for _k, _p, _st in facts.veto_log:
+        if _k == "winner_fold":
+            _fold_note[(_p, _st)] = "端点否决:赢家不可能弃(net>0)"
+        elif _k == "loser_false_fold":
+            _fold_note[(_p, _st)] = "端点否决:净亏≫已记投入,实打到后续街(假弃牌)"
     # 按街分桶,原始行打 source="记录"(被否决的改 "🚫否决")
     by_street: dict[str, list[dict]] = {st: [] for st in STREETS}
     for e in event_rows:
@@ -35,8 +40,8 @@ def build_solved_timeline(facts: HandFacts, report: RepairReport,
         _src, _note = "记录", ""
         if _act == "all_in" and (_pl, st) in _false_allin:
             _src, _note = "🚫否决", "端点否决:假全下(终栈>0=未投光)"
-        elif _act == "fold" and (_pl, st) in _winner_fold:
-            _src, _note = "🚫否决", "端点否决:赢家不可能弃(net>0)"
+        elif _act == "fold" and (_pl, st) in _fold_note:
+            _src, _note = "🚫否决", _fold_note[(_pl, st)]
         by_street[st].append({
             "seq": e.get("seq"), "player": _pl,
             "action": _act, "amount": e.get("amount"),

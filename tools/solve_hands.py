@@ -81,6 +81,23 @@ def build_facts(h, events, seat_map, final_override=None, street_solver=True, ve
                     contrib[k] = max(contrib.get(k, 0.0), float(amount))
                 elif stk_b is not None:
                     contrib[k] = contrib.get(k, 0.0) + float(stk_b)
+    # #226 端点否决③(标记):输家假弃牌——记了弃牌但【端点净亏 ≫ 已记投入(deficit>12≈3BB)
+    # 且弃牌街之后确有下注(多出的亏能由其打后续街解释)】→ 弃牌存疑(他实际打到了后面)。
+    # 安全闸="弃牌街后有下注":区分 元元圆(翻前弃但后面有flop/turn下注=假弃)vs 过到底终栈misread
+    # (无后续下注→不否决,留端点存疑,不误删真弃牌)。**仅记 veto_log 标显示,不改 folded/不动钱**
+    # (solve_hand 已据端点补对金额);治"弃牌+补投入"自相矛盾的展示。winner 不在此路(归②)。
+    if veto:
+        _STc = ["preflop", "flop", "turn", "river"]
+        _win = set(xx) | {p for p, n in nets.items() if n > 2.0}
+        _bet_streets = {s for (_p, s) in contrib if s in _STc}
+        for p, fst in folded.items():
+            if p in _win:
+                continue
+            rec = antes.get(p, 0.0) + sum(v for (pl, _s), v in contrib.items() if pl == p)
+            fidx = _STc.index(fst) if fst in _STc else 0
+            bet_after = any(_STc.index(s) > fidx for s in _bet_streets)
+            if (-nets.get(p, 0.0)) - rec > 12.0 and bet_after:
+                veto_log.append(("loser_false_fold", p, fst))
     return HandFacts(hand_id=h["id"], pot_final=h["pot"],
                      antes=antes, street_contrib=contrib, nets=nets,
                      xx_winners=xx, folded_street=folded, veto_log=veto_log)

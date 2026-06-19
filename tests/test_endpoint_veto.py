@@ -83,6 +83,39 @@ def test_build_facts_veto_off_keeps_dirty():
     assert "水上" in facts.folded_street   # 关闭否决 → 脏 fold 仍在
 
 
+# ── build_facts ③:输家假弃牌(端点净亏≫已记投入 + 弃牌街后有下注)──────────
+def test_build_facts_vetoes_loser_false_fold():
+    """元元圆型:翻前弃但端点净亏42(只记 ante4),flop/turn 有下注 → 标 loser_false_fold。"""
+    h = {"id": "t", "pot": 100, "init": {"6": 143, "5": 196, "4": 232},
+         "fin": {"6": 101, "5": 303, "4": 190}, "xx": {}}
+    seat_map = {"6": "元元圆", "5": "AAK", "4": "你瞅啥"}
+    events = [
+        ("元元圆", "preflop", "post_ante", 4, None),
+        ("元元圆", "preflop", "fold", None, None),    # 假弃(实打到后面输42)
+        ("AAK", "flop", "bet", 34, None),              # 弃牌街(preflop)之后有下注
+        ("你瞅啥", "flop", "call", 34, None),
+        ("AAK", "turn", "all_in", 158, None),
+    ]
+    facts = build_facts(h, events, seat_map, street_solver=False)
+    assert ("loser_false_fold", "元元圆") in {(k, p) for k, p, _ in facts.veto_log}
+
+
+def test_build_facts_keeps_fold_when_no_betting_after():
+    """安全闸:翻前弃 + 端点净亏大,但 postflop 全过牌(无后续下注)→ 多出的亏无法由打后续街
+    解释 → 判端点 misread,**不**否决真弃牌(不误删)。"""
+    h = {"id": "t", "pot": 20, "init": {"6": 143, "5": 196},
+         "fin": {"6": 101, "5": 150}, "xx": {}}
+    seat_map = {"6": "元元圆", "5": "AAK"}
+    events = [
+        ("元元圆", "preflop", "post_ante", 4, None),
+        ("元元圆", "preflop", "fold", None, None),
+        ("AAK", "flop", "check", None, None),   # 只有 check,无下注
+        ("AAK", "turn", "check", None, None),
+    ]
+    facts = build_facts(h, events, seat_map, street_solver=False)
+    assert "loser_false_fold" not in {k for k, _, _ in facts.veto_log}
+
+
 # ── 复盘时间线:被否决的原始行标 "🚫否决"(不隐藏,追加解释)──────────────
 def test_timeline_marks_vetoed_rows():
     from solver.hand_repair import EXACT, HandFacts, RepairReport
@@ -90,16 +123,18 @@ def test_timeline_marks_vetoed_rows():
     facts = HandFacts(hand_id="t", pot_final=100, antes={}, street_contrib={}, nets={},
                       xx_winners=set(), folded_street={},
                       veto_log=[("winner_fold", "水上", "flop"),
-                                ("false_all_in", "罗湖", "preflop")])
+                                ("false_all_in", "罗湖", "preflop"),
+                                ("loser_false_fold", "元元圆", "preflop")])
     report = RepairReport(hand_id="t", status=EXACT, gap_before=0, gap_after=0)
     evs = [{"seq": 1, "street": "flop", "player": "水上", "action": "fold", "amount": None},
            {"seq": 2, "street": "preflop", "player": "罗湖", "action": "all_in", "amount": 1401},
-           {"seq": 3, "street": "preflop", "player": "罗湖", "action": "call", "amount": 4}]
+           {"seq": 3, "street": "preflop", "player": "罗湖", "action": "call", "amount": 4},
+           {"seq": 4, "street": "preflop", "player": "元元圆", "action": "fold", "amount": None}]
     tl = build_solved_timeline(facts, report, evs)
     rows = [r for s in tl["streets"] for r in s["rows"]]
     vetoed = {(r["player"], r["action"]) for r in rows if r["source"] == "🚫否决"}
-    assert vetoed == {("水上", "fold"), ("罗湖", "all_in")}
+    assert vetoed == {("水上", "fold"), ("罗湖", "all_in"), ("元元圆", "fold")}
     # 罗湖的 call(非目标)仍是"记录"
     assert any(r["player"] == "罗湖" and r["action"] == "call" and r["source"] == "记录"
                for r in rows)
-    assert tl["vetoed_n"] == 2
+    assert tl["vetoed_n"] == 3
