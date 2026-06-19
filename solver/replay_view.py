@@ -20,16 +20,27 @@ def build_solved_timeline(facts: HandFacts, report: RepairReport,
                           event_rows: list[dict], cause: dict | None = None) -> dict:
     """event_rows: [{seq, street, player, action, amount}](原始顺序)。
     返回 {status, badge, streets: [{street, rows}], summary, repairs_n, residual}。"""
-    # 按街分桶,原始行打 source="记录"
+    # 端点否决标记(#226):被 build_facts/veto_events_by_endpoint 剔掉的假事件,原样展示但
+    # 标"🚫否决"(展示铁律:原始事件不隐藏,否决只是追加的解释)。键=(player, street),
+    # 受 build_facts 的 veto 开关控制(veto=False → veto_log 空 → 不标,自动回退)。
+    _false_allin = {(p, st) for k, p, st in facts.veto_log if k == "false_all_in"}
+    _winner_fold = {(p, st) for k, p, st in facts.veto_log if k == "winner_fold"}
+    # 按街分桶,原始行打 source="记录"(被否决的改 "🚫否决")
     by_street: dict[str, list[dict]] = {st: [] for st in STREETS}
     for e in event_rows:
         st = e.get("street") or "preflop"
         if st not in by_street:
             by_street[st] = []
+        _pl, _act = e.get("player"), e.get("action")
+        _src, _note = "记录", ""
+        if _act == "all_in" and (_pl, st) in _false_allin:
+            _src, _note = "🚫否决", "端点否决:假全下(终栈>0=未投光)"
+        elif _act == "fold" and (_pl, st) in _winner_fold:
+            _src, _note = "🚫否决", "端点否决:赢家不可能弃(net>0)"
         by_street[st].append({
-            "seq": e.get("seq"), "player": e.get("player"),
-            "action": e.get("action"), "amount": e.get("amount"),
-            "source": "记录", "note": "",
+            "seq": e.get("seq"), "player": _pl,
+            "action": _act, "amount": e.get("amount"),
+            "source": _src, "note": _note,
         })
 
     # 修补行追加到对应街(街不定 → 标注)
@@ -65,6 +76,7 @@ def build_solved_timeline(facts: HandFacts, report: RepairReport,
         "streets": streets,
         "summary": summary,
         "repairs_n": len(report.repairs),
+        "vetoed_n": len(facts.veto_log),
         "gap_before": report.gap_before,
         "residual": report.gap_after,
         "pot_final": facts.pot_final,

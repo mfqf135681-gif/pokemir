@@ -81,3 +81,25 @@ def test_build_facts_veto_off_keeps_dirty():
     events = [("水上", "flop", "fold", None, None)]
     facts = build_facts(h, events, seat_map, street_solver=False, veto=False)
     assert "水上" in facts.folded_street   # 关闭否决 → 脏 fold 仍在
+
+
+# ── 复盘时间线:被否决的原始行标 "🚫否决"(不隐藏,追加解释)──────────────
+def test_timeline_marks_vetoed_rows():
+    from solver.hand_repair import EXACT, HandFacts, RepairReport
+    from solver.replay_view import build_solved_timeline
+    facts = HandFacts(hand_id="t", pot_final=100, antes={}, street_contrib={}, nets={},
+                      xx_winners=set(), folded_street={},
+                      veto_log=[("winner_fold", "水上", "flop"),
+                                ("false_all_in", "罗湖", "preflop")])
+    report = RepairReport(hand_id="t", status=EXACT, gap_before=0, gap_after=0)
+    evs = [{"seq": 1, "street": "flop", "player": "水上", "action": "fold", "amount": None},
+           {"seq": 2, "street": "preflop", "player": "罗湖", "action": "all_in", "amount": 1401},
+           {"seq": 3, "street": "preflop", "player": "罗湖", "action": "call", "amount": 4}]
+    tl = build_solved_timeline(facts, report, evs)
+    rows = [r for s in tl["streets"] for r in s["rows"]]
+    vetoed = {(r["player"], r["action"]) for r in rows if r["source"] == "🚫否决"}
+    assert vetoed == {("水上", "fold"), ("罗湖", "all_in")}
+    # 罗湖的 call(非目标)仍是"记录"
+    assert any(r["player"] == "罗湖" and r["action"] == "call" and r["source"] == "记录"
+               for r in rows)
+    assert tl["vetoed_n"] == 2
