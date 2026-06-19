@@ -533,6 +533,19 @@ def reconstruct_hand_chips(initial, final, pot=None, sb=0, bb=0, ante=0):
             "pot_read": pot, "pot_plausible": pot_plausible, "flags": flags}
 
 
+def is_showdown_runout(dealt, folded, all_in):
+    """#235 摊牌闸·规则态:本手是否已进入【亮牌跑马】(行动结束、无人能再主动下注)。
+
+    判据:有 ≥1 座全下,且【仍在手(发过牌、未弃)的座中"非全下"的 ≤1】
+    → 最多一个非全下者(已跟到对峙 / 被跟方),无人能再主动下注 → 此后各座牌背消失 = 亮牌
+    (非弃牌)→ 调用方据此冻结弃牌救援(治"全下/摊牌亮牌→牌背消失被误判弃牌",占假弃大头)。
+    dealt/folded/all_in:seat int 集合。纯逻辑,Linux 可单测。
+    ⚠️ 取舍:剩 1 个非全下者即判 runout——若他面对全下选择弃牌,该次真弃会被冻结漏掉
+    (罕见,端点/veto-③ 兜底);要更保守可把 ≤1 收成 ==0(只全员全下才冻),代价=漏"带码跟注方"亮牌假弃。"""
+    live = set(dealt) - set(folded)
+    return len(set(all_in)) >= 1 and len(live - set(all_in)) <= 1
+
+
 def corroborate_boundaries(candidates, cluster_win=6.0, anchor="button", min_signals=2):
     """多信号交叉印证切手(T139):candidates=[(t, signal_name),...]。
     按时间聚类(相邻 ≤cluster_win 归一簇),一簇是【真边界】当:

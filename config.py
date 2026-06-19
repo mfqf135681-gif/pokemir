@@ -100,6 +100,10 @@ ALLIN_DEFER_WRITE = os.getenv("POKEMIR_ALLIN_DEFER", "1").lower() in ("1", "true
 # 默认【开】(缺 showdown_corner 框自动跳过=零风险)。=0 关回旧行为。
 SHOWDOWN_GATE = os.getenv("POKEMIR_SHOWDOWN_GATE", "1").lower() in ("1", "true", "yes")
 SHOWDOWN_WHITE_TH = int(os.getenv("POKEMIR_SHOWDOWN_WHITE_TH", "50"))  # 白计数≥此=亮牌(baseline≤20、摊牌81+,50在空白处)
+# #235 摊牌闸v2(2026-06):三件治假弃牌 — ①runout(全下/行动结束)冻结弃牌救援(治亮牌假弃,占大头)
+# ②牌背回来→撤销假弃(治瞬时掉线级联)③墙钟稳定才判弃(替2-tick,治帧率漂+短抖)。=0 关回旧行为。
+SHOWDOWN_GATE2 = os.getenv("POKEMIR_SHOWDOWN_GATE2", "1").lower() in ("1", "true", "yes")
+GONE_STABLE_SEC = float(os.getenv("POKEMIR_GONE_STABLE_SEC", "0.5"))  # card_marker 消失满此墙钟秒才判弃
 # 2026-06-10 信源验证标注【采集侧】(主题-信源验证):主程序全速跑,旁路抽头【目标信号】的
 # (识别器实际吃的crop + 逐帧读值 + 宽图画ROI框)存盘,供 tools/label_signal.py 盲标产 ground truth。
 # 空=【关】零开销;POKEMIR_LABEL_SIGNAL=pot_size 开(先跑通总底池闭环)。五硬约束见主题文档。

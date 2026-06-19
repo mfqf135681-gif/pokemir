@@ -15,8 +15,8 @@ SHOWDOWN_DUMP_ENABLED = os.getenv("POKEMIR_SHOWDOWN_DUMP", "1") != "0"
 
 from capture.roi import ROIManager
 from capture.screen import ScreenCapturer
-from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE, ALLIN_STACKZERO, ALLIN_ZERO_RUN, ALLIN_DEFER_WRITE, SHOWDOWN_GATE, SHOWDOWN_WHITE_TH, POT_LABEL_WHITE_TH, POT_LABEL_TEAL_TH
-from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips, pot_debounce_step
+from config import CAPTURE_INTERVAL_MS, ROI_CONFIG_DIR, ROI_PROFILE, VERBOSE_DIAG, BATCH_SEAT_OCR, DIGIT_RECIPE_LIVE, FRAME_CAPTURE, BUTTON_CUT, OCR_RECOGNIZE_ONLY, ACTION_PHASH_LIVE, SEAT_OCCUPANCY_LIVE, ALLIN_STACKZERO, ALLIN_ZERO_RUN, ALLIN_DEFER_WRITE, SHOWDOWN_GATE, SHOWDOWN_WHITE_TH, POT_LABEL_WHITE_TH, POT_LABEL_TEAL_TH, SHOWDOWN_GATE2, GONE_STABLE_SEC
+from pipeline.reconstruct import button_move_online, reconcile_underread_amount, blinds_from_button, reconstruct_hand_chips, pot_debounce_step, is_showdown_runout
 from pipeline.label_capture import LabelCapturer  # 信源验证标注采集侧(LABEL_SIGNAL 空时全 no-op)
 from difflib import get_close_matches
 
@@ -299,9 +299,9 @@ class PipelineOrchestrator:
         self._az_state: dict = {}  # #243 第一步:per-seat all-in stack→0 影子检测态(每手 reset)
         self._showdown_latched = False  # #235 摊牌闸:本手是否已进结算(latch 后压制假弃牌;每手 reset)
         # P2a(2026-06-06):活跃集 silent-fold 救援状态。_hand_dealt_seats=本手见过牌的座,
-        # _seat_gone_ticks=各座 card_marker 连续消失帧数(去抖)。补 fold_ocr 漏的弃牌。
+        # _seat_gone_since=各座 card_marker 消失起始墙钟(#235 part3:替原 tick 计数,治帧率漂)。
         self._hand_dealt_seats: set = set()
-        self._seat_gone_ticks: dict = {}
+        self._seat_gone_since: dict = {}
 
         self.tracker = StateTracker()
         self._labeler = LabelCapturer()  # 信源验证:旁路抽头目标信号(LABEL_SIGNAL 空→禁用)
@@ -810,7 +810,7 @@ class PipelineOrchestrator:
             self._blinds_stable_since = None
             self._blinds_pending_since = time.time()
             self._hand_dealt_seats = set()
-            self._seat_gone_ticks = {}
+            self._seat_gone_since = {}
         else:
             self._inject_post_events(db)   # OCR 路径:hand-start 内联(community 未发时盲注 ROI 准)
 
@@ -974,17 +974,31 @@ class PipelineOrchestrator:
             cur_street = ("river" if cc.get("river") else "turn" if cc.get("turn")
                           else "flop" if cc.get("flop") else "preflop")
             self._hand_dealt_seats |= active   # 本手见过牌的座(累积)
+            # #235 摊牌闸v2 part1:全下/行动结束 → 进入亮牌跑马 → 冻结弃牌救援(治"亮牌时牌背消失
+            # 被误判弃牌",占假弃大头;规则态 runout,比白角/总底池 latch 早且不依赖视觉覆盖)。
+            runout = (SHOWDOWN_GATE2 and is_showdown_runout(
+                self._hand_dealt_seats, self.tracker._folded_seats,
+                self.tracker._went_all_in_this_hand))
+            _now = time.time()
+            gone_th = GONE_STABLE_SEC if SHOWDOWN_GATE2 else 0.15  # GATE2 关→短阈≈旧 2 帧(回退)
             for s in list(self._hand_dealt_seats):
                 if s in active:
-                    self._seat_gone_ticks[s] = 0
+                    self._seat_gone_since.pop(s, None)
+                    # #235 part2:被(误)判弃的座,牌背回来(重进活跃集)= 它其实在手 → 撤销假弃牌
+                    # (治瞬时掉线级联:dec77f6e 型——掉 2.4s 触发假弃、回来却仍被 skip 丢信号)。
+                    if SHOWDOWN_GATE2 and s in self.tracker._folded_seats:
+                        self.tracker._folded_seats.discard(s)
+                        diag.emit("fold.retract_rejoin", {"seat": s, "street": cur_street},
+                                  hand_id=self.tracker.current_hand.id)
                     continue
-                self._seat_gone_ticks[s] = self._seat_gone_ticks.get(s, 0) + 1
-                if (cur_street != "river" and self._seat_gone_ticks[s] >= 2
+                # #235 part3:墙钟稳定才判弃(替 2-tick 计数;治帧率漂 + 短瞬抖)
+                self._seat_gone_since.setdefault(s, _now)
+                if (cur_street != "river"
+                        and (_now - self._seat_gone_since[s]) >= gone_th
                         and s not in self.tracker._folded_seats
-                        and not (SHOWDOWN_GATE and self._showdown_latched)  # #235:摊牌后 card_marker 消失=亮牌非弃牌,不补
-                        and not self._pot_label_latched):  # 幽灵fold修(2026-06-11 审计≥31例):总底池
-                    # latch=进结算(132/133 手可靠),结算期全桌 card_marker 消失是收牌动画,
-                    # 不是弃牌 — 此前这些被补成"赢家/全下者弃牌"污染归属。latch 后一律不补。
+                        and not (SHOWDOWN_GATE and self._showdown_latched)  # 摊牌后 card_marker 消失=亮牌非弃牌
+                        and not self._pot_label_latched                     # 总底池 latch=进结算(132/133 可靠)
+                        and not runout):                                    # #235 part1:跑马期冻结
                     self._rescue_silent_fold(db, s, cur_street)
         # 惰性盲注注入(2026-06-15 稳定闸):等活跃集【稳定】再派,治高帧抢在发牌动画前 →
         # 只 {6,7} 漏派 ante + 错 SB/BB。发牌期活跃集只增不减(派注前无人弃牌)→ 座数墙钟
