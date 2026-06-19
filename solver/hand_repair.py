@@ -40,6 +40,7 @@ class HandFacts:
     nets: dict[str, float]                           # player → 端点净额(有端点读数的)
     xx_winners: set[str] = field(default_factory=set)
     folded_street: dict[str, str] = field(default_factory=dict)  # player → 弃牌街(没弃则缺)
+    veto_log: list = field(default_factory=list)  # #226 端点否决剔除的假事件 [(kind,player,street)]
 
     def recorded(self, p: str) -> float:
         return self.antes.get(p, 0.0) + sum(
@@ -47,6 +48,32 @@ class HandFacts:
 
     def recorded_total(self) -> float:
         return sum(self.antes.values()) + sum(self.street_contrib.values())
+
+
+def veto_events_by_endpoint(events, nets, xx_winners, final, tol=6.0):
+    """#226 端点否决:从 event 元组流剔除两类【端点可反证】的假事件,返回 (cleaned_events, veto_log)。
+
+    端点(net/xx/final)= 唯一真值锚,可反证 per-action 噪声(2026-06-15 全量审计:摊牌期
+    "赢家被误记弃牌"≈1/4手、"假全下"≈5%,且守恒 closure 查不出——假弃牌不带筹码):
+      ① 假全下:记 all_in 但该玩家【非赢家 且 终栈>tol(未投光)】→ 全下=投光,留着筹码=没全下 → 剔。
+      ② 赢家误弃:记 fold 但该玩家是赢家(+xx 或 net>tol)→ 赢家不可能弃(摊牌亮牌致牌背消失被误判,
+         见摊牌闸 #235)→ 剔。
+    events:[(player,street,atype,amount,stk_b)];final:{player→终栈}。**只删端点铁证矛盾的,
+    不造新事件**(补漏真全下=补账,归 solve_hand)。纯逻辑,可单测。
+    """
+    winners = set(xx_winners) | {p for p, n in nets.items() if n > tol}
+    kept, log = [], []
+    for ev in events:
+        player, street, atype = ev[0], ev[1], ev[2]
+        if (atype == "all_in" and player not in winners
+                and nets.get(player, -1e18) <= tol and final.get(player, 0.0) > tol):
+            log.append(("false_all_in", player, street))
+            continue
+        if atype == "fold" and player in winners:
+            log.append(("winner_fold", player, street))
+            continue
+        kept.append(ev)
+    return kept, log
 
 
 @dataclass

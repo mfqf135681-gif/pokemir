@@ -14,7 +14,8 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from solver.diagnose import classify_unsolved  # noqa: E402
-from solver.hand_repair import EXACT, REPAIRED, UNSOLVED, HandFacts, solve_hand  # noqa: E402
+from solver.hand_repair import (  # noqa: E402
+    EXACT, REPAIRED, UNSOLVED, HandFacts, solve_hand, veto_events_by_endpoint)
 from tools.solve_session import fetch as fetch_endpoints, seat_player_map  # noqa: E402
 
 BRC = ("bet", "call", "raise")
@@ -37,9 +38,27 @@ def fetch_events(dsn, since, until):
     return ev
 
 
-def build_facts(h, events, seat_map, final_override=None, street_solver=True):
+def build_facts(h, events, seat_map, final_override=None, street_solver=True, veto=True):
     """street_solver=True(砖5):用 solve_street_contrib 时序求解每街投入(call 锁定最高注 +
-    raise 栈/单调净化,治 amount 误读爆值);False=旧裸 max 聚合(对比/回退用)。"""
+    raise 栈/单调净化,治 amount 误读爆值);False=旧裸 max 聚合(对比/回退用)。
+    veto=True(#226 端点否决):先算端点(net/xx/final),据其剔除假全下/赢家误弃事件,再构 facts
+    (摊牌期假事件不污染 folded/contrib/守恒账;剔除清单存 facts.veto_log)。"""
+    # 端点净额 + +xx 赢家 + 终栈(先算:否决要用,且不依赖 events)
+    nets, xx, final_by = {}, set(), {}
+    for seat, player in seat_map.items():
+        i, f = h["init"].get(seat), h["fin"].get(seat)
+        if player in (final_override or {}):
+            f = final_override[player]   # 用下一手 initial 回填的愈合 final
+        if f is not None:
+            final_by[player] = float(f)
+        if i is not None and f is not None:
+            nets[player] = float(f) - float(i)
+        if seat in (h["xx"] or {}):
+            xx.add(player)
+    # #226 端点否决:剔假全下/赢家误弃(端点铁证矛盾),再从干净事件流构 facts
+    veto_log = []
+    if veto:
+        events, veto_log = veto_events_by_endpoint(events, nets, xx, final_by)
     antes, folded = {}, {}
     for player, street, atype, amount, stk_b in events:
         if atype == "post_ante" and amount:
@@ -62,19 +81,9 @@ def build_facts(h, events, seat_map, final_override=None, street_solver=True):
                     contrib[k] = max(contrib.get(k, 0.0), float(amount))
                 elif stk_b is not None:
                     contrib[k] = contrib.get(k, 0.0) + float(stk_b)
-    # 端点净额 + +xx 赢家(座→玩家映射来自值匹配)。final_override:链愈合(砖4)回填值
-    nets, xx = {}, set()
-    for seat, player in seat_map.items():
-        i, f = h["init"].get(seat), h["fin"].get(seat)
-        if player in (final_override or {}):
-            f = final_override[player]   # 用下一手 initial 回填的愈合 final
-        if i is not None and f is not None:
-            nets[player] = float(f) - float(i)
-        if seat in (h["xx"] or {}):
-            xx.add(player)
     return HandFacts(hand_id=h["id"], pot_final=h["pot"],
                      antes=antes, street_contrib=contrib, nets=nets,
-                     xx_winners=xx, folded_street=folded)
+                     xx_winners=xx, folded_street=folded, veto_log=veto_log)
 
 
 def main():
