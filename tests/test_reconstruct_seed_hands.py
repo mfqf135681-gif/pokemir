@@ -11,7 +11,7 @@
 """
 import pytest
 
-from pipeline.reconstruct import reconstruct_hand_chips
+from pipeline.reconstruct import reconstruct_hand_chips, veto_actions_by_endpoint
 
 BLINDS = dict(sb=2, bb=4, ante=4)
 
@@ -93,6 +93,10 @@ def _run(hand):
     return reconstruct_hand_chips(hand["initial"], hand["final"], pot=hand["pot"], **BLINDS)
 
 
+def _hand(hid):
+    return next(h for h in SEED_HANDS if h["id"] == hid)
+
+
 # ─── 端点层回归护栏:reconstruct_hand_chips 在真实脏数据上的纠错 ───────────────
 class TestEndpointLayer:
     @pytest.mark.parametrize("hand", SEED_HANDS, ids=[h["id"] for h in SEED_HANDS])
@@ -127,22 +131,40 @@ class TestSolverTargets:
     """#226 求解器须做到:吃 per-action 候选 + 端点 → 否决非法/纠正错记。
     现在求解器还没把『端点否决逐动作』这条接上 → 全 xfail,作为待办清单 + 建成后的验收。"""
 
-    @pytest.mark.xfail(reason="#226 求解器未接端点否决:false all-in 仍会被写入", strict=False)
     def test_rejects_false_allin_A_luohu(self):
-        """A 手:罗湖『全下1401』必须被端点否决(罗湖终栈860,不可能全下)。"""
-        raise AssertionError("solver 未实现:应据端点(罗湖net=-545,非清零)否决其 all_in")
+        """A 手:罗湖『全下1401』须被端点否决(终栈860、net-545=未投光,不可能全下)。"""
+        h = _hand("4c736d62")
+        ep = _run(h)
+        cands = [{"seat": 1, "action_type": "all_in", "amount": 1401},
+                 {"seat": 1, "action_type": "call", "amount": 545}]  # 非目标动作应原样保留
+        res = veto_actions_by_endpoint(cands, ep, h["final"], bb=BLINDS["bb"])
+        assert any(v["seat"] == 1 and v["action_type"] == "all_in" for v in res["vetoed"]), \
+            f"罗湖假全下应被否决,实 vetoed={res['vetoed']}"
+        assert all(not (a["seat"] == 1 and a["action_type"] == "all_in") for a in res["actions"]), \
+            "罗湖 all_in 不该留在保留集"
+        assert any(a["action_type"] == "call" for a in res["actions"]), "非目标动作(call)应保留"
 
-    @pytest.mark.xfail(reason="#226 求解器未接端点否决:false all-in 仍会被写入", strict=False)
     def test_rejects_false_allin_D_dongsheng(self):
-        """D 手:东胜『stackzero seat7=57』必须被否决(东胜终栈50,还活着)。"""
-        raise AssertionError("solver 未实现:应据端点(东胜终栈50>0)否决其 all_in")
+        """D 手:东胜『stackzero seat7=57』须被否决(终栈50>0、还活着)。"""
+        h = _hand("953df25c")
+        ep = _run(h)
+        cands = [{"seat": 7, "action_type": "all_in", "amount": 57}]
+        res = veto_actions_by_endpoint(cands, ep, h["final"], bb=BLINDS["bb"])
+        assert any(v["seat"] == 7 for v in res["vetoed"]), \
+            f"东胜假全下应被否决,实 vetoed={res['vetoed']}"
 
-    @pytest.mark.xfail(reason="#226 求解器未接:winner 被误记弃牌时应据端点纠正", strict=False)
     def test_corrects_winner_marked_fold_A_water(self):
-        """A 手:水上(真全下赢家)被记弃牌 → 求解器应据端点(net=+506)纠成参与到底并赢。"""
-        raise AssertionError("solver 未实现:应据端点(水上net=+506)否决其 fold")
+        """A 手:水上(真全下赢家 net+506)被记弃牌 → 据端点否决其 fold 并纠为打到摊牌。"""
+        h = _hand("4c736d62")
+        ep = _run(h)
+        cands = [{"seat": 0, "action_type": "fold"}]
+        res = veto_actions_by_endpoint(cands, ep, h["final"], bb=BLINDS["bb"])
+        assert any(v["seat"] == 0 and v["action_type"] == "fold" for v in res["vetoed"]), \
+            f"水上(赢家)被误记的弃牌应被否决,实 vetoed={res['vetoed']}"
+        assert any(c["seat"] == 0 and c["to"] == "played_to_showdown" for c in res["corrected"]), \
+            "应记录一条纠正(水上 fold→played_to_showdown)"
 
-    @pytest.mark.xfail(reason="#226 求解器未接:OCR漏的真全下应据端点+stackzero补回", strict=False)
+    @pytest.mark.xfail(reason="#226 规则③(补漏真全下)未建:OCR漏的真全下需端点+stackzero补回", strict=False)
     def test_recovers_missed_allin_B_water(self):
-        """B 手:水上真全下339被记弃牌(OCR漏)→ 求解器应据端点(水上爆离场)+stackzero 补回全下。"""
-        raise AssertionError("solver 未实现:应补回 s0 turn all-in 339")
+        """B 手:水上真全下339被记弃牌(OCR漏)→ 求解器应据端点(爆离场)+stackzero 补回全下。"""
+        raise AssertionError("规则③未实现:应补回 s0 turn all-in 339")

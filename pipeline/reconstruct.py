@@ -533,6 +533,40 @@ def reconstruct_hand_chips(initial, final, pot=None, sb=0, bb=0, ante=0):
             "pot_read": pot, "pot_plausible": pot_plausible, "flags": flags}
 
 
+def veto_actions_by_endpoint(actions, endpoint, final, bb=0):
+    """#226 端点否决(2026-06):用端点(唯一真值锚)否决逐动作候选里的两类噪声。
+
+    端点层只能可靠定 net/winners(见 reconstruct_hand_chips),但这两样足以**反证**
+    两类高频 per-action 假事件(2026-06-15 全量审计:摊牌期假弃牌≈1/4 手、假全下≈5%):
+      ① **假全下**:某座记了 all_in,但端点显示它【既非赢家(net≤tol)又留着筹码(final>tol)】
+         → 全下=投光,留着筹码说明没全下 → 否决。(实测罗湖net-545终栈860 / 东胜net-39终栈50)
+      ② **赢家误弃**:某座记了 fold,但端点显示它是赢家(net>tol) → 赢家不可能弃 → 否决该 fold。
+         (实测水上 net+506 却被记弃牌——摊牌亮牌时牌背消失被误判,见摊牌闸 #235)
+    (③ 漏抓真全下=端点显示爆栈/缺座但无 all_in 记录 → 需 stackzero 配合,留下一步)
+
+    actions:[{"seat":int,"action_type":str,"amount":?,...}];endpoint:reconstruct_hand_chips 返回;
+    final:{座→终栈}。返回 {"actions":保留的, "vetoed":[带 veto_reason], "corrected":[纠正记录]}。
+    纯逻辑,Linux 可单测。否决是【删假】不是【造真】:只移除矛盾候选,不凭空补事件(那是规则③/求解器)。
+    """
+    net = endpoint.get("net", {})
+    winners = set(endpoint.get("winners", []))
+    tol = max(2.0, 0.5 * bb)
+    kept, vetoed, corrected = [], [], []
+    for a in actions:
+        s, at = a.get("seat"), a.get("action_type")
+        if at == "all_in" and s in net and net[s] <= tol and final.get(s, 0) > tol:
+            vetoed.append({**a, "veto_reason":
+                           f"false_all_in(net={net[s]:+.0f},final={final.get(s):.0f}>0=未投光)"})
+            continue
+        if at == "fold" and s in winners:
+            vetoed.append({**a, "veto_reason": f"winner_marked_fold(net={net[s]:+.0f}>0=赢家不可能弃)"})
+            corrected.append({"seat": s, "from": "fold", "to": "played_to_showdown",
+                              "by": f"endpoint_net={net[s]:+.0f}"})
+            continue
+        kept.append(a)
+    return {"actions": kept, "vetoed": vetoed, "corrected": corrected}
+
+
 def corroborate_boundaries(candidates, cluster_win=6.0, anchor="button", min_signals=2):
     """多信号交叉印证切手(T139):candidates=[(t, signal_name),...]。
     按时间聚类(相邻 ≤cluster_win 归一簇),一簇是【真边界】当:
