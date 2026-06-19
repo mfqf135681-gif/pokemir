@@ -94,19 +94,63 @@ def run_live(prof, th, samples, interval):
             time.sleep(interval)
 
 
+def run_dump(prof, th, outdir):
+    """抓一帧 live → 全窗画上各座 card_marker 框(绿=在手/红=不匹配)+ 各座放大 crop 存盘。
+    看 _overlay:某座框压在两红牌背上但 hamming 高=ref内容坏;框飘到头像/别处=框位坏。"""
+    import cv2
+    from capture.roi import ROIRegion  # noqa: F401  (确保模块可导)
+    from capture.screen import ScreenCapturer
+    title = prof.get("window_title", "")
+    cap = ScreenCapturer()
+    if title and cap.find_window_by_title(title):
+        print(f"跟踪窗口: {title!r}")
+    else:
+        print(f"⚠️ 未找到窗口 {title!r},回退 monitor 1(坐标可能不对)")
+        cap.select_monitor(1)
+    cap.refresh_frame()
+    frame = cap._frame
+    if frame is None:
+        print("ERROR: 抓帧失败")
+        return
+    bgr = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR) if (frame.ndim == 3 and frame.shape[2] == 4) else frame.copy()
+    os.makedirs(outdir, exist_ok=True)
+    overlay = bgr.copy()
+    for sidx, cm, ref in _seats_with_marker(prof):
+        l, t, w, h = cm
+        ham = _hamming(_avg_hash_live(frame[t:t + h, l:l + w]), ref)
+        color = (0, 200, 0) if ham <= th else (0, 0, 255)  # BGR:绿/红
+        cv2.rectangle(overlay, (l, t), (l + w, t + h), color, 1)
+        cv2.putText(overlay, f"s{sidx}:{ham}", (l, max(8, t - 2)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+        crop = bgr[t:t + h, l:l + w]
+        if crop.size:
+            up = cv2.resize(crop, (max(1, w) * 6, max(1, h) * 6), interpolation=cv2.INTER_NEAREST)
+            cv2.imwrite(os.path.join(outdir, f"s{sidx}_ham{ham}.png"), up)
+    cv2.imwrite(os.path.join(outdir, "_overlay.png"), overlay)
+    print(f"已存 → {outdir}\\")
+    print("  _overlay.png   = 全窗 + 各座 card_marker 框(绿=在手/红=不匹配,标了 hamming)")
+    print("  s<座>_ham<值>.png = 各座框内容放大6倍")
+    print("看点:seat_0 红框是否压在那两张红牌背上?")
+    print("  压在牌背上但红(hamming高) → ref 内容坏(重录 ref);框飘到头像/缝隙 → 框位坏(重框)。对比 seat_1/2 绿框。")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--from-image")
     ap.add_argument("--live", action="store_true")
+    ap.add_argument("--dump", action="store_true", help="抓一帧 live,画框+存各座 crop(看 ROI 位置)")
+    ap.add_argument("--out", default="out/marker_check")
     ap.add_argument("--samples", type=int, default=20)
     ap.add_argument("--interval", type=float, default=0.7)
     ap.add_argument("--th", type=int, default=8)
     a = ap.parse_args()
-    if not a.live and not a.from_image:
-        ap.error("给 --from-image <帧> 或 --live")
+    if not a.live and not a.dump and not a.from_image:
+        ap.error("给 --from-image <帧> 或 --live 或 --dump")
     prof = json.loads((Path("rois") / f"{a.profile}.json").read_text(encoding="utf-8"))
-    if a.live:
+    if a.dump:
+        run_dump(prof, a.th, a.out)
+    elif a.live:
         run_live(prof, a.th, a.samples, a.interval)
     else:
         run_from_image(prof, a.from_image, a.th)
