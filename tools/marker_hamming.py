@@ -134,21 +134,69 @@ def run_dump(prof, th, outdir):
     print("  压在牌背上但红(hamming高) → ref 内容坏(重录 ref);框飘到头像/缝隙 → 框位坏(重框)。对比 seat_1/2 绿框。")
 
 
+def run_set_ref(profile_name, prof, seat, outdir):
+    """单座 live 重录 card_marker_ref(只改该座,不碰其它座的好 ref)。
+    抓一帧 live → 算该座 card_marker 框的 avg_hash → 写回 profile 该座 card_marker_ref。
+    ⚠️ 跑时该座必须【在手(露两张牌背)】,否则录进背景=又坏。存 crop 供肉眼复核。"""
+    import cv2
+    from capture.roi import ROIRegion  # noqa: F401
+    from capture.screen import ScreenCapturer
+    seatrow = next((s for s in prof.get("seats", []) if s.get("seat_index") == seat), None)
+    if not seatrow or not seatrow.get("card_marker"):
+        print(f"ERROR: profile 无 seat{seat} 的 card_marker 框(先用 roi_config 重框)")
+        return
+    title = prof.get("window_title", "")
+    cap = ScreenCapturer()
+    if title and cap.find_window_by_title(title):
+        print(f"跟踪窗口: {title!r}")
+    else:
+        print(f"⚠️ 未找到窗口 {title!r},回退 monitor 1")
+        cap.select_monitor(1)
+    cap.refresh_frame()
+    frame = cap._frame
+    if frame is None:
+        print("ERROR: 抓帧失败")
+        return
+    l, t, w, h = seatrow["card_marker"]
+    crop = frame[t:t + h, l:l + w]
+    new_ref = _avg_hash_live(crop)
+    old_ref = seatrow.get("card_marker_ref")
+    # 写回 profile(只改该座该键,保留其它一切)
+    path = Path("rois") / f"{profile_name}.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for s in data.get("seats", []):
+        if s.get("seat_index") == seat:
+            s["card_marker_ref"] = int(new_ref)
+            break
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.makedirs(outdir, exist_ok=True)
+    bgr = cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR) if (crop.ndim == 3 and crop.shape[2] == 4) else crop
+    cv2.imwrite(os.path.join(outdir, f"s{seat}_newref.png"),
+                cv2.resize(bgr, (max(1, w) * 6, max(1, h) * 6), interpolation=cv2.INTER_NEAREST))
+    print(f"✓ seat{seat} card_marker_ref: {old_ref} → {int(new_ref)}  已写 {path}")
+    print(f"  录到的内容存 {outdir}\\s{seat}_newref.png —— 务必确认是【两张红牌背】!不是就重跑(确保该座在手)")
+    print(f"  然后 --live 在后续几手验证:seat{seat} 在手时应 ≤8。")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--from-image")
     ap.add_argument("--live", action="store_true")
     ap.add_argument("--dump", action="store_true", help="抓一帧 live,画框+存各座 crop(看 ROI 位置)")
+    ap.add_argument("--set-ref", type=int, default=None, metavar="SEAT",
+                    help="单座 live 重录 card_marker_ref(该座必须在手;只改该座不碰其它)")
     ap.add_argument("--out", default="out/marker_check")
     ap.add_argument("--samples", type=int, default=20)
     ap.add_argument("--interval", type=float, default=0.7)
     ap.add_argument("--th", type=int, default=8)
     a = ap.parse_args()
-    if not a.live and not a.dump and not a.from_image:
-        ap.error("给 --from-image <帧> 或 --live 或 --dump")
+    if not a.live and not a.dump and a.set_ref is None and not a.from_image:
+        ap.error("给 --from-image <帧> 或 --live 或 --dump 或 --set-ref <座>")
     prof = json.loads((Path("rois") / f"{a.profile}.json").read_text(encoding="utf-8"))
-    if a.dump:
+    if a.set_ref is not None:
+        run_set_ref(a.profile, prof, a.set_ref, a.out)
+    elif a.dump:
         run_dump(prof, a.th, a.out)
     elif a.live:
         run_live(prof, a.th, a.samples, a.interval)
