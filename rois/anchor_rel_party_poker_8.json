@@ -1,0 +1,208 @@
+{
+  "profile": "party_poker_8",
+  "anchor_field": "anchor",
+  "anchor_w": 20,
+  "note": "各 ROI 相对 anchor(ante筹码图标)的偏移[dx,dy,w,h]。配准:NCC定位anchor实际位→各ROI=anchor+offset。左/右为去噪模板(中位数),中柱单列。死框(fold_text/hand_type)不收。⚠️左右模板各自独立存储、不可由镜像互推:id/amount/stack 等图形框遵循镜像,但 action/showdown_corner 等【文字/内容锚】元素是镜像整改后逐座手框(text不镜像、相对id左缘一致),必须按列各存。",
+  "seat_types": {
+    "0": "center",
+    "1": "left",
+    "2": "left",
+    "3": "left",
+    "4": "center",
+    "5": "right",
+    "6": "right",
+    "7": "right"
+  },
+  "left_template": {
+    "id": [
+      -105,
+      -59,
+      122,
+      27
+    ],
+    "action": [
+      -65,
+      -54,
+      20,
+      20
+    ],
+    "amount": [
+      23,
+      -3,
+      77,
+      25
+    ],
+    "stack": [
+      -93,
+      54,
+      93,
+      26
+    ],
+    "cards": [
+      -97,
+      -29,
+      105,
+      77
+    ],
+    "fold_area": [
+      -83,
+      -28,
+      76,
+      77
+    ],
+    "win_amount": [
+      -101,
+      -84,
+      113,
+      28
+    ],
+    "button_indicator": [
+      8,
+      60,
+      12,
+      14
+    ],
+    "card_marker": [
+      -88,
+      38,
+      8,
+      8
+    ],
+    "showdown_corner": [
+      -97,
+      37,
+      10,
+      11
+    ]
+  },
+  "right_template": {
+    "id": [
+      3,
+      -59,
+      122,
+      27
+    ],
+    "action": [
+      46,
+      -54,
+      19,
+      19
+    ],
+    "amount": [
+      -80,
+      -3,
+      77,
+      25
+    ],
+    "stack": [
+      20,
+      54,
+      93,
+      26
+    ],
+    "cards": [
+      12,
+      -29,
+      105,
+      77
+    ],
+    "fold_area": [
+      27,
+      -28,
+      76,
+      77
+    ],
+    "win_amount": [
+      8,
+      -84,
+      113,
+      28
+    ],
+    "button_indicator": [
+      0,
+      60,
+      12,
+      14
+    ],
+    "card_marker": [
+      101,
+      39,
+      7,
+      6
+    ],
+    "showdown_corner": [
+      15,
+      34,
+      12,
+      12
+    ]
+  },
+  "centers": {
+    "4": {
+      "id": [
+        -39,
+        -146,
+        114,
+        25
+      ],
+      "action": [
+        -2,
+        -141,
+        20,
+        19
+      ],
+      "amount": [
+        -38,
+        -1,
+        115,
+        24
+      ],
+      "stack": [
+        -28,
+        -33,
+        93,
+        26
+      ],
+      "cards": [
+        -36,
+        -116,
+        105,
+        77
+      ],
+      "fold_area": [
+        -21,
+        -115,
+        76,
+        77
+      ],
+      "win_amount": [
+        -40,
+        -171,
+        113,
+        28
+      ],
+      "button_indicator": [
+        72,
+        -26,
+        11,
+        13
+      ],
+      "card_marker": [
+        52,
+        -48,
+        7,
+        7
+      ],
+      "showdown_corner": [
+        -34,
+        -53,
+        11,
+        12
+      ]
+    },
+    "0": null
+  },
+  "pending": [
+    "seat_0 待修复后补中柱偏移"
+  ]
+}
