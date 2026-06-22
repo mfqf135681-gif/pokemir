@@ -306,14 +306,14 @@ VALID_FIELDS = {
 
 # Per-seat sub-element names for --element flag. Order matches the full-seat prompt order.
 # REQUIRED_SEAT_ELEMENTS = {action, stack} — final-save validation refuses entries lacking these.
-SEAT_ELEMENT_ORDER = ["action", "amount", "fold_area", "fold_text", "timer", "stack", "button_indicator", "cards", "id", "hand_type", "win_amount", "card_marker", "showdown_corner"]
+SEAT_ELEMENT_ORDER = ["action", "amount", "fold_area", "fold_text", "anchor", "stack", "button_indicator", "cards", "id", "hand_type", "win_amount", "card_marker", "showdown_corner"]
 REQUIRED_SEAT_ELEMENTS = {"action", "stack"}
 ELEMENT_HINTS = {
     "action": "头像上方,玩家行动时**只显示动作汉字**(「跟注/加注/下注/过牌」);WePoker 中**金额不在此**;空闲时此位置显示玩家昵称",
     "amount": "头像**旁边**,显示筹码图标 + 金额数字(call/raise/bet 时出现的本次下注额);OCR 用 digit allowlist 自动过滤图标;ESC 可跳过(fold/check 不需要金额)",
     "fold_area": "头像正中,玩家弃牌时显示「弃牌」两字 + 头像变灰(独立于上方动作区)",
     "fold_text": "T120 专职「弃牌」文字 ROI(配 allowlist=弃牌盖,单用途,治 OCR 认错+框偏)— **紧框「弃牌/盖牌」两字本身**,比 fold_area **更紧**,**不带头像、不带其他文字、不要框到空背景**;座位 0/5/7 之前 fold_area 框偏读空,这个务必框准到「弃牌」实际渲染处;8 座「弃牌」大小一致,**适合 --copy-size 批量**;ESC 跳过则该座回落 fold_area 旧路径",
-    "timer": "**决策倒计时数字专用 ROI**(独立于 fold_area)— 位置固定,玩家轮到行动时显示 1-2 位数字(如「10」「9」「15」等),可能带「s」单位;**只框那 1-2 位数字本身**,**不带头像、不带其他文字**;比 fold_area **小得多**,OCR 更聚焦;若 None pipeline 会 fall back 到现有 fold_area regex 检测;ESC 可跳过(保持旧行为)",
+    "anchor": "**抗漂配准 ruler 锚**(2026-06-22 复用退役 timer 槽)= **ante 下注时的筹码图标**:每手开局固定位短暂出现(随后飞向底池,只取固定位那一刻)。**紧框筹码图标本身**,不带数字/头像/邻座。8 座同尺寸,**用 --copy-size 批量**(STEP1 定尺寸→STEP2 八座点中心);对 ante 帧框(--from-image,live 抓那 0.4s 太难)。验收:`field_hash --field anchor --ncc` 看 2nd/peak≤0.6(可定位)。用途:hand-start 测该座实际位 vs 期望位=漂移量。",
     "stack": "头像下方的筹码量数字(玩家总筹码,与 amount 不同)",
     "button_indicator": "玩家筹码量数字**左侧紧贴**的小 D 标记(轮换 dealer 标志,~10-20 像素);本次默认走 OCR 识别「D」字符;ESC 可跳过",
     "cards": "**摊牌底牌显示区**(showdown 时该 seat 玩家的 2 张底牌)— 紧贴牌外缘,**不能含桌面色**(上沿离牌顶白边 1-2 px 内,绝不要高);只框 2 卡本身,**不要把下方「对子」之类的牌型 badge 框进来**(那是 hand_type 独立 ROI)",
@@ -787,7 +787,7 @@ def _draw_rois(img: np.ndarray, data: dict, element_filter: str | None = None):
 
     If element_filter is given (e.g. "action", "id", "hand_type"), draw
     ONLY that element across all seats — for per-element verify.
-    Default (None) draws everything, including hand_type/timer/win_amount
+    Default (None) draws everything, including hand_type/anchor/win_amount
     (which the legacy version forgot).
     """
     colors = {
@@ -797,7 +797,7 @@ def _draw_rois(img: np.ndarray, data: dict, element_filter: str | None = None):
         "button":     (255, 0, 255),   # magenta
         "seat":       (0, 165, 255),   # orange
         "fold":       (0, 0, 255),     # red
-        "timer":      (255, 255, 0),   # cyan
+        "anchor":     (255, 255, 0),   # cyan(抗漂 ruler 锚,复用退役 timer 槽)
         "hand_type":  (180, 105, 255), # pink
         "win_amount": (0, 255, 128),   # light-green
         "fold_text":  (0, 215, 255),   # amber — T120 专职弃牌框(区别于 fold_area 红)
@@ -813,7 +813,7 @@ def _draw_rois(img: np.ndarray, data: dict, element_filter: str | None = None):
         "button_indicator": ("button",     "BTN?"),
         "id":               ("seat",       "ID"),
         "hand_type":        ("hand_type",  "HT"),
-        "timer":            ("timer",      "TMR"),
+        "anchor":           ("anchor",     "ANC"),
         "win_amount":       ("win_amount", "+WIN"),
     }
 

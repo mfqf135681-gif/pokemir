@@ -87,9 +87,9 @@ class TableROIs:
             if seat.hand_type_area:
                 entry["hand_type"] = (seat.hand_type_area.left, seat.hand_type_area.top,
                                       seat.hand_type_area.width, seat.hand_type_area.height)
-            if seat.timer_area:
-                entry["timer"] = (seat.timer_area.left, seat.timer_area.top,
-                                  seat.timer_area.width, seat.timer_area.height)
+            if seat.anchor_area:
+                entry["anchor"] = (seat.anchor_area.left, seat.anchor_area.top,
+                                   seat.anchor_area.width, seat.anchor_area.height)
             if seat.win_amount_area:
                 entry["win_amount"] = (seat.win_amount_area.left, seat.win_amount_area.top,
                                        seat.win_amount_area.width, seat.win_amount_area.height)
@@ -137,7 +137,7 @@ class TableROIs:
                 cards_area=_tuple_to_roi(s["cards"], "seat_cards") if s.get("cards") else None,
                 id_area=_tuple_to_roi(s["id"], "seat_id") if s.get("id") else None,
                 hand_type_area=_tuple_to_roi(s["hand_type"], "seat_hand_type") if s.get("hand_type") else None,
-                timer_area=_tuple_to_roi(s["timer"], "seat_timer") if s.get("timer") else None,
+                anchor_area=_tuple_to_roi(s["anchor"], "seat_anchor") if s.get("anchor") else None,
                 win_amount_area=_tuple_to_roi(s["win_amount"], "seat_win_amount") if s.get("win_amount") else None,
                 fold_text_area=_tuple_to_roi(s["fold_text"], "seat_fold_text") if s.get("fold_text") else None,
                 card_marker=_tuple_to_roi(s["card_marker"], "seat_card_marker") if s.get("card_marker") else None,
@@ -174,10 +174,11 @@ class SeatROI:
     id_area: ROIRegion | None = None   # pixel-same-as-action; OCR'd once at hand-start for player ID
     hand_type_area: ROIRegion | None = None  # 摊牌时 seat 下方显示的牌型中文文本(对子/顺子/同花/葫芦/...);
                                               # 用于和 CNN 识别的 hole + community 推导出的牌型做交叉验证
-    timer_area: ROIRegion | None = None  # 决策倒计时数字专用 ROI(独立于 fold_area);
-                                          # 位置固定,只显示 1-2 位数字 + "s" 或纯数字;OCR 更准确,
-                                          # 跟"弃牌"/"All In"/showdown 状态不冲突.向后兼容:若 None,
-                                          # pipeline fall back 到现有 fold_area regex 检测.
+    anchor_area: ROIRegion | None = None  # 抗漂配准 ruler 锚(2026-06-22 复用退役的 timer 槽 rename 而来);
+                                          # = ante 下注时的筹码图标 ROI:每手固定位短暂出现、NCC 模板匹配
+                                          # 峰尖锐唯一(2nd/peak≈0.15,8座可定位)。用途:hand-start 测该座
+                                          # 实际位 vs 期望位 = 该座 ROI 漂移量。详见 主题-抗漂自动配准.md。
+                                          # (旧 timer 决策倒计时职责已于 2026-06-15 整套退役,此槽腾出复用。)
     win_amount_area: ROIRegion | None = None  # 获胜玩家头上短暂显示的赢取金额(+45 / +1000 等);
                                                 # 只在 hand 结算 1-2 秒短暂显示;为 Path B 净胜负
                                                 # 统计提供直接信号(无需 stack delta 推算).

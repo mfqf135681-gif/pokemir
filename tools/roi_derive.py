@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(_ROOT, "tools"))
 from roi_geom import roi_offset, apply_offset, mirror_box_x  # noqa: E402
 
 DERIVE_FIELDS = ["stack", "amount", "action", "fold_area", "fold_text", "id",
-                 "cards", "hand_type", "timer", "win_amount", "button_indicator"]
+                 "cards", "hand_type", "anchor", "win_amount", "button_indicator"]
 ANCHOR = "card_marker"
 
 

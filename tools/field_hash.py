@@ -1,6 +1,6 @@
 """tools/field_hash.py — 任意 ROI 字段逐座 avg-hash + 跨座一致性(为抗漂配准选 per-seat 锚)。
 
-用途:框好某字段(如把死字段 `timer` 槽当实验锚)后,跑此工具看 8 座 hash 是否一致——
+用途:框好某字段(如抗漂 ruler 锚 `anchor` = ante 筹码图标)后,跑此工具看 8 座是否可定位/一致——
   - 锚特征若【镜像对称】→ 8 座应全一致(组内 + 跨组 hamming 都低);
   - 锚特征若【左右不对称】→ 左型{0,1,2,3} 一簇、右型{4,5,6,7} 一簇,跨组高(镜像所致,非失败)。
 判一个锚选得好不好:**组内 hamming 要低**(同型各座一致 = 该锚位置稳、不被遮);跨组高没关系。
@@ -8,8 +8,8 @@
 复用 marker_hamming 的 _avg_hash_live / _hamming + ScreenCapturer(与 card_marker 同套 hash)。
 ⚠️ Win-only(cv2 + mss + 窗口)。从项目根目录跑。
 用法:
-  python tools/field_hash.py --field timer --live
-  python tools/field_hash.py --field timer --from-image data\\recordings\\<场>\\frames\\f_XXXXXX.png
+  python tools/field_hash.py --field anchor --ncc --live
+  python tools/field_hash.py --field anchor --ncc --from-image data\\recordings\\<场>\\frames\\f_XXXXXX.png
 """
 import argparse
 import json
