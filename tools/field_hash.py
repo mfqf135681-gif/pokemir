@@ -83,12 +83,74 @@ def report(hashes):
     print("\n判读: " + " / ".join(judge) + "  (组内 ≤4 视作稳;散=该锚位置不稳或被遮,换特征)")
 
 
+def _to_gray(frame):
+    import cv2
+    if frame.ndim == 3 and frame.shape[2] == 4:
+        return cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
+    if frame.ndim == 3:
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return frame
+
+
+def ncc_report(frame, boxes, margin):
+    """NCC(归一化互相关)模式 = 真配准同款度量。两件事:
+      ① 逐座【自匹配】:把该座锚 crop 当模板,在 box±margin 搜索窗里 matchTemplate →
+         peak_corr(≈1 好)/ peak 偏移(自匹配应≈0,0)/ 2nd÷peak(低=峰尖锐唯一=可定位;高=有歧义,坏锚)。
+      ② 跨座【一致性】:座两两 crop 的 NCC 相关(1.0=同图;CCOEFF 减均值,抗亮度)。"""
+    import cv2
+    import numpy as np
+    g = _to_gray(frame)
+    H, W = g.shape[:2]
+    templ = {}
+    for sidx, (l, t, w, h) in boxes:
+        templ[sidx] = (g[t:t + h, l:l + w], (l, t, w, h))
+    seats = sorted(templ)
+
+    print("\n① 逐座自匹配(锚在搜索窗里好不好定位;margin=%d px):" % margin)
+    print(f"  {'seat':5}{'peak_corr':>11}{'peak_off':>11}{'2nd/peak':>10}")
+    for s in seats:
+        tmpl, (l, t, w, h) = templ[s]
+        if tmpl.size == 0:
+            print(f"  s{s}: 空 crop"); continue
+        x0, y0 = max(0, l - margin), max(0, t - margin)
+        x1, y1 = min(W, l + w + margin), min(H, t + h + margin)
+        region = g[y0:y1, x0:x1]
+        if region.shape[0] < h or region.shape[1] < w:
+            print(f"  s{s}: 搜索窗过小"); continue
+        res = cv2.matchTemplate(region, tmpl, cv2.TM_CCOEFF_NORMED)
+        _, maxv, _, maxloc = cv2.minMaxLoc(res)
+        off = (maxloc[0] - (l - x0), maxloc[1] - (t - y0))
+        res2 = res.copy()
+        mx, my = maxloc
+        res2[max(0, my - 2):my + 3, max(0, mx - 2):mx + 3] = -1.0
+        second = float(res2.max()) if res2.size else -1.0
+        ratio = (second / maxv) if maxv > 0 else 1.0
+        verdict = "可定位✓" if (maxv >= 0.85 and ratio <= 0.6) else "弱✗"
+        print(f"  s{s}{maxv:>11.3f}{str(off):>11}{ratio:>10.2f}  {verdict}")
+
+    print("\n② 跨座一致性(两两 NCC 相关,1.00=同图,抗亮度;≥0.85 算一致):")
+    print("       " + " ".join(f"s{b}  " for b in seats))
+    for a_ in seats:
+        ta = templ[a_][0]
+        row = []
+        for b in seats:
+            tb = templ[b][0]
+            if ta.shape != tb.shape or ta.size == 0:
+                row.append(" n/a")
+                continue
+            r = cv2.matchTemplate(ta, tb, cv2.TM_CCOEFF_NORMED)
+            row.append(f"{float(r.max()):.2f}")
+        print(f"  s{a_} " + " ".join(f"{v:>4}" for v in row))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--field", required=True, help="要逐座 hash 的 ROI 字段名(如 timer / anchor / card_marker)")
     ap.add_argument("--profile", default="party_poker_8")
     ap.add_argument("--live", action="store_true")
     ap.add_argument("--from-image")
+    ap.add_argument("--ncc", action="store_true", help="用 NCC 模板匹配(配准同款,治 avg-hash 对小图标太粗)")
+    ap.add_argument("--margin", type=int, default=10, help="--ncc 搜索窗边距(px,覆盖漂移幅度)")
     a = ap.parse_args()
     if not a.live and not a.from_image:
         ap.error("给 --live 或 --from-image <帧>")
@@ -113,12 +175,12 @@ def main():
             return 2
         fn = _avg_hash_live
 
-    hashes = {}
-    for sidx, (l, t, w, h) in boxes:
-        crop = frame[t:t + h, l:l + w]
-        hashes[sidx] = fn(crop)
-    print(f"字段={a.field!r}  座位数={len(hashes)}  源={'live' if a.live else a.from_image}")
-    report(hashes)
+    print(f"字段={a.field!r}  座位数={len(boxes)}  源={'live' if a.live else a.from_image}  比法={'NCC模板匹配' if a.ncc else 'avg-hash'}")
+    if a.ncc:
+        ncc_report(frame, boxes, a.margin)
+    else:
+        hashes = {sidx: fn(frame[t:t + h, l:l + w]) for sidx, (l, t, w, h) in boxes}
+        report(hashes)
     return 0
 
 
