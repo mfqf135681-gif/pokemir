@@ -225,6 +225,75 @@ def place_roi_by_click(img: np.ndarray, ref_w: int, ref_h: int,
             return ("__QUIT__",)
 
 
+def place_roi_by_click_zoomed(img: np.ndarray, ref_w: int, ref_h: int,
+                              seat_idx: int, hint: str = "") -> tuple | None:
+    """C(2026-06-22):copy-size 的【放大版】逐座放置(精度优先,治 1× 点放 ±1-2px 抖)。
+    阶段1 粗框锚附近 → 裁剪放大 ZOOM_SCALE× → 阶段2 在放大图上【点中心】放置固定 ref_w×ref_h 框 → 回映原图。
+    尺寸锁定 = ref(复用 step1 大小,不重拖);落点在 ZOOM_SCALE× 上点 → 等效 ~1/ZOOM_SCALE px 精度。
+    返回 (x,y,w,h) / None(跳过本座) / ('__QUIT__',)(退出批量)。
+    ⚠️ cv2 GUI 未经 Linux 验证(本机无 cv2);坐标回映复用已单测的 map_zoomed_roi。Win 端首验。"""
+    H, W = img.shape[:2]
+    # 阶段1:粗框锚附近(定放大区域;selectROI 空选=跳过本座,保留旧值)
+    win1 = f"seat_{seat_idx} [1/coarse: 粗框锚附近 → ENTER (空选=跳过本座)]"
+    _fit_window(win1, img)
+    cx, cy, cw, ch = cv2.selectROI(win1, img, showCrosshair=True)
+    cv2.destroyWindow(win1)
+    if cw == 0 and ch == 0:
+        return None
+    x0, y0 = max(0, cx - ZOOM_PAD), max(0, cy - ZOOM_PAD)
+    x1, y1 = min(W, cx + cw + ZOOM_PAD), min(H, cy + ch + ZOOM_PAD)
+    zoomed = cv2.resize(img[y0:y1, x0:x1], None, fx=ZOOM_SCALE, fy=ZOOM_SCALE,
+                        interpolation=cv2.INTER_NEAREST)
+    zw, zh = ref_w * ZOOM_SCALE, ref_h * ZOOM_SCALE       # 固定框在放大图上的尺寸
+    # 阶段2:放大图上点中心放固定尺寸框(鼠标移动预览,左键存,ESC跳,Q退)
+    win2 = f"seat_{seat_idx} [2/place {ZOOM_SCALE}x | size {ref_w}x{ref_h} | CLICK=save ESC=skip Q=quit]"
+    state = {"cx": zoomed.shape[1] // 2, "cy": zoomed.shape[0] // 2, "clicked": False}
+
+    def mouse_cb(event, x, y, flags, param):
+        if event == cv2.EVENT_MOUSEMOVE:
+            state["cx"], state["cy"] = x, y
+        elif event == cv2.EVENT_LBUTTONDOWN:
+            state["cx"], state["cy"] = x, y
+            state["clicked"] = True
+
+    _fit_window(win2, zoomed)
+    cv2.setMouseCallback(win2, mouse_cb)
+    half_w, half_h = zw // 2, zh // 2
+    while True:
+        disp = zoomed.copy()
+        a, b = state["cx"] - half_w, state["cy"] - half_h
+        cv2.rectangle(disp, (a, b), (state["cx"] + half_w, state["cy"] + half_h),
+                      (0, 255, 0), 1)
+        cv2.drawMarker(disp, (state["cx"], state["cy"]), (0, 0, 255),
+                       cv2.MARKER_CROSS, 20, 1)
+        cv2.putText(disp, f"seat_{seat_idx}: 点锚中心 = 立即存", (10, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+        cv2.putText(disp, "ESC=跳过本座 / Q=退出批量", (10, 48),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 200), 1)
+        if hint:
+            cv2.putText(disp, hint[:80], (10, 70), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45, (200, 200, 255), 1)
+        cv2.imshow(win2, disp)
+        if state["clicked"]:
+            cv2.rectangle(disp, (a, b), (state["cx"] + half_w, state["cy"] + half_h),
+                          (0, 255, 255), 2)
+            cv2.imshow(win2, disp)
+            cv2.waitKey(150)
+            cv2.destroyWindow(win2)
+            # 放大图上的定尺寸框 → 复用已单测的 map_zoomed_roi 回映原图;尺寸显式锁回 ref
+            zbox = (state["cx"] - half_w, state["cy"] - half_h, zw, zh)
+            mx, my, _, _ = map_zoomed_roi((cx, cy, cw, ch), zbox,
+                                          ZOOM_SCALE, ZOOM_PAD, W, H)
+            return (mx, my, ref_w, ref_h)
+        key = cv2.waitKey(20) & 0xFF
+        if key == 27:                                     # ESC
+            cv2.destroyWindow(win2)
+            return None
+        if key in (ord('q'), ord('Q')):
+            cv2.destroyWindow(win2)
+            return ("__QUIT__",)
+
+
 VALID_FIELDS = {
     "hero_card_1", "hero_card_2", "pot_size",
     "pot_size_previous",  # 2026-05-28 added: 第 2 行(上一街结束时冻结底池)
@@ -524,16 +593,17 @@ def main():
         print(f"  Reference size locked: {ref_w}×{ref_h}\n")
 
         # Phase 2: click-to-place for each seat
-        print(f"STEP 2 / 2 — for each seat 0..{num_seats - 1}:")
-        print(f"  鼠标移动 = 矩形预览(中心=鼠标);SPACE 保存;ESC 跳过此 seat;Q 退出 batch\n")
+        print(f"STEP 2 / 2 — for each seat 0..{num_seats - 1}(放大版,尺寸锁定 {ref_w}×{ref_h}):")
+        print(f"  ① 粗框锚附近→ENTER  ② 放大图上鼠标移动预览(中心=鼠标)、左键=立即存  /  ESC 跳过此 seat  /  Q 退出 batch\n")
 
         seats = existing.get("seats") or []
         seats_by_idx = {s.get("seat_index"): s for s in seats}
         n_saved, n_skipped, n_quit = 0, 0, 0
 
         for sidx in range(num_seats):
-            placed = place_roi_by_click(img, ref_w, ref_h, sidx,
-                                         hint=ELEMENT_HINTS.get(args.element, ""))
+            # C(2026-06-22):放大版逐座放置(精度优先,治 1× 点放抖动 → 锚 hash 跨座可比)
+            placed = place_roi_by_click_zoomed(img, ref_w, ref_h, sidx,
+                                               hint=ELEMENT_HINTS.get(args.element, ""))
             if placed is None:
                 print(f"  seat_{sidx}: ESC → 跳过(保留旧值)")
                 n_skipped += 1
