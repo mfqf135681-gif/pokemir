@@ -375,6 +375,14 @@ def main():
               "seats need same-size ROI (e.g. wider id_area for long usernames)."),
     )
     parser.add_argument(
+        "--size",
+        default=None,
+        help=("With --copy-size: give an EXACT box size 'WxH' (e.g. '76x77' or "
+              "'76,77') instead of hand-dragging STEP1. Size is then pixel-exact "
+              "and you only zoom-place each seat's center. Use when you know the "
+              "target size (e.g. fold_area=76x77, side id=122x27, center id=114x25)."),
+    )
+    parser.add_argument(
         "--from-image",
         default=None,
         help=("Read pixels from a PNG file (e.g. resource/showdown.png) instead of "
@@ -579,18 +587,26 @@ def main():
         print(f"Batching '{args.element}' across {num_seats} seats with click-to-place.\n")
         print(f"  Hint: {ELEMENT_HINTS.get(args.element, '')}\n")
 
-        # Phase 1: drag reference rectangle (any seat) — we only keep size
-        print("STEP 1 / 2 — drag a reference rect on ANY seat to set size:")
-        ref_rect = select_roi(
-            f"Reference '{args.element}': drag rect (size matters, position ignored) — SPACE confirm",
-            img,
-        )
-        if ref_rect is None:
-            print("Skipped — no reference size selected.")
-            cv2.destroyAllWindows()
-            return 0
-        _, _, ref_w, ref_h = ref_rect
-        print(f"  Reference size locked: {ref_w}×{ref_h}\n")
+        # Phase 1: size — explicit --size 'WxH' (pixel-exact, skip drag) OR drag ref rect
+        if args.size:
+            try:
+                ref_w, ref_h = (int(v) for v in args.size.lower().replace("x", ",").split(","))
+            except Exception:
+                print(f"ERROR: --size 格式应为 'WxH'(如 76x77),收到 {args.size!r}")
+                return 1
+            print(f"STEP 1 / 2 — 尺寸由 --size 精确给定: {ref_w}×{ref_h}(跳过手拖)\n")
+        else:
+            print("STEP 1 / 2 — drag a reference rect on ANY seat to set size:")
+            ref_rect = select_roi(
+                f"Reference '{args.element}': drag rect (size matters, position ignored) — SPACE confirm",
+                img,
+            )
+            if ref_rect is None:
+                print("Skipped — no reference size selected.")
+                cv2.destroyAllWindows()
+                return 0
+            _, _, ref_w, ref_h = ref_rect
+            print(f"  Reference size locked: {ref_w}×{ref_h}\n")
 
         # Phase 2: click-to-place for each seat
         print(f"STEP 2 / 2 — for each seat 0..{num_seats - 1}(放大版,尺寸锁定 {ref_w}×{ref_h}):")
