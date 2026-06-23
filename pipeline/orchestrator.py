@@ -889,8 +889,9 @@ class PipelineOrchestrator:
             amt_s = "—"         # check/fold 本就无金额,不标待核(避免误导成漏读)
         self._feed_raw(f"[牌桌] {st_zh}  seat_{sidx} {(player_name or '?')}  {act_zh}  {amt_s}{suffix}")
 
-    def _feed_result(self, winners, nets, seat_names):
-        """[牌桌] 手末赢家行 —— 赢家是手末端点重建算出来的(非动作),单独发。冻结豁免(纯日志)。"""
+    def _feed_result(self, winners, nets, seat_names, suffix=""):
+        """[牌桌] 手末赢家行 —— 赢家是手末端点重建算出来的(非动作),单独发。冻结豁免(纯日志)。
+        suffix:rebuy 否决时附 ⚠ 标注(端点 net 被注入污染、无 +xx 信源交叉时)。"""
         if not winners:
             return
         parts = []
@@ -899,7 +900,7 @@ class PipelineOrchestrator:
             net = (nets or {}).get(w)
             net_s = f"  +{net:g}" if isinstance(net, (int, float)) else ""
             parts.append(f"seat_{w} {nm}{net_s}")
-        self._feed_raw("[牌桌] ★ 赢家  " + " / ".join(parts))
+        self._feed_raw("[牌桌] ★ 赢家  " + " / ".join(parts) + suffix)
 
     def _emit_forced_event(self, db, hand, seat_idx, action_type, amount, position):
         """造 1 条 synthetic 强制注 event(POST_SB/BB/ANTE)+ 持久化。玩家未知则跳(不伪造名污染画像)。"""
@@ -1395,8 +1396,19 @@ class PipelineOrchestrator:
                                 f"净{[_recon['net'][w] for w in _recon['winners']]} rake{_recon['rake']} "
                                 f"{'⚠ '+';'.join(_recon['flags']) if _recon['flags'] else 'OK'}")
                     # [牌桌] 赢家是手末端点重建算出来的(非动作)→ 在此发人话流
-                    self._feed_result(_recon["winners"], _recon.get("net"),
-                                      cur.raw_data.get("seat_names"))
+                    # rebuy 否决(2026-06-23,冻结豁免=纯显示+消费已采 +xx):本手有筹码注入
+                    # (sum_net>0=rebuy/新入桌)时端点 net 被污染→端点"赢家"含 rebuy 假阳。用 +xx
+                    # 黄字(rebuy 免疫)交叉:有 +xx 信源→只留 +xx 确认的赢家;无 +xx 信源→不静默
+                    # 隐藏(防漏真赢家,+xx 有 s0 天花板),标 ⚠rebuy待核。DB cur.result 仍存生 winners。
+                    _rebuy = any("rebuy" in f for f in (_recon.get("flags") or []))
+                    _wp = set(self._hand_win_seats)
+                    _wn = list(_recon["winners"])
+                    if _rebuy and _wp:
+                        _wn = [w for w in _wn if w in _wp]
+                    _rb_suffix = "  ⚠rebuy待核" if (_rebuy and not _wp) else ""
+                    if _wn:
+                        self._feed_result(_wn, _recon.get("net"),
+                                          cur.raw_data.get("seat_names"), suffix=_rb_suffix)
             except Exception:
                 logger.warning("chip_reconstruction failed", exc_info=True)
             # #12a Insurance inference from stack pattern (用户假说):
@@ -2934,6 +2946,12 @@ class PipelineOrchestrator:
                     elif (_amt is not None and _last_amt is not None
                           and abs(_amt - _last_amt) <= _AMT_DUP_TOL):
                         _is_dup = True                              # 同金额 = 同动作重复帧
+                    elif _amt is None and _last_amt is not None:
+                        # 2026-06-23 解冻 case:金额 OCR 抖掉成 None(action_text "跟注 42"→"跟注"
+                        # 触发 check_action_change 重发)→ 窗口内同(player,street,action)又来一笔
+                        # amount=None = 同动作的 stale 重读(非新动作:真二次动作必带真金额→走上条
+                        # 显著不同分支)。去重,治 24手 trailing-null 幽灵(?(待核))。
+                        _is_dup = True
                     # 否则金额显著不同 = 合法二次动作(limp→call/raise→reraise)→ 不去重
                 if _is_dup:
                     diag.emit(
