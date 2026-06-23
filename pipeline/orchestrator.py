@@ -2938,27 +2938,40 @@ class PipelineOrchestrator:
                 _amt = event.amount
                 _last = self.tracker._last_action_at.get(_dedup_key)   # (ts, amount) | None
                 _AMT_DUP_TOL = 2.0   # 金额抖动容忍(settle 后重复读应同值;真二次动作差≫此)
+                # 2026-06-23 统一收尾:dedup 每手清(detector.start_new_hand:307)→ 天然手内作用域 →
+                # 窗口安全放宽到覆盖一条街(原 5s 漏掉 5-6s 的幽灵重发尾)。手内同键重读对
+                # None/同额/栈冻结三类【永远安全】(真二次动作必带更大累计额 + 必动栈)。
+                _DUP_WINDOW = 60.0
+                _sb = event.raw_data.get("stack_before") if event.raw_data else None
+                _sa = event.raw_data.get("stack_after") if event.raw_data else None
+                _stack_frozen = (_sb is not None and _sa is not None and _sb == _sa)
                 _is_dup = False
-                if _last is not None and _now_ts - _last[0] < 5.0:
+                _dup_reason = None
+                if _last is not None and _now_ts - _last[0] < _DUP_WINDOW:
                     _last_amt = _last[1]
                     if _amt is None and _last_amt is None:
-                        _is_dup = True                              # check/fold 重复读
+                        _is_dup = True; _dup_reason = "both_none"           # check/fold 重复读
                     elif (_amt is not None and _last_amt is not None
                           and abs(_amt - _last_amt) <= _AMT_DUP_TOL):
-                        _is_dup = True                              # 同金额 = 同动作重复帧
+                        _is_dup = True; _dup_reason = "same_amount"         # 同金额 = 同动作重复帧
                     elif _amt is None and _last_amt is not None:
-                        # 2026-06-23 解冻 case:金额 OCR 抖掉成 None(action_text "跟注 42"→"跟注"
-                        # 触发 check_action_change 重发)→ 窗口内同(player,street,action)又来一笔
-                        # amount=None = 同动作的 stale 重读(非新动作:真二次动作必带真金额→走上条
-                        # 显著不同分支)。去重,治 24手 trailing-null 幽灵(?(待核))。
-                        _is_dup = True
-                    # 否则金额显著不同 = 合法二次动作(limp→call/raise→reraise)→ 不去重
+                        # 金额 OCR 抖掉成 None("跟注 42"→"跟注"触发重发)= 同动作 stale 重读
+                        # (真二次动作必带真金额→走"显著不同"分支)。治 trailing-null 幽灵 ?(待核)。
+                        _is_dup = True; _dup_reason = "amount_dropped_none"
+                    elif _stack_frozen:
+                        # 栈门二次抑制(横幅幽灵):已发过同键(_last在=非首笔)+ 栈没动(stack_before
+                        # ==after=没真下筹码)→ 幽灵(横幅垃圾大额/抖动),不管金额。真二次动作
+                        # (limp跟4→再跟36 / raise→reraise)必动栈→_stack_frozen False→保留。
+                        # 首笔无 _last 仍放行(横幅每座漏 1 笔,带 amount-suspect 指纹,可下游清)。
+                        _is_dup = True; _dup_reason = "stack_frozen"
+                    # 否则金额显著不同【且栈动了】= 合法二次动作(limp→call/raise→reraise)→ 不去重
                 if _is_dup:
                     diag.emit(
                         "action.dedup_skip",
                         {"player": event.player_name, "street": _street_str,
                          "action": _action_str, "amount": _amt,
                          "last_amount": _last[1] if _last else None,
+                         "reason": _dup_reason, "stack_before": _sb, "stack_after": _sa,
                          "ts_delta_sec": round(_now_ts - _last[0], 2)},
                         hand_id=self.tracker.current_hand.id,
                     )
