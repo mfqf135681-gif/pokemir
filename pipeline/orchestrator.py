@@ -869,8 +869,9 @@ class PipelineOrchestrator:
                 f"════════ 新一手  按钮=seat_{getattr(self, '_btn_confirmed', None)} ════════")
         self._feed_logger.info(text)
 
-    def _feed_line(self, sidx, player_name, action, amount, street):
-        """[牌桌] 一条动作人话流 —— 供观战实时对账 + 落库前肉眼核对真值。冻结豁免(纯日志)。"""
+    def _feed_line(self, sidx, player_name, action, amount, street, suffix=""):
+        """[牌桌] 一条动作人话流 —— 供观战实时对账 + 落库前肉眼核对真值。冻结豁免(纯日志)。
+        suffix:行尾附注(全押实时化:检测瞬间发 ⏳待核,手末过闸补 ✓确认 / ⚠撤销)。"""
         _ZH = {ActionType.FOLD: "弃牌", ActionType.CHECK: "过牌", ActionType.CALL: "跟注",
                ActionType.BET: "下注", ActionType.RAISE: "加注", ActionType.ALL_IN: "全押",
                ActionType.POST_SB: "小盲", ActionType.POST_BB: "大盲", ActionType.POST_ANTE: "前注"}
@@ -886,7 +887,7 @@ class PipelineOrchestrator:
             amt_s = "?(待核)"   # 需要金额却没读到 = 真漏读,要核
         else:
             amt_s = "—"         # check/fold 本就无金额,不标待核(避免误导成漏读)
-        self._feed_raw(f"[牌桌] {st_zh}  seat_{sidx} {(player_name or '?')}  {act_zh}  {amt_s}")
+        self._feed_raw(f"[牌桌] {st_zh}  seat_{sidx} {(player_name or '?')}  {act_zh}  {amt_s}{suffix}")
 
     def _feed_result(self, winners, nets, seat_names):
         """[牌桌] 手末赢家行 —— 赢家是手末端点重建算出来的(非动作),单独发。冻结豁免(纯日志)。"""
@@ -2014,6 +2015,9 @@ class PipelineOrchestrator:
                 diag.emit("all_in.write_vetoed",
                           {"seat": sidx, "reason": "zero_broken_before_settle",
                            "amount": event.amount}, hand_id=hid)
+                # [牌桌] 撤销上面发过的 ⏳待核 临时行(瞬态假阳:结算前栈又读回正数)
+                self._feed_raw(f"[牌桌] ⚠ 撤销  seat_{sidx} {(event.player_name or '?')}  "
+                               f"全押(瞬态误报,未入库)")
                 continue
             if db is not None:
                 try:
@@ -2023,9 +2027,9 @@ class PipelineOrchestrator:
                     continue
             diag.emit("all_in.write_confirmed",
                       {"seat": sidx, "amount": event.amount}, hand_id=hid)
-            # [牌桌] all-in 走 stack→0/延迟写库,不经动作循环人话流 → 手末过闸后在此发(金额定稿)
+            # [牌桌] all-in 实时化:检测瞬间已发 ⏳待核 临时行;此处过闸后补 ✓确认(金额定稿)
             self._feed_line(sidx, event.player_name, ActionType.ALL_IN, event.amount,
-                            getattr(event, "street", None))
+                            getattr(event, "street", None), suffix="  ✓确认")
         self._allin_pending = {}
 
     # 占用判定区:stack+id(20260603 录像验:占位紧簇 24-40、空隙 16-24、空座≈0,干净 bimodal)。
@@ -3006,6 +3010,11 @@ class PipelineOrchestrator:
                     diag.emit("all_in.write_deferred",
                               {"seat": sidx, "amount": event.amount},
                               hand_id=self.tracker.current_hand.id)
+                    # [牌桌] 全押实时化(2026-06-23):检测瞬间(=本 tick,金额已定稿)即发临时人话流,
+                    # 不再等手末 flush(实测旧延迟中位 24s/最长 58s)。写库仍延迟过 broken veto 闸不变;
+                    # 手末 _flush_pending_allins 补 ✓确认 / ⚠撤销。纯日志,冻结豁免。
+                    self._feed_line(sidx, event.player_name, ActionType.ALL_IN, event.amount,
+                                    self.tracker.normalizer._current_street, suffix="  ⏳待核")
                 elif db is not None:
                     _pt = time.perf_counter()
                     self.event_repo.create(db, event)
