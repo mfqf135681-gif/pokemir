@@ -223,11 +223,15 @@ def db_row_to_norm(hand_row: dict, action_rows: list[dict]) -> NormHand:
 
 
 def fetch_db_hands(conn_str: str, started_after: str, started_before: str) -> list[NormHand]:
-    """从 PG 拉时间区间内的手(按 started_at 序)→ [NormHand]。需 psycopg2(guard 导入)。"""
+    """从 PG 拉时间区间内的手(按 started_at 序)→ [NormHand]。需 psycopg2(guard 导入)。
+    conn_str 可直接传 SQLAlchemy DSN(自动剥 +psycopg2/+asyncpg 给 psycopg2 用)。"""
     import psycopg2  # noqa: 仅此函数需要;纯核与单测不触
     import psycopg2.extras
+    dsn = conn_str
+    for tag in ("+psycopg2", "+asyncpg", "+psycopg"):
+        dsn = dsn.replace(tag, "")
     out = []
-    with psycopg2.connect(conn_str) as conn:
+    with psycopg2.connect(dsn) as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT id, started_at, result, raw_data FROM hands "
@@ -270,10 +274,20 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     truth = load_truth(args.truth)
-    if not args.conn:
-        print(f"已载真值 {len(truth)} 手;未给 --conn,跳过 DB 对账(仅校验真值可解析)。")
+    conn = args.conn
+    if not conn:
+        try:
+            from config import DB_DSN_SYNC
+            conn = DB_DSN_SYNC   # 不给 --conn 时自动用项目库(免手填凭据)
+        except Exception:
+            pass
+    if not conn:
+        print(f"已载真值 {len(truth)} 手;未给 --conn 且无 config.DB_DSN_SYNC,跳过 DB 对账(仅校验真值可解析)。")
         return
-    db = fetch_db_hands(args.conn, args.after, args.before)
+    if not args.after or not args.before:
+        print("DB 对账需 --after/--before 框定你标注那场的时间窗(ISO,如 --after 2026-06-24T10:00:00 --before 2026-06-24T11:00:00)。")
+        return
+    db = fetch_db_hands(conn, args.after, args.before)
     pairs = match_hands(truth, db)
     scores = [score_hand(p["truth"], p["db"], args.abs_tol, args.rel_tol)
               for p in pairs if p["truth"] and p["db"]]
