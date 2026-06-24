@@ -88,8 +88,14 @@ def prompt_stakes(args):
     print("\n=== 桌规级别(写进 manifest,回放自动用)===")
     sb = float(input("  小盲 SB = ").strip())
     bb = float(input("  大盲 BB = ").strip())
-    ans = input("  有 ante 吗? (y/n) ").strip().lower()
-    ante = float(input("  ante 额 = ").strip()) if ans.startswith("y") else 0.0
+    # ante:可【直接输金额】(如 4),或 0/n/空=无,或 y→再问额(治"输4被当成n"的坑,2026-06-24)
+    ans = input("  ante 额(无则 0 或 n;有就直接输数,如 4) = ").strip().lower()
+    if ans.startswith("y"):
+        ante = float(input("  ante 额 = ").strip())
+    elif ans in ("", "n", "no"):
+        ante = 0.0
+    else:
+        ante = float(ans)   # 直接输的金额
     print(f"  → SB={sb} / BB={bb} / ante={ante}{'(无 ante)' if ante == 0 else ''}\n")
     return sb, bb, ante
 
