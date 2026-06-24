@@ -1,0 +1,32 @@
+{
+  "_说明": "阶段-1 真值模板。人工看 record_frames 录像逐手填。座位号=物理 seat_index(int)。",
+  "_字段": {
+    "seats": "每个在手座:name 真名 / initial 起手栈 / final 手末栈(看不清可填 null)",
+    "actions": "按发生顺序;action ∈ fold/check/call/bet/raise/all_in;amount=本次投入(check/fold 填 null)",
+    "winners": "赢家座位号列表(可带 amount,也可只列座位号)",
+    "button_seat / blinds": "用于对齐一致性校验(harness 顺序对齐,这俩对不上会 flag 错位)"
+  },
+  "session": "2026-06-24_observe_demo",
+  "hands": [
+    {
+      "label": "h1",
+      "button_seat": 2,
+      "blinds": {"sb": 2, "bb": 4, "ante": 4},
+      "seats": {
+        "0": {"name": "Alice", "initial": 200, "final": 196},
+        "2": {"name": "Bob",   "initial": 300, "final": 412},
+        "5": {"name": "Carol", "initial": 150, "final": 38}
+      },
+      "actions": [
+        {"seat": 0, "street": "preflop", "action": "call",  "amount": 4},
+        {"seat": 2, "street": "preflop", "action": "raise", "amount": 16},
+        {"seat": 5, "street": "preflop", "action": "call",  "amount": 16},
+        {"seat": 0, "street": "preflop", "action": "fold",  "amount": null},
+        {"seat": 2, "street": "flop",    "action": "bet",   "amount": 24},
+        {"seat": 5, "street": "flop",    "action": "call",  "amount": 24}
+      ],
+      "winners": [{"seat": 2, "amount": 120}],
+      "community": ["Ah", "7c", "2d", "9s", "Kh"]
+    }
+  ]
+}

@@ -312,6 +312,16 @@ class PipelineOrchestrator:
         self._action_blank_run = {}      # 吞街修:每座动作区连续空白帧数;≥2 清 prev 文本(详见 idle 路注释)
         self._hand_id_lock = {}          # ID手内冻结:本手 座位→名字 首用即锁(_hand_player_name);换手清
         self._allin_pending = {}         # all-in 写库分层:本手待手末过闸的 all_in 事件(seat→event);换手清
+        # 阶段0 干净窗捕获(2026-06-23,contracts/recognition-freeze.md §5.1 解冻 case):
+        # 总底池 latch(结算)→ 按钮移动 间有 ~5s/≈70tick 干净窗(实测中位5.05s,414手稳定)。
+        # 窗内多帧【中位】采端点栈,替按钮刻单帧(治端点读取假象:实测端点干净率仅31%、98%假rebuy)。
+        # 默认关,POKEMIR_CLEAN_WINDOW=1 启用(一行回滚)。本刀仅 stacks;ID 多帧众数留 0b 子刀。
+        from pipeline.clean_window import CleanWindowCapture
+        self._clean_window = CleanWindowCapture()
+        self._clean_window_live = os.getenv("POKEMIR_CLEAN_WINDOW", "0") == "1"
+        self._cw_result = None
+        if self._clean_window_live:
+            logger.info("[阶段0干净窗] POKEMIR_CLEAN_WINDOW=1:结算窗内多帧中位端点(替按钮刻单帧);ID留0b子刀")
         # 总底池检测改【颜色】(2026-06-10):phash 因 8×8 下"总底池"汉字 vs 数字形状太像(inter=2)
         # 放弃;实测总底池=高饱和青字(白V>180像素=0)、数字=白(白V>180一堆)→ 颜色干净可分。
         # 先 shadow 量 white/teal 两计数(_pot_label_color)→ live 出分布再定阈,同 showdown_corner。
@@ -497,6 +507,16 @@ class PipelineOrchestrator:
                 t_p = time.perf_counter()
                 self._process_pot(db, rois)
                 phase_ms["pot"] = (time.perf_counter() - t_p) * 1000.0
+
+            # 阶段0 干净窗(§5.1):结算 latch 后,窗内【每4tick】采一次端点栈喂累积器
+            # (多帧中位治脏帧;成本落空闲结算期,~17样本/手足够中位)。本刀仅 stacks,ID 留 0b。
+            # finalize/reset 在 _end/_start 内(任何切手路径都走到)。POKEMIR_CLEAN_WINDOW 闸。
+            if (self._clean_window_live and self.tracker.has_active_hand
+                    and self._pot_label_latched):
+                _cw_sample = (self.tracker._global_tick_counter % 4 == 0)
+                self._clean_window.tick(
+                    settled=True,
+                    stacks=self._capture_seat_stacks() if _cw_sample else None)
 
             # P0(2026-06-06):standing per-tick 活跃集 + 惰性盲注注入(桌规模式)。
             # 必须在 _process_seat_actions 之前(否则本 tick 真实动作先于合成 POST 入库,seq 乱)。
@@ -726,7 +746,15 @@ class PipelineOrchestrator:
         # 12a-pre: snapshot per-seat stack at hand start (before any betting).
         # Stored on hand.raw_data so insurance / rake / stack-delta validation can
         # back-compute on a hand basis later.
-        initial_stacks = self._capture_seat_stacks()
+        # 阶段0 干净窗(§5.1):窗内 stacks 已结算定稿 → 同一份既是上手 final 也是本手 initial,
+        # 复用 _end finalize 的 _cw_result(免再抓一次)。首手/无窗→单帧兜底。读后 reset 进本手新一轮。
+        initial_stacks = (self._cw_result.stacks
+                          if (self._clean_window_live and self._cw_result
+                              and not self._cw_result.fallback and self._cw_result.stacks)
+                          else self._capture_seat_stacks())
+        if self._clean_window_live:
+            self._clean_window.reset()
+            self._cw_result = None
 
         # #241(rebuy 前置):hand-start 每座占用判定(空桌基线二元)。存 raw_data + 打印每区
         # hamming 供 live 调阈(空 vs 占位的真实间隔只有占位帧才看得到)。_empty_refs 缺则跳过。
@@ -1367,7 +1395,14 @@ class PipelineOrchestrator:
     def _end_current_hand(self, db):
         # 12a-pre: snapshot per-seat stack BEFORE finalize, while tracker.current_hand
         # is still valid. Stored on hand.raw_data for insurance / rake validation.
-        final_stacks = self._capture_seat_stacks()
+        # 阶段0 干净窗(§5.1):有结算窗→用窗内多帧中位端点(替按钮刻单帧脏读);
+        # fold到底无结算→fallback 退单帧(行为不变)。结果 stash 供 _start 复用作 initial。
+        if self._clean_window_live:
+            self._cw_result = self._clean_window.finalize()
+        final_stacks = (self._cw_result.stacks
+                        if (self._clean_window_live and self._cw_result
+                            and not self._cw_result.fallback and self._cw_result.stacks)
+                        else self._capture_seat_stacks())
         # all-in 写库闸:手末统一 flush(此刻 broken 看护已定稿;hand 仍有效,事件带原 seq)
         self._flush_pending_allins(db)
         cur = self.tracker.current_hand
