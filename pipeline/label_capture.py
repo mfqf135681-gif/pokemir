@@ -34,6 +34,9 @@ class LabelCapturer:
         # 稳定值每 interval 反复采 两类重复帧。不同值照采(保多样性);过窗后同值可再采。
         self.dedup_window = float(os.getenv("POKEMIR_LABEL_DEDUP", "8.0"))
         self.max_n = max_n
+        # 不限张数的信号(2026-06-27):ID 等慢信号去重后只有~几十个不同值、攒不到 max_n
+        # → 标 uncapped:不停采、不参与"采满自动停"判定。默认 id。
+        self.uncapped = {s.strip() for s in os.getenv("POKEMIR_LABEL_UNCAPPED", "id").split(",") if s.strip()}
         self._st = {}   # sig -> {dir, jsonl, n, seen{(seat,vrepr):t}, done}
         if self.enabled:
             stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -51,9 +54,9 @@ class LabelCapturer:
         if not self.enabled or signal not in self.signals:
             return
         st = self._st[signal]
-        if st["n"] >= self.max_n:
+        if signal not in self.uncapped and st["n"] >= self.max_n:
             if not st["done"]:
-                print(f"[label] ✅ '{signal}' 已采满 {self.max_n} 张 → 可 Ctrl-C 停,然后 "
+                print(f"[label] ✅ '{signal}' 已采满 {self.max_n} 张(受限信号都满→自动停) → "
                       f"python tools/label_signal.py {st['dir']}", flush=True)
                 st["done"] = True
             return
@@ -94,3 +97,14 @@ class LabelCapturer:
         }
         with open(st["jsonl"], "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    def all_capped_done(self):
+        """所有【受限】信号(非 uncapped,如 action/stack)都采满 max_n → True,供主循环自动停。
+        uncapped 信号(id)不参与判定(它去重后攒不到 max_n,只搭车采到此为止)。
+        未开 / 全是 uncapped 信号 → 永不自动停(返回 False)。"""
+        if not self.enabled:
+            return False
+        capped = [s for s in self.signals if s not in self.uncapped]
+        if not capped:
+            return False
+        return all(self._st[s]["n"] >= self.max_n for s in capped)

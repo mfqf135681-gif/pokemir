@@ -382,6 +382,9 @@ class PipelineOrchestrator:
                 if deadline and time.time() >= deadline:
                     logger.info("Pipeline auto-stopped — max-minutes %.0f reached", max_minutes)
                     break
+                if self._labeler.all_capped_done():
+                    logger.info("[label] 受限信号(action/stack)已采满 → 自动停(ID 不限,采到此为止)")
+                    break
                 time.sleep(CAPTURE_INTERVAL_MS / 1000.0)
         except KeyboardInterrupt:
             logger.info("Pipeline stopped by user")
