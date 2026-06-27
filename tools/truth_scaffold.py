@@ -123,7 +123,7 @@ def main(argv=None):
     }
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(doc, f, ensure_ascii=False, indent=2)
-    nflag = sum(1 for h in hands if h["_flags"])
+    nflag = sum(1 for h in hands if h.get("_flags"))
     print(f"生成 {len(hands)} 手候选 → {args.out};其中 {nflag} 手带 _flags(重点独立核这些)")
 
 
