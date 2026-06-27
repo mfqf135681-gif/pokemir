@@ -85,7 +85,7 @@ def scaffold_hand(idx: int, hand_row: dict, action_rows: list) -> dict:
     winners = [{"seat": int(s), "amount": win_amts.get(str(s))} for s in win_seats]
     community = hand_row.get("community_cards") or [None, None, None, None, None]
 
-    return {
+    out = {
         "label": f"h{idx}",
         "button_seat": rd.get("button_seat_index"),
         "blinds": {"sb": bl.get("sb"), "bb": bl.get("bb"), "ante": bl.get("ante")},
@@ -93,8 +93,10 @@ def scaffold_hand(idx: int, hand_row: dict, action_rows: list) -> dict:
         "actions": actions,
         "winners": winners,
         "community": community,
-        "_flags": flags,   # 辅助:可疑项引导独立核;truth_score 忽略 _ 开头键,核完可删
     }
+    if flags:   # 仅可疑手带 _flags(干净手与手标格式一字不差);辅助引导独立核,truth_score 忽略,核完可删
+        out["_flags"] = flags
+    return out
 
 
 def main(argv=None):
