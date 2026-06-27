@@ -17,7 +17,13 @@ aggregate,Linux 全可单测)+ **隔离的 DB 适配器**(fetch_db_hands,需 psy
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import dataclass, field
+
+# 从 tools/ 直接运行(python tools\truth_score.py)时,默认只有 tools/ 在 sys.path,
+# import config 会失败 → 自动连库拿不到 DB_DSN_SYNC。把项目根加进 path 修正。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 自愿动作(强制注 post_* 默认不计入召回/精度,单列)
 VOLUNTARY = {"fold", "check", "call", "bet", "raise", "all_in"}
