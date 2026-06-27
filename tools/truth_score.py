@@ -220,8 +220,15 @@ def truth_to_norm(h: dict) -> NormHand:
                     button_seat=h.get("button_seat"), blinds=h.get("blinds") or {})
 
 
+def strip_trailing_commas(raw: str) -> str:
+    """剥手编 JSON 常见的尾逗号(,] / ,})—— 人工标注高频坑,容忍掉省得反复栽。"""
+    import re
+    return re.sub(r",(\s*[\]}])", r"\1", raw)
+
+
 def load_truth(path: str) -> list[NormHand]:
-    data = json.loads(open(path, encoding="utf-8").read())
+    raw = strip_trailing_commas(open(path, encoding="utf-8").read())
+    data = json.loads(raw)
     return [truth_to_norm(h) for h in data.get("hands", [])]
 
 

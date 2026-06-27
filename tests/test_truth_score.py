@@ -16,7 +16,16 @@ from truth_score import (  # noqa: E402
     aggregate,
     truth_to_norm,
     db_row_to_norm,
+    strip_trailing_commas,
 )
+
+
+def test_strip_trailing_commas():
+    import json as _json
+    s = '{"a": [1, 2,], "b": {"x": 1,},}\n'
+    assert _json.loads(strip_trailing_commas(s)) == {"a": [1, 2], "b": {"x": 1}}
+    # 无尾逗号不动
+    assert strip_trailing_commas('{"a":[1,2]}') == '{"a":[1,2]}'
 
 
 # ── amount_match ──────────────────────────────────────────
