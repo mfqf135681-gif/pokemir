@@ -86,6 +86,31 @@ def test_endpoint_stack_error_and_missing():
     assert s["initial_stack"]["within_tol"] == 3
 
 
+def test_stack_tolerance_tightened():
+    # 大栈 10 筹码误差:旧 5% 相对会判命中;新默认 ±2 绝对应判【不命中】(治松尺测不出干净窗改善)
+    truth = NormHand(seats={0: {"name": "A", "initial": 2000, "final": 1990}}, actions=[], winners=[])
+    db = NormHand(seats={0: {"name": "A", "initial": 2000, "final": 2000}}, actions=[], winners=[])  # final 差10
+    s = score_hand(truth, db)  # 默认 stack_abs_tol=2, stack_rel_tol=0
+    assert s["final_stack"]["within_tol"] == 0       # 10>2 → 收紧后不命中
+    assert s["final_stack"]["errors"] == [10.0]
+    s2 = score_hand(truth, db, stack_abs_tol=2, stack_rel_tol=0.05)
+    assert s2["final_stack"]["within_tol"] == 1      # 放宽相对:10 ≤ 5%*2000=100 → 命中
+
+
+def test_aggregate_err_dist():
+    t = NormHand(seats={0: {"name": "A", "initial": 100, "final": 100},
+                        1: {"name": "B", "initial": 100, "final": 100}}, actions=[], winners=[])
+    d = NormHand(seats={0: {"name": "A", "initial": 100, "final": 104},    # final err 4
+                        1: {"name": "B", "initial": 100, "final": 110}},   # final err 10
+                 actions=[], winners=[])
+    agg = aggregate([score_hand(t, d)])
+    fe = agg["final_err_dist"]
+    assert fe["n_seats"] == 2
+    assert fe["mean"] == 7.0          # (4+10)/2
+    assert fe["max"] == 10.0
+    assert agg["initial_err_dist"]["max"] == 0.0   # initial 全对
+
+
 def test_winner_scoring():
     s = score_hand(_h([], winners=[2]), _h([], winners=[2]))
     assert s["winner_exact"] is True and s["winner_jaccard"] == 1.0

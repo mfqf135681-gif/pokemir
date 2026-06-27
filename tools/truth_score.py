@@ -54,8 +54,11 @@ def amount_match(a: float | None, b: float | None, abs_tol: float = 2.0,
 
 # ── 可测纯核:逐手评分 ────────────────────────────────────
 def score_hand(truth: NormHand, db: NormHand,
-               abs_tol: float = 2.0, rel_tol: float = 0.05) -> dict:
-    """对账一手 truth vs db。返回逐项指标 dict(不做聚合)。"""
+               abs_tol: float = 2.0, rel_tol: float = 0.05,
+               stack_abs_tol: float = 2.0, stack_rel_tol: float = 0.0) -> dict:
+    """对账一手 truth vs db。返回逐项指标 dict(不做聚合)。
+    abs_tol/rel_tol = 动作金额容差;stack_abs_tol/stack_rel_tol = 端点栈容差
+    (默认 ±2 绝对、无相对 —— 比动作严,治"5%相对对大栈太松、测不出干净窗改善")。"""
     # --- 动作召回/精度(贪心双向匹配,仅自愿动作)---
     t_acts = [a for a in truth.actions if a["action"] in VOLUNTARY]
     d_acts = [a for a in db.actions if a["action"] in VOLUNTARY]
@@ -100,7 +103,7 @@ def score_hand(truth: NormHand, db: NormHand,
                 continue
             e = abs(dval - tval)
             errs.append(e)
-            if e <= max(abs_tol, rel_tol * abs(tval)):
+            if e <= max(stack_abs_tol, stack_rel_tol * abs(tval)):
                 within += 1
         present = [e for e in errs if e is not None]
         return {
@@ -108,6 +111,7 @@ def score_hand(truth: NormHand, db: NormHand,
             "covered": len(present),
             "missing": n - len(present),
             "within_tol": within,
+            "errors": present,   # 逐座绝对误差(供 aggregate 汇总分布,= 干净窗 A/B 主指标)
             "max_err": max(present) if present else None,
             "mean_err": (sum(present) / len(present)) if present else None,
         }
@@ -163,6 +167,23 @@ def aggregate(scores: list[dict]) -> dict:
         xs = [x for x in xs if x is not None]
         return (sum(xs) / len(xs)) if xs else None
 
+    def _pct(xs, q):
+        xs = sorted(xs)
+        if not xs:
+            return None
+        return xs[min(len(xs) - 1, int(q * len(xs)))]
+
+    def _err_dist(key):
+        # 池化所有手所有座的端点绝对误差 → 分布(干净窗 A/B 比这个,容差无关)
+        pooled = [e for s in scores for e in s[key]["errors"]]
+        return {
+            "n_seats": len(pooled),
+            "mean": _avg(pooled),
+            "median": _pct(pooled, 0.5),
+            "p90": _pct(pooled, 0.9),
+            "max": max(pooled) if pooled else None,
+        }
+
     n = len(scores)
     return {
         "hands": n,
@@ -178,6 +199,8 @@ def aggregate(scores: list[dict]) -> dict:
             (s["initial_stack"]["within_tol"] / s["initial_stack"]["n"])
             for s in scores if s["initial_stack"]["n"]
         ]),
+        "final_err_dist": _err_dist("final_stack"),
+        "initial_err_dist": _err_dist("initial_stack"),
         "winner_exact_rate": _avg([1.0 if s["winner_exact"] else 0.0 for s in scores]),
     }
 
@@ -258,8 +281,11 @@ def _print_report(pairs, scores, agg):
     print(f"真值对账:{agg['hands']} 手")
     print(f"  动作召回 avg={agg['action_recall_avg']}  精度 avg={agg['action_precision_avg']}"
           f"  金额偏差笔数={agg['action_misamount_total']}")
-    print(f"  端点 final 命中率={agg['final_within_tol_rate']}  缺座={agg['final_missing_total']}")
+    fe, ie = agg["final_err_dist"], agg["initial_err_dist"]
+    print(f"  端点 final  命中率={agg['final_within_tol_rate']}  缺座={agg['final_missing_total']}")
+    print(f"    └ 误差(筹码,A/B主指标): mean={fe['mean']} median={fe['median']} p90={fe['p90']} max={fe['max']}  (n={fe['n_seats']}座)")
     print(f"  端点 initial 命中率={agg['initial_within_tol_rate']}")
+    print(f"    └ 误差: mean={ie['mean']} median={ie['median']} p90={ie['p90']} max={ie['max']}  (n={ie['n_seats']}座)")
     print(f"  赢家完全正确率={agg['winner_exact_rate']}")
     bad = [p for p in pairs if p.get("consistency_flags")]
     if bad:
@@ -275,8 +301,10 @@ def main(argv=None):
     ap.add_argument("--conn", help="PG 连接串(给则拉 DB 对账)")
     ap.add_argument("--after", help="started_at 下界(ISO)")
     ap.add_argument("--before", help="started_at 上界(ISO)")
-    ap.add_argument("--abs-tol", type=float, default=2.0)
-    ap.add_argument("--rel-tol", type=float, default=0.05)
+    ap.add_argument("--abs-tol", type=float, default=2.0, help="动作金额绝对容差")
+    ap.add_argument("--rel-tol", type=float, default=0.05, help="动作金额相对容差")
+    ap.add_argument("--stack-abs-tol", type=float, default=2.0, help="端点栈绝对容差(默认±2,比动作严)")
+    ap.add_argument("--stack-rel-tol", type=float, default=0.0, help="端点栈相对容差(默认0=纯绝对)")
     args = ap.parse_args(argv)
 
     truth = load_truth(args.truth)
@@ -295,7 +323,8 @@ def main(argv=None):
         return
     db = fetch_db_hands(conn, args.after, args.before)
     pairs = match_hands(truth, db)
-    scores = [score_hand(p["truth"], p["db"], args.abs_tol, args.rel_tol)
+    scores = [score_hand(p["truth"], p["db"], args.abs_tol, args.rel_tol,
+                         args.stack_abs_tol, args.stack_rel_tol)
               for p in pairs if p["truth"] and p["db"]]
     _print_report(pairs, scores, aggregate(scores))
 

@@ -1,11 +1,12 @@
 {
   "_说明": "阶段-1 真值模板。人工看 record_frames 录像逐手填。座位号=物理 seat_index(int)。",
   "_字段": {
-    "seats": "每个在手座:name 真名 / initial 起手栈 / final 手末栈(看不清可填 null)",
-    "actions": "按发生顺序;action ∈ fold/check/call/bet/raise/all_in;amount=本次投入(check/fold 填 null)",
+    "seats": "每个在手座:name 真名 / initial 起手栈 / final 手末栈(看不清填 null)。⚠️弃牌座 final=initial−前注(−已投入),别忘扣 ante!",
+    "actions": "按发生顺序;action ∈ fold/check/call/bet/raise/all_in(全押带下划线!);amount=本次投入(check/fold 填 null)",
     "winners": "赢家座位号列表(可带 amount,也可只列座位号)",
     "button_seat / blinds": "用于对齐一致性校验(harness 顺序对齐,这俩对不上会 flag 错位)"
   },
+  "_跑法": "--after/--before 用【北京时间】填(服务器是上海时区,裸时间串按本地解读);端点容差默认±2绝对,A/B 看报告里'端点误差 mean/median/p90'(命中率会被容差影响,误差分布才是真比较)",
   "session": "2026-06-24_observe_demo",
   "hands": [
     {
