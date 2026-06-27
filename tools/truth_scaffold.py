@@ -34,7 +34,7 @@ def _fetch(conn_str: str, after: str, before: str):
     with psycopg2.connect(dsn) as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT id, started_at, raw_data, result FROM hands "
+                "SELECT id, started_at, raw_data, result, community_cards FROM hands "
                 "WHERE started_at >= %s AND started_at <= %s ORDER BY started_at",
                 (after, before))
             hands = cur.fetchall()
@@ -79,16 +79,21 @@ def scaffold_hand(idx: int, hand_row: dict, action_rows: list) -> dict:
     if len(actions) < 2:
         flags.append("⚠自愿动作<2笔 → 可能手末漏抓,核动作完整性")
 
+    # winners 用示例格式 [{seat,amount}];预填 +xx(比端点可靠),金额取 win_amounts_xx
+    win_seats = result.get("win_seats_xx") or result.get("winners_endpoint") or []
+    win_amts = result.get("win_amounts_xx") or {}
+    winners = [{"seat": int(s), "amount": win_amts.get(str(s))} for s in win_seats]
+    community = hand_row.get("community_cards") or [None, None, None, None, None]
+
     return {
         "label": f"h{idx}",
         "button_seat": rd.get("button_seat_index"),
         "blinds": {"sb": bl.get("sb"), "bb": bl.get("bb"), "ante": bl.get("ante")},
         "seats": seats,
         "actions": actions,
-        # winners 预填 +xx(比端点可靠);_db_winner_endpoint 给你看分歧,但 winners 你要独立核
-        "winners": result.get("win_seats_xx") or result.get("winners_endpoint") or [],
-        "_db_winner_endpoint": result.get("winners_endpoint"),
-        "_flags": flags,
+        "winners": winners,
+        "community": community,
+        "_flags": flags,   # 辅助:可疑项引导独立核;truth_score 忽略 _ 开头键,核完可删
     }
 
 
