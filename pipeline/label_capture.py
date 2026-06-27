@@ -30,16 +30,19 @@ class LabelCapturer:
         self.signals = {s.strip() for s in (raw or "").split(",") if s.strip()}
         self.enabled = bool(self.signals) and cv2 is not None
         self.interval = interval_sec
+        # 去重窗口(2026-06-27):同(座,值)在此秒内只采一次 → 治"出动作→回idle→再出"振荡 +
+        # 稳定值每 interval 反复采 两类重复帧。不同值照采(保多样性);过窗后同值可再采。
+        self.dedup_window = float(os.getenv("POKEMIR_LABEL_DEDUP", "8.0"))
         self.max_n = max_n
-        self._st = {}   # sig -> {dir, jsonl, n, last_value{seat:v}, last_emit{seat:t}, done}
+        self._st = {}   # sig -> {dir, jsonl, n, seen{(seat,vrepr):t}, done}
         if self.enabled:
             stamp = time.strftime("%Y%m%d_%H%M%S")
             for sig in self.signals:
                 d = os.path.join(out_dir, f"{sig}_{stamp}")
                 os.makedirs(d, exist_ok=True)
                 self._st[sig] = {"dir": d, "jsonl": os.path.join(d, "samples.jsonl"),
-                                 "n": 0, "last_value": {}, "last_emit": {}, "done": False}
-                print(f"[label] 采集 '{sig}' → {d}(目标 {max_n} 张,间隔 {interval_sec}s)", flush=True)
+                                 "n": 0, "seen": {}, "done": False}
+                print(f"[label] 采集 '{sig}' → {d}(目标 {max_n} 张,同值去重窗 {self.dedup_window}s)", flush=True)
 
     def tap(self, signal, crop, read_value, raw_text=None, wide_frame=None,
             roi=None, hand_id=None, seat=None):
@@ -57,15 +60,12 @@ class LabelCapturer:
         if crop is None or getattr(crop, "size", 0) == 0:
             return
         now = time.time()
-        changed = (read_value != st["last_value"].get(seat, _UNSET))   # 去重:按(信号,座)
-        if changed:
-            reason = "change"
-        elif (now - st["last_emit"].get(seat, 0.0)) >= self.interval:
-            reason = "interval"
-        else:
+        # 去重:同(座,值)在 dedup_window 内只采一次(治振荡 + 稳定值反复采)。None/idle 同理。
+        key = (seat, str(read_value))
+        if now - st["seen"].get(key, 0.0) < self.dedup_window:
             return
-        st["last_value"][seat] = read_value
-        st["last_emit"][seat] = now
+        reason = "new"
+        st["seen"][key] = now
         sid = st["n"]
         st["n"] += 1
 
