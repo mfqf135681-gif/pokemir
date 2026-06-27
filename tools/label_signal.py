@@ -34,17 +34,30 @@ def _to_num(s):
         return None
 
 
+TEXT_SIGNALS = {"action", "id", "name"}   # 文本信号(动作词/玩家名):按字符串严格比,非数字
+
+
+def _is_text(rec):
+    return rec.get("signal") in TEXT_SIGNALS
+
+
 def is_match(truth, read_value, tol=0.0):
-    """逐帧读是否对:两边都是数且 |差|≤tol。tol=0 即严格相等(底池是整数,默认严格)。"""
+    """数字信号:两边都是数且 |差|≤tol。tol=0 即严格相等(底池整数默认严格)。"""
     t, r = _to_num(truth), _to_num(read_value)
     if t is None or r is None:
         return False
     return abs(t - r) <= tol
 
 
+def is_match_text(truth, read_value):
+    """文本信号(action/id):去空白后严格相等;空读=不匹配。"""
+    r = "" if read_value is None else str(read_value).strip()
+    return r != "" and str(truth).strip() == r
+
+
 def score(labeled, tol=0.0):
-    """纯逻辑(Linux 可单测)。labeled=[{read_value, truth, ...}]。truth 约定:
-    数字=已标真值 / None 或 ''=跳过(不计) / 'x'=框歪/不可读(记录、剔出 precision 分母)。
+    """纯逻辑(Linux 可单测)。数字信号走 is_match;文本信号(action/id/name)走 is_match_text。
+    truth 约定:已标真值 / None 或 ''=跳过(不计) / 'x'=框歪不可读(记录、剔出 precision 分母)。
     返回 {n, judged, match, mismatch, read_miss, unreadable, precision, mismatches[]}。"""
     judged = match = read_miss = unreadable = 0
     mismatches = []
@@ -54,13 +67,16 @@ def score(labeled, tol=0.0):
             continue  # 跳过未标
         if str(truth).strip().lower() == "x":
             unreadable += 1
-            continue  # 框歪/不可读 → 不进 precision 分母(但已记录,提示 ROI 可能要重框)
+            continue  # 框歪/不可读 → 不进 precision 分母
         judged += 1
         rv = rec.get("read_value")
-        if _to_num(rv) is None:
-            read_miss += 1  # 有真值但机器读空(None)→ 算未命中
+        text = _is_text(rec)
+        read_empty = (rv is None or str(rv).strip() == "") if text else (_to_num(rv) is None)
+        matched = is_match_text(truth, rv) if text else is_match(truth, rv, tol)
+        if read_empty:
+            read_miss += 1  # 有真值但机器读空 → 未命中
             mismatches.append({"id": rec.get("id"), "truth": truth, "read": rv, "kind": "read_none"})
-        elif is_match(truth, rv, tol):
+        elif matched:
             match += 1
         else:
             mismatches.append({"id": rec.get("id"), "truth": truth, "read": rv, "kind": "wrong"})
@@ -78,12 +94,16 @@ def _selftest():
         {"id": 2, "read_value": None, "truth": "40"},     # read_none
         {"id": 3, "read_value": 50, "truth": ""},         # skip
         {"id": 4, "read_value": 999, "truth": "x"},       # unreadable(框歪)
+        {"id": 5, "read_value": "跟注", "truth": "跟注", "signal": "action"},  # 文本 match
+        {"id": 6, "read_value": "加注", "truth": "跟注", "signal": "action"},  # 文本 wrong
+        {"id": 7, "read_value": "", "truth": "向光", "signal": "id"},          # 文本 read_none
     ]
     s = score(rows)
-    assert s["judged"] == 3 and s["match"] == 1 and s["mismatch"] == 2, s
-    assert s["read_miss"] == 1 and s["unreadable"] == 1, s
+    assert s["judged"] == 6 and s["match"] == 2 and s["mismatch"] == 4, s
+    assert s["read_miss"] == 2 and s["unreadable"] == 1, s
     assert abs(s["precision"] - 1 / 3) < 1e-9, s
     assert is_match("532", 532.0) and not is_match("577", 1984)
+    assert is_match_text("跟注", "跟注") and not is_match_text("跟注", "加注") and not is_match_text("向光", "")
     assert _to_num("1,234") == 1234.0 and _to_num("") is None and _to_num("abc") is None
     print("selftest OK", s)
 

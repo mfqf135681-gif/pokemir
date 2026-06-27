@@ -1318,6 +1318,11 @@ class PipelineOrchestrator:
                 text = text1 if len(text1) >= len(text2) else text2
                 logger.debug(f"_capture_player_ids: seat_{seat.seat_index} consensus "
                              f"{text1!r}/{text2!r} → {text!r}")
+            if self._labeler.enabled and "id" in self._labeler.signals:  # 信源验证:玩家名 crop+OCR共识读值(空=读失败)
+                self._labeler.tap("id", img1, text or None,
+                                  wide_frame=self.capturer.get_cached_frame(),
+                                  roi=seat.id_area, seat=seat.seat_index,
+                                  hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
             if not text:
                 # OCR 失败 fallback (2026-05-27):用 avatar hash 派生跨手稳定身份.
                 # 让 Path B 统计能把"同一物理玩家"跨手聚合(即使我们不知道他叫啥).
@@ -2541,6 +2546,11 @@ class PipelineOrchestrator:
                     stack_img = self.capturer.capture_roi(seat_roi.stack_area)
                     stack_now = self._ocr_stack_chips(stack_img, seat_idx=sidx)
                 sub_ms["seat_stack_ocr"] += (time.perf_counter() - _t) * 1000.0
+                if self._labeler.enabled and "stack" in self._labeler.signals:  # 信源验证:持有筹码 crop+raw读值(被动,默认关)
+                    self._labeler.tap("stack", self.capturer.capture_roi(seat_roi.stack_area), stack_now,
+                                      wide_frame=self.capturer.get_cached_frame(),
+                                      roi=seat_roi.stack_area, seat=sidx,
+                                      hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
                 # Digit-miss sanity: reject sudden ≥10x jump (OCR misread digits like
                 # 3001001 should-be-300100, or 2841 vs 28410). Keep prior reading.
                 # 2026-05-27 EXCEPTION:stack=0 是合法 all-in 状态,不视为 OCR jump → 不拒收.
@@ -2639,6 +2649,11 @@ class PipelineOrchestrator:
                     self.tracker._last_roi_img[_rk] = action_img
                     self.tracker._last_roi_text[_rk] = action_text
                     self.tracker._roi_force_refresh_at[_rk] = _tick
+                    if self._labeler.enabled and "action" in self._labeler.signals:  # 信源验证:动作 crop+phash读词(空=idle)
+                        self._labeler.tap("action", action_img, action_text or None,
+                                          wide_frame=self.capturer.get_cached_frame(),
+                                          roi=seat_roi.action_area, seat=sidx,
+                                          hand_id=(self.tracker.current_hand.id if self.tracker.current_hand else None))
                 sub_ms["seat_action_ocr"] += (time.perf_counter() - _t) * 1000.0
 
             if action_text is None:

@@ -64,7 +64,8 @@
 | 2026-06-14 | (全局) | 端点采集用错 reader(`_capture_seat_stacks`) | initial/final 端点(求解器**唯一承重锚**)用纯 EasyOCR(`_ocr_stack_chips`)而非已验~100% 的数字配方 —— 最关键的锚用着全项目最差 stack 读法。缺座率 init7.7/fin7.6/命名8.0(坐人读空非空座);all-in final=0 被 EasyOCR 丢 lone-0(#243 同坑)。用户揪地基盲区:端点也是 OCR、当天然真值有循环论证风险 | **已解冻修复** 2026-06-14:改用 `_stack_chips_recipe`(`_ocr_stack_chips` 的**严格超集**:配方开→DigitReader 主读+EasyOCR 兜底,配方关→内部 fallback 原路、零行为变化)。stash 对照验证零新增失败(3 既有失败=无模型环境)。⚠️ 治读法差缺座、不治动画遮挡/读爆;实效需新录一局对比 init/fin 座覆盖。**待补**:用独立基准(人工标真值)量端点数值准确率,终结"想当然可靠" |
 | 2026-06-23 | 0150fc81 / 8380a532（24手） | action dedup 缺 None 处理(orchestrator `_process_seat_actions`) | `action_text`=phash动作词+金额OCR 拼接;跟注后金额 OCR 抖掉成 None（"跟注 42"→"跟注"）触发 check_action_change 重发 → 同窗口同(player,street,action)又来一笔 amount=None。06-12 加的金额维度只覆盖 None==None 与 \|Δ\|≤2，**漏 None-vs-真值** → 当合法二次动作放行 → trailing-null 幽灵 call/bet/raise 落库（DB 实测 24手/3天，每笔皆 `[真值,…,null]`）。live 人话流显 `?(待核)`，污染动作完整性/画像（不破守恒，None 不进筹码和）。用户 live 观测 + DB 坐实归因识别层 | **已解冻修复** 2026-06-23:dedup 补 `_amt is None and _last_amt is not None`（窗口内）→ 判重。真二次动作必带真金额走"显著不同"分支保留（06-12 案 4→36/34→580 单测验留）；check/fold 恒 None 走旧 None==None 分支不受影响。**审慎弃纯栈门**（首帧 stack OCR 滞后 overlay→误杀真跟注的回归风险）。回归:核心套 59 passed + dedup 新分支 7/7 单测 + 全套零新增失败(3 既有=缺EasyOCR/CNN env)。**✅ 实效已验**(125手 fix 后局):19 拦/3 漏(全 >5s 窗外)/真回归探针(差>2 dedup)=0 → 86% 削减零回归 |
 | 2026-06-23(二) | (live)+ f520cb3f(横幅原案) | action dedup 缺栈门 + 窗口过窄(同函数,续前条) | ① 横幅滚动叠 amount 框→同座刷垃圾 call(金额乱飞但 stack_before==after 栈死不动),金额维度 \|Δ\|大被当合法二次动作放行→幽灵洪流(f520cb3f s3 15笔);② None 残尾 3 笔卡在 5.0-6.0s 窗外(原窗 5s)。归因:dedup 没用"栈是否动"这个真commit信号 | **已解冻修复** 2026-06-23:**统一一处 dedup 改**——(a)窗口 5→60s(dedup 每手清 detector:307 故天然手内、放宽不跨手误伤);(b)加**栈门二次抑制**:已发过同键(_last在=非首笔)+ `stack_before==stack_after`→判重不管金额(横幅垃圾栈冻被抓;**真二次动作必动栈→stack_frozen False→保留**;栈读None→fail-open不抑制)。**审慎点**:只作二次抑制→首笔真call永放行(避纯栈门首帧回归);首笔横幅幽灵每座仍漏1(带 amount-suspect 指纹)。回归:扩展单测 9/9(limp跟4→再跟36/加34→580 动栈保留、栈读空fail-open)+ 全套147 passed零新增。diag 加 `reason`/`stack_before/after` 供探针。⚠️ 实效需 Win 验横幅垃圾率↓ + 栈门 dedup 无吃真升级动作 |
-| 2026-06-23(三) | (前瞻/阶段0,非单手 bug) | **采集时序**:端点锚+玩家ID 在按钮移动刻【单帧】抓(orchestrator `_tick`/`_end_current_hand`/`_start_new_hand`) | 端点+ID 抓在上手 overlay 未散的最脏时刻。实测:端点 recon 干净仅 31%(423手)、155 个"net涨"里 **152(98%)非圆整=读取假象**(真买入必圆整)、TempUser 2741次/2天;而总底池 latch→按钮间有 **5.05s 中位/≈70tick 干净窗**(414手稳定)。缺口归因【采集时序】非识别算法 | **申请待批**(详见 §5.1)。纯逻辑核 `pipeline/clean_window.py` + 9 单测已建(冻结豁免);接线碰冻结,待用户批 → 改 → Win soak 对真值回归 → 回冻 |
+| 2026-06-23(三) | (前瞻/阶段0,非单手 bug) | **采集时序**:端点锚+玩家ID 在按钮移动刻【单帧】抓(orchestrator `_tick`/`_end_current_hand`/`_start_new_hand`) | 端点+ID 抓在上手 overlay 未散的最脏时刻。实测:端点 recon 干净仅 31%(423手)、155 个"net涨"里 **152(98%)非圆整=读取假象**(真买入必圆整)、TempUser 2741次/2天;而总底池 latch→按钮间有 **5.05s 中位/≈70tick 干净窗**(414手稳定)。缺口归因【采集时序】非识别算法 | **🪓 实测砍除**(见 §5.1 ⑥):n=4 真值实测端点 OCR 准(median=0),噪声在筹码流/赢家归属=Phase 1;干净窗不建,clean_window 留 default-off 备用 |
+| 2026-06-27 | (信源验证,非 bug) | 加 `stack`/`action`/`id` 三个 `LabelCapturer.tap`(orchestrator `_process_seat_actions`×2 + `_capture_player_ids`) | 用 `label_signal.py` 盲标量 stack/动作/ID **识别精度**(诊断 ID 漂移严重 + 复核端点 OCR)。crop=识别器实际吃的那块,盲标无锚定偏差 | **已加(passive 观察,免全解冻)**:纯旁路抽头、`POKEMIR_LABEL_SIGNAL` 默认关 → 零逻辑改/零 production 影响,同 `diag.emit` 类;有 amount/pot tap 先例。label_signal 加文本模式(action/id 按字符串比)+ selftest 绿 |
 
 ---
 
@@ -84,7 +85,7 @@
 - `_start_new_hand`(initial 端点 + ID 来源)
 - **不改任何识别算法**(DigitReader/EasyOCR/phash/CNN 一律不动);只改"何时调用、用单帧还是窗内多帧共识"。
 
-**③ 接线方案(绞杀式 + env 闸,一行回滚)**
+**③ 接线方案(绞杀式 + env 闸,一行回滚)** ⚠️ **2026-06-27 被 ⑦ 取代**(总底池窗对摊牌座是死角,改走 D消失窗)
 1. orchestrator 持 `self._clean_window = CleanWindowCapture()`(`__init__`);
 2. `_tick` 内 `_process_pot` 后:若 `_pot_label_latched`,调 `cw.tick(settled=True, stacks=_capture_seat_stacks(), ids=<窗内 id 读>)`(**仅窗内读**,成本落空闲期);
 3. button_cut 时先 `res = cw.finalize()`;
@@ -103,4 +104,16 @@
 - 🖥️ Win soak 对**真值**(依赖阶段-1 真值集):端点干净率 31%→目标、TempUser 率↓、无结算手不漏、**A/B 量出"时序占噪声多少"**(这一刀自带的副产品);
 - 回滚:`POKEMIR_CLEAN_WINDOW=0` 一行退回旧行为。
 
-**⑥ 状态:申请待批** —— 用户确认后才动冻结代码。在此之前仅纯逻辑核(冻结豁免)已落地,orchestrator 一行未改。
+**⑦ 设计演进 + 先测后建闸门(2026-06-27,逐帧逆向 + 用户拍板)**
+
+> ③ 的"总底池结算窗"接线**被取代**:逐帧确认——结算窗那 5s 里**摊牌座持有筹码区显牌型、读不到栈数**=死角。改走【D 消失窗】。
+
+- **手转换 UI 时序(逐帧逆向,硬核参考,别再重扒)**:总底池出现(摊牌座显牌型)→ 下手 ante 已开始 → antes 飞入底池后总底池消失 ≈ 牌型清 ≈ **D 从原座消失**(**此刻 SB/BB 未下**)→ SB/BB 下注 → **发牌动画(瞬污 s3-5)** → UTG 行动。**无"全座同时干净"的长窗(各遮挡瞬态、打不同座/时);D 消失窗(~3 帧/0.6s)是唯一【全座可读 + 仅扣 ante】的点**(牌型清、SB/BB 未下)。
+- **采集设计(若建)**:触发 = **D 消失 + 位置锚校验**;窗内逐座中位 = **直接读显示值(ante-後,SB/BB 未下→无 per-seat 盲注)**;活跃集筛(只加在手座);摊牌座牌型已清照读。遮挡帧靠中位滤——**前提:数字配方对遮挡返 None 非垃圾数(待 Win 喂糊帧验)**。
+- **🔴 先测后建闸门(用户拍板)**:**真值实测当前【单帧】捕获到底多差【之前】,不建这套精巧机器。** 证据矛盾:h14 端点对上真值、h15 摊牌 final 也采到;唯一说"脏"的 31% 是 conservation **代理**(系统自判=循环陷阱)。且 `post_ante` 实为**合成批注入**(17ms 一批、非视觉检测)→"ante present"当 gate 还得**新建视觉检测器**(额外成本)。**故:先标几手干净手量端点误差(收紧 ±2),再定建不建。**
+- **真值标注口径(=DB 同口径,供 truth_score 对账)**:每个**手边界的 D 消失帧**读各座持有筹码的【**显示数字,原样记,勿加 ante/盲注**】(DB `_capture_seat_stacks` 存的就是该显示值=ante-後;验证是【显示值↔显示值】,+ante 反而造系统偏移)。**一个边界值 = 上手 final = 下手 initial**(DB 同此:end/start 同 tick 抓 → carry_gap=0);例外 = rebuy 座(final≠initial,单独记)。**ante 无须管**:net=final−initial 时统一 ante 自抵消,conservation 同理(h14 实锤:DB 1983 ≈ 显示读 1984,未 +ante 即对上)。
+- **端点 = 可靠基桩(用户拍板,否"抛端点走动作层")**:①端点是承重锚 + **独立** cross-check(反循环)②动作层手末自己有洞(h1/h2 漏最后一动)→ 非干净退路。终态 = 端点 net ↔ 动作和/底池/+xx **两独立桩对账**。⚠️ 但摊牌座端点**连人都难 ground-truth**(无干净 ante-前帧)→ 该处动作层更可验,轻记。
+
+**⑥ 状态(2026-06-27 实测定案 → 🪓 砍除)**:真值实测 **n=4 手**(含较杂手)——端点 OCR **准**(final/initial 误差 **median=0、mean 0.9/1.3**,max 10-11 = 盲注座【读取时刻约定差:真值读 D消失、DB 抓稍后,差一个盲】非误读);动作召回 0.92 / 精度 0.98;赢家 0.75(错的 = seat7 rebuy 端点假赢家)。
+→ **结论:捕获已准,残余噪声全在【盲注约定差 + 筹码流/座位生命周期(rebuy/join,如 s7)+ 赢家归属】= Phase 1 求解器/筹码表地盘,非捕获。** **Phase 0 干净窗【砍除】**:`clean_window.py` 纯逻辑核(9/9)+ default-off 接线保留备用(`POKEMIR_CLEAN_WINDOW=0`),**不再建 ⑦ 的 ante 检测器/median/calc 机器**。决定可逆(Phase 1 若暴露端点问题再启)。**精力转 Phase 1**。
+> 📌 **"先测后建"价值兑现**:差点造一整套不需要的捕获机器;真值实测 4 手就把它砍住了。⑦ 的设计留作"若需"的备用图纸。
